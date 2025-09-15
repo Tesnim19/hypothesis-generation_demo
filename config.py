@@ -23,6 +23,29 @@ class Config:
         self.data_dir = "./data"
         self.host = "0.0.0.0"
         self.port = 5000
+        
+        # LLM Configuration
+        self.biomedical_llm = "Qwen/Qwen3-4B-Instruct-2507"
+        self.jina_embedding_model = "jinaai/jina-embeddings-v3"
+        self.llm_temperature = 0.0
+        self.llm_max_tokens = 300
+        self.llm_attention_dropout = 0.2
+        self.llm_hidden_dropout = 0.2
+        
+        # MC Dropout Configuration
+        self.mc_dropout_samples = 5
+        self.mc_dropout_max_predictions = 10
+        
+        # Literature Mining Configuration
+        self.use_literature_mining = True
+        self.pubmed_max_results = 10
+        self.pubmed_rate_limit_delay = 2.0
+        
+        # FAISS/Chunking Configuration
+        self.faiss_k_nearest = 2
+        self.chunk_max_size = 500
+        self.chunk_total_limit = 5000
+        self.min_chunk_size = 500
 
     @classmethod
     def from_args(cls, args):
@@ -56,6 +79,30 @@ class Config:
         config.embedding_model = os.getenv("EMBEDDING_MODEL", "w601sxs/b1ade-embed-kd")
         config.plink_dir = os.getenv("PLINK_DIR", "./data/1000Genomes_phase3/plink_format_b37")
         config.data_dir = os.getenv("DATA_DIR", "./data")
+        
+        # LLM Configuration
+        config.biomedical_llm = os.getenv("BIOMEDICAL_LLM", "Qwen/Qwen3-4B-Instruct-2507")
+        config.jina_embedding_model = os.getenv("JINA_EMBEDDING_MODEL", "jinaai/jina-embeddings-v3")
+        config.llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.0"))
+        config.llm_max_tokens = int(os.getenv("LLM_MAX_TOKENS", "300"))
+        config.llm_attention_dropout = float(os.getenv("LLM_ATTENTION_DROPOUT", "0.2"))
+        config.llm_hidden_dropout = float(os.getenv("LLM_HIDDEN_DROPOUT", "0.2"))
+        
+        # MC Dropout Configuration
+        config.mc_dropout_samples = int(os.getenv("MC_DROPOUT_SAMPLES", "5"))
+        config.mc_dropout_max_predictions = int(os.getenv("MC_DROPOUT_MAX_PREDICTIONS", "10"))
+        
+        # Literature Mining Configuration
+        config.use_literature_mining = os.getenv("USE_LITERATURE_MINING", "true").lower() == "true"
+        config.pubmed_max_results = int(os.getenv("PUBMED_MAX_RESULTS", "10"))
+        config.pubmed_rate_limit_delay = float(os.getenv("PUBMED_RATE_LIMIT_DELAY", "2.0"))
+        
+        # FAISS/Chunking Configuration
+        config.faiss_k_nearest = int(os.getenv("FAISS_K_NEAREST", "2"))
+        config.chunk_max_size = int(os.getenv("CHUNK_MAX_SIZE", "500"))
+        config.chunk_total_limit = int(os.getenv("CHUNK_TOTAL_LIMIT", "5000"))
+        config.min_chunk_size = int(os.getenv("MIN_CHUNK_SIZE", "500"))
+        
         return config
 
 
@@ -70,7 +117,7 @@ def create_dependencies(config):
         config.go_map
     )
     
-    llm = LLM()
+    llm = LLM(config=config)
     
     prolog_query = PrologQuery(
         host=config.swipl_host,
