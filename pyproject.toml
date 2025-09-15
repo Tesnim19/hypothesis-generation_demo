@@ -10,7 +10,7 @@ dependencies = [
     "Flask",
     "flask-restful",
     "gseapy",
-    "faiss-gpu",
+    "faiss-cpu",
     "python-dotenv",
     "PyJWT==2.9.0",
     "pymongo",
@@ -37,8 +37,15 @@ dependencies = [
     "tzlocal",
     "pandas",
     "PyYAML",
-    "psutil"
+    "psutil",
+    "einops",
+    "transformers",
+    "pydantic",
+    "scipy",
+    "google-generativeai",
+    "openai"
 ]
 
 [project.optional-dependencies]
 r-integration = ["rpy2"]
+gpu = ["faiss-gpu"]
