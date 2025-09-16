@@ -19,6 +19,7 @@ from werkzeug.utils import secure_filename
 from utils import serialize_datetime_fields
 from project_tasks import count_gwas_records, get_project_with_full_data
 from bson import ObjectId
+import re
 
 
 class EnrichAPI(Resource):
@@ -697,6 +698,9 @@ class AnalysisPipelineAPI(Resource):
             population = request.form.get('population', 'EUR')
             max_workers = int(request.form.get('max_workers', 3))
             
+            # Check the mode: uploaded file or predefined file
+            is_uploaded = request.form.get('is_uploaded', 'false').lower() == 'true'
+            
             # Fine-mapping parameters with defaults
             maf_threshold = float(request.form.get('maf_threshold', 0.01))
             seed = int(request.form.get('seed', 42))
@@ -713,22 +717,52 @@ class AnalysisPipelineAPI(Resource):
             if not phenotype:
                 return {"error": "phenotype is required"}, 400
             
-            # Get uploaded file
-            if 'gwas_file' not in request.files:
-                return {"error": "No GWAS file uploaded"}, 400
-            
-            gwas_file = request.files['gwas_file']
-            if gwas_file.filename == '':
-                return {"error": "No file selected"}, 400
+            # Handle based on the upload flag
+            if not is_uploaded:
+                # Mode: Predefined file - gwas_file contains the filename as text
+                predefined_filename = request.form.get('gwas_file')  # Filename as string
+                
+                if not predefined_filename:
+                    return {"error": "gwas_file is required (filename for predefined files)"}, 400
+                
+                logger.info(f"[API] Using predefined GWAS file: {predefined_filename}")
+                
+                # Find the predefined file in data/raw/
+                from config import Config
+                data_dir = getattr(self.db.config if hasattr(self.db, 'config') else Config.from_env(), 'data_dir', 'data')
+                raw_data_path = os.path.join(data_dir, 'raw')
+                
+                # Look for the exact filename
+                gwas_file_path = os.path.join(raw_data_path, predefined_filename)
+                
+                if not os.path.exists(gwas_file_path):
+                    return {"error": f"Predefined GWAS file not found: {predefined_filename}"}, 404
+                
+                filename = predefined_filename
+                file_size = os.path.getsize(gwas_file_path)
+                file_id = str(uuid.uuid4())
+                
+            else:
+                # Mode: Uploaded file - gwas_file contains the actual file
+                if 'gwas_file' not in request.files:
+                    return {"error": "No GWAS file uploaded"}, 400
+                
+                gwas_file = request.files['gwas_file']
+                if gwas_file.filename == '':
+                    return {"error": "No file selected"}, 400
             
             logger.info(f"[API] Starting analysis pipeline")
             logger.info(f"[API] Project: {project_name}")
-            logger.info(f"[API] File: {gwas_file.filename}")
+            logger.info(f"[API] Phenotype: {phenotype}")
+            if not is_uploaded:
+                logger.info(f"[API] Predefined file: {filename}")
+            else:
+                logger.info(f"[API] Uploaded file: {gwas_file.filename}")
             logger.info(f"[API] Reference: {ref_genome}, Population: {population}")
             logger.info(f"[API] Fine-mapping params: maf={maf_threshold}, seed={seed}, window={window}kb, L={L}, coverage={coverage}, min_abs_corr={min_abs_corr}")
             
-            # Validate file
-            if not allowed_file(gwas_file.filename):
+            # Validate file (only for uploaded files)
+            if is_uploaded and not allowed_file(gwas_file.filename):
                 return {"error": "Invalid file format. Supported: .tsv, .txt, .csv, .gz, .bgz"}, 400
             
             # Validate parameters
@@ -763,32 +797,41 @@ class AnalysisPipelineAPI(Resource):
             if batch_size < 1 or batch_size > 20:
                 return {"error": "Batch size must be between 1-20"}, 400
             
-            # === FILE UPLOAD AND PROJECT CREATION  ===
-            # Generate secure filename and file ID
-            filename = secure_filename(gwas_file.filename)
-            file_id = str(uuid.uuid4())
-            
-            # Create user upload directory
-            user_upload_dir = os.path.join('data', 'uploads', str(current_user_id))
-            os.makedirs(user_upload_dir, exist_ok=True)
-            
-            # File path for saving
-            file_path = os.path.join(user_upload_dir, f"{file_id}_{filename}")
-            
-            logger.info(f"Starting upload for file {filename} (ID: {file_id})")
-            start_time = datetime.now()
-            
-            # Save file
-            gwas_file.save(file_path)
-            file_size = os.path.getsize(file_path)
-            
-            gwas_records_count = count_gwas_records(file_path)
+            # === FILE HANDLING AND PROJECT CREATION  ===
+            if not is_uploaded:
+                # Use predefined file (already set gwas_file_path, filename, file_size above)
+                logger.info(f"Using predefined GWAS file: {filename} (Path: {gwas_file_path})")
+                file_path = gwas_file_path
+                gwas_records_count = count_gwas_records(file_path)
+            else:
+                # Handle uploaded file
+                # Generate secure filename and file ID
+                filename = secure_filename(gwas_file.filename)
+                file_id = str(uuid.uuid4())
+                
+                # Create user upload directory
+                user_upload_dir = os.path.join('data', 'uploads', str(current_user_id))
+                os.makedirs(user_upload_dir, exist_ok=True)
+                
+                # File path for saving
+                file_path = os.path.join(user_upload_dir, f"{file_id}_{filename}")
+                
+                logger.info(f"Starting upload for file {filename} (ID: {file_id})")
+                start_time = datetime.now()
+                
+                # Save file
+                gwas_file.save(file_path)
+                file_size = os.path.getsize(file_path)
+                gwas_file_path = file_path
+                
+                gwas_records_count = count_gwas_records(file_path)
             
             # Create file metadata in database with record count
+            original_filename = filename if not is_uploaded else gwas_file.filename
             file_metadata_id = self.db.create_file_metadata(
                 user_id=current_user_id,
                 filename=filename,
-                original_filename=gwas_file.filename,
+                original_filename=original_filename,
                 file_path=file_path,
                 file_type='gwas',
                 file_size=file_size,
@@ -844,8 +887,11 @@ class AnalysisPipelineAPI(Resource):
             with open(os.path.join(metadata_dir, f"{file_metadata_id}.json"), 'w') as f:
                 json.dump(metadata, f)
             
-            total_time = (datetime.now() - start_time).total_seconds()
-            logger.info(f"Completed: {filename} in {total_time:.1f} seconds")
+            if is_uploaded:
+                total_time = (datetime.now() - start_time).total_seconds()
+                logger.info(f"Completed: {filename} in {total_time:.1f} seconds")
+            else:
+                logger.info(f"Using predefined file: {filename}")
             
             logger.info(f"[API] Created project {project_id} with file {file_metadata_id}")
             
@@ -985,5 +1031,276 @@ class CredibleSetsAPI(Resource):
         except Exception as e:
             logger.error(f"Error fetching credible set: {str(e)}")
             return {"error": f"Failed to fetch credible set: {str(e)}"}, 500
+
+
+class GWASFilesAPI(Resource):
+    """
+    API endpoint for automatically discovering GWAS files and extracting their metadata
+    """
+    def __init__(self, config):
+        self.config = config
+
+    def _extract_file_metadata(self, file_path):
+        """Extract metadata from a GWAS file by examining its content"""
+        import pandas as pd
+        import re
+        import gzip
+        
+        filename = os.path.basename(file_path)
+        
+        try:
+            # Extract phenotype ID from filename
+            phenotype_id = None
+            match = re.match(r'^(\d+)_', filename)
+            if match:
+                phenotype_id = match.group(1)
+            
+            # Determine file type and how to open it
+            if file_path.endswith('.bgz'):
+                # Use gzip for bgz files
+                with gzip.open(file_path, 'rt') as f:
+                    header = f.readline().strip().split('\t')
+                    # Read a few lines to get sample info
+                    lines = [f.readline().strip() for _ in range(3)]
+            elif file_path.endswith('.gz'):
+                with gzip.open(file_path, 'rt') as f:
+                    header = f.readline().strip().split('\t')
+                    lines = [f.readline().strip() for _ in range(3)]
+            else:
+                with open(file_path, 'r') as f:
+                    header = f.readline().strip().split('\t')
+                    lines = [f.readline().strip() for _ in range(3)]
+            
+            # Extract sample size from n_complete_samples column if available
+            sample_size = "Unknown"
+            if 'n_complete_samples' in header:
+                try:
+                    n_idx = header.index('n_complete_samples')
+                    for line in lines:
+                        if line:
+                            fields = line.split('\t')
+                            if len(fields) > n_idx and fields[n_idx]:
+                                sample_size = f"~{int(float(fields[n_idx])):,}"
+                                break
+                except (ValueError, IndexError):
+                    pass
+            
+            # Extract population from filename patterns
+            population = "Unknown"
+            if "both_sexes" in filename:
+                population = "Mixed"
+            elif "male" in filename:
+                population = "Male"
+            elif "female" in filename:
+                population = "Female"
+            elif re.search(r'(eur|european)', filename.lower()):
+                population = "EUR"
+            elif re.search(r'(afr|african)', filename.lower()):
+                population = "AFR"
+            elif re.search(r'(eas|east_asian)', filename.lower()):
+                population = "EAS"
+            elif re.search(r'(sas|south_asian)', filename.lower()):
+                population = "SAS"
+            elif re.search(r'(amr|american)', filename.lower()):
+                population = "AMR"
+            else:
+                # Default to EUR for UK Biobank files
+                if phenotype_id and phenotype_id.startswith(('2', '50', '23')):
+                    population = "EUR"
+            
+            # Determine genome build
+            genome_build = "GRCh37"  # Default
+            if "hg38" in filename.lower() or "grch38" in filename.lower():
+                genome_build = "GRCh38"
+            
+            # Determine if it's raw or processed
+            is_raw = "_raw" in filename or (not "_munged" in filename and not "_processed" in filename)
+            
+            # Get basic phenotype name from known mappings or use ID
+            phenotype_name = self._get_phenotype_name(phenotype_id) if phenotype_id else "Unknown"
+            
+            return {
+                "phenotype_id": phenotype_id,
+                "phenotype_name": phenotype_name,
+                "population": population,
+                "sample_size": sample_size,
+                "genome_build": genome_build,
+                "is_raw": is_raw,
+                "header_columns": header,
+                "file_size": os.path.getsize(file_path)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Could not extract metadata from {filename}: {str(e)}")
+            return {
+                "phenotype_id": phenotype_id,
+                "phenotype_name": f"Phenotype {phenotype_id}" if phenotype_id else "Unknown",
+                "population": "Unknown",
+                "sample_size": "Unknown",
+                "genome_build": "Unknown",
+                "is_raw": "_raw" in filename,
+                "header_columns": [],
+                "file_size": os.path.getsize(file_path) if os.path.exists(file_path) else 0
+            }
+
+    def _get_phenotype_name(self, phenotype_id):
+        """Get phenotype name from known UK Biobank field IDs"""
+        # Known UK Biobank phenotype mappings
+        known_phenotypes = {
+            "21001": "Body Mass Index (BMI)",
+            "50": "Standing Height",
+            "23104": "Body Fat Percentage", 
+            "21002": "Weight",
+            "23105": "Basal Metabolic Rate",
+            "23106": "Impedance",
+            "23107": "Arm Fat-free Mass",
+            "23108": "Arm Fat Mass",
+            "23109": "Arm Predicted Mass",
+            "48": "Waist Circumference",
+            "49": "Hip Circumference"
+        }
+        return known_phenotypes.get(phenotype_id, f"Phenotype {phenotype_id}")
+
+    def _generate_file_description(self, filename, metadata):
+        """Generate description based on file metadata"""
+        
+        phenotype_name = metadata['phenotype_name']
+        
+        if "_sig" in filename:
+            return f"Genome-wide significant variants for {phenotype_name}"
+        elif "_chr" in filename:
+            chr_match = re.search(r'_chr(\d+)', filename)
+            chr_num = chr_match.group(1) if chr_match else "X"
+            return f"{phenotype_name} variants on chromosome {chr_num}"
+
+    def get(self):
+        """Automatically discover GWAS files and extract their metadata"""
+        try:
+            import glob
+            import re
+            
+            # Get data directory
+            data_dir = getattr(self.config, 'data_dir', 'data')
+            raw_data_path = os.path.join(data_dir, 'raw')
+            
+            if not os.path.exists(raw_data_path):
+                return {"gwas_files": [], "total_files": 0}, 200
+            
+            # Scan for all potential GWAS files
+            patterns = [
+                os.path.join(raw_data_path, '*.tsv'),
+                os.path.join(raw_data_path, '*.tsv.gz'),
+                os.path.join(raw_data_path, '*.tsv.bgz'),
+                os.path.join(raw_data_path, '*.txt'),
+                os.path.join(raw_data_path, '*.txt.gz'),
+                os.path.join(raw_data_path, '*.csv'),
+                os.path.join(raw_data_path, '*.csv.gz')
+            ]
+            
+            all_files = []
+            for pattern in patterns:
+                all_files.extend(glob.glob(pattern))
+            
+            # Remove duplicates and sort
+            all_files = sorted(list(set(all_files)))
+            
+            gwas_files = []
+            
+            for file_path in all_files:
+                filename = os.path.basename(file_path)
+                
+                # Skip obviously non-GWAS files
+                if any(skip in filename.lower() for skip in ['readme', 'log', 'tmp', 'temp']):
+                    continue
+                
+                # Extract metadata from the file
+                metadata = self._extract_file_metadata(file_path)
+                
+                # Generate file ID
+                file_id = filename
+                for ext in ['.tsv.bgz', '.tsv.gz', '.txt.gz', '.csv.gz', '.tsv', '.txt', '.csv']:
+                    if file_id.endswith(ext):
+                        file_id = file_id[:-len(ext)]
+                        break
+                
+                # Create file entry
+                gwas_file_entry = {
+                    "id": file_id,
+                    "name": metadata['phenotype_name'],
+                    "filename": filename,
+                    "phenotype_id": metadata['phenotype_id'],
+                    "phenotype": metadata['phenotype_name'],
+                    "population": metadata['population'],
+                    "sample_size": metadata['sample_size'],
+                    "genome_build": metadata['genome_build'],
+                    "file_path": file_path,
+                    "file_size_mb": round(metadata['file_size'] / (1024 * 1024), 2),
+                    "is_raw": metadata['is_raw'],
+                    "url": f"/gwas-files/download/{file_id}",
+                    "description": self._generate_file_description(filename, metadata)
+                }
+                
+                gwas_files.append(gwas_file_entry)
+            
+            return {
+                "gwas_files": gwas_files,
+                "total_files": len(gwas_files)
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error discovering GWAS files: {str(e)}")
+            return {"error": f"Failed to discover GWAS files: {str(e)}"}, 500
+
+
+class GWASFileDownloadAPI(Resource):
+    """
+    API endpoint for downloading predefined GWAS files
+    """
+    def __init__(self, config):
+        self.config = config
+
+    def get(self, file_id):
+        """Download a predefined GWAS file by file_id"""
+        try:
+            import glob
+            
+            logger.info(f"[GWAS DOWNLOAD] Download request for file {file_id}")
+            
+            # Get data directory
+            data_dir = getattr(self.config, 'data_dir', 'data')
+            raw_data_path = os.path.join(data_dir, 'raw')
+            
+            # Scan for matching files dynamically
+            possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz']
+            file_path = None
+            original_filename = None
+            
+            for ext in possible_extensions:
+                candidate_path = os.path.join(raw_data_path, f"{file_id}{ext}")
+                if os.path.exists(candidate_path):
+                    file_path = candidate_path
+                    original_filename = f"{file_id}{ext}"
+                    break
+            
+            if not file_path:
+                logger.error(f"[GWAS DOWNLOAD] File not found for ID: {file_id}")
+                return {"error": "File not found"}, 404
+            
+            # Generate a user-friendly download name
+            download_name = original_filename.replace('_munged.gwas.imputed_v3.both_sexes', '_GWAS')
+            
+            logger.info(f"[GWAS DOWNLOAD] Serving file: {download_name} (Path: {file_path})")
+            
+            # Return file for download
+            return send_file(
+                file_path,
+                as_attachment=True,
+                download_name=download_name,
+                mimetype='text/tab-separated-values'
+            )
+            
+        except Exception as e:
+            logger.error(f"[GWAS DOWNLOAD] Error downloading file {file_id}: {str(e)}")
+            return {"error": f"Download failed: {str(e)}"}, 500
 
 
