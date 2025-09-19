@@ -719,26 +719,35 @@ class AnalysisPipelineAPI(Resource):
             
             # Handle based on the upload flag
             if not is_uploaded:
-                # Mode: Predefined file - gwas_file contains the filename as text
-                predefined_filename = request.form.get('gwas_file')  # Filename as string
+                # Mode: Predefined file - gwas_file contains the file ID from dropdown
+                predefined_file_id = request.form.get('gwas_file')  # File ID as string
                 
-                if not predefined_filename:
-                    return {"error": "gwas_file is required (filename for predefined files)"}, 400
+                if not predefined_file_id:
+                    return {"error": "gwas_file is required (file ID for predefined files)"}, 400
                 
-                logger.info(f"[API] Using predefined GWAS file: {predefined_filename}")
+                logger.info(f"[API] Using predefined GWAS file ID: {predefined_file_id}")
                 
                 # Find the predefined file in data/raw/
                 from config import Config
                 data_dir = getattr(self.db.config if hasattr(self.db, 'config') else Config.from_env(), 'data_dir', 'data')
                 raw_data_path = os.path.join(data_dir, 'raw')
                 
-                # Look for the exact filename
-                gwas_file_path = os.path.join(raw_data_path, predefined_filename)
+                # Look for the file with various possible extensions since ID doesn't include extension
+                possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
+                gwas_file_path = None
+                filename = None
                 
-                if not os.path.exists(gwas_file_path):
-                    return {"error": f"Predefined GWAS file not found: {predefined_filename}"}, 404
+                for ext in possible_extensions:
+                    candidate_path = os.path.join(raw_data_path, f"{predefined_file_id}{ext}")
+                    if os.path.exists(candidate_path):
+                        gwas_file_path = candidate_path
+                        filename = f"{predefined_file_id}{ext}"
+                        break
                 
-                filename = predefined_filename
+                if not gwas_file_path:
+                    return {"error": f"Predefined GWAS file not found for ID: {predefined_file_id}"}, 404
+                
+                logger.info(f"[API] Found predefined file: {filename} at {gwas_file_path}")
                 file_size = os.path.getsize(gwas_file_path)
                 file_id = str(uuid.uuid4())
                 
@@ -755,7 +764,7 @@ class AnalysisPipelineAPI(Resource):
             logger.info(f"[API] Project: {project_name}")
             logger.info(f"[API] Phenotype: {phenotype}")
             if not is_uploaded:
-                logger.info(f"[API] Predefined file: {filename}")
+                logger.info(f"[API] Predefined file: {filename} (ID: {predefined_file_id})")
             else:
                 logger.info(f"[API] Uploaded file: {gwas_file.filename}")
             logger.info(f"[API] Reference: {ref_genome}, Population: {population}")
@@ -1228,7 +1237,7 @@ class GWASFilesAPI(Resource):
                     "id": file_id,
                     "name": metadata['phenotype_name'],
                     "filename": filename,
-                    "phenotype_id": metadata['phenotype_id'],
+                    "data_field": metadata['phenotype_id'],
                     "phenotype": metadata['phenotype_name'],
                     "population": metadata['population'],
                     "sample_size": metadata['sample_size'],
@@ -1242,9 +1251,47 @@ class GWASFilesAPI(Resource):
                 
                 gwas_files.append(gwas_file_entry)
             
+            # Mock phenotypes array for frontend testing
+            # TODO: Replace with real phenotype data later
+            mock_phenotypes = [
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Obesity"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Type 2 Diabetes"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Hypertension"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Body Mass Index (BMI)"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Height"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Coronary Artery Disease"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Alzheimer's Disease"
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Depression"
+                }
+            ]
+            
             return {
                 "gwas_files": gwas_files,
-                "total_files": len(gwas_files)
+                "total_files": len(gwas_files),
+                "phenotypes": mock_phenotypes
             }, 200
             
         except Exception as e:
