@@ -111,7 +111,7 @@ def predict_causal_gene(llm, phenotype, candidate_genes, hypothesis_id):
         raise
 
 @task(retries=2)
-def get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis_id):
+def get_relevant_gene_proof(prolog_query, variant, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -121,15 +121,33 @@ def get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis_id):
         )
 
         logger.info("Executing: get relevant gene proof")
-        result = prolog_query.get_relevant_gene_proof(variant, causal_gene)
+        raw_response = prolog_query.get_relevant_gene_proof(variant, samples=10)
+        
+        # Extract and parse the graphs
+        graphs_raw = raw_response.get('response', [])
+        graphs_list = []
+        
+        for i, graph_str in enumerate(graphs_raw):
+            try:
+                if isinstance(graph_str, str):
+                    import json
+                    graph = json.loads(graph_str)
+                else:
+                    graph = graph_str
+                graphs_list.append(graph)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse graph {i}: {e}")
+                logger.error(f"Raw graph data: {graph_str}")
+        
+        logger.info(f"Received {len(graphs_list)} graphs from Prolog server")
 
         emit_task_update(
             hypothesis_id=hypothesis_id,
             task_name="Getting relevant gene proof",
             state=TaskState.COMPLETED,
-            details={"relevant_gene_proof": result}
+            details={"relevant_gene_proof": graphs_list, "num_graphs": len(graphs_list)}
         )
-        return result
+        return graphs_list
     except Exception as e:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -170,7 +188,7 @@ def retry_predict_causal_gene(llm, phenotype, candidate_genes, proof, causal_gen
         raise
 
 @task(retries=2)
-def retry_get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis_id):
+def retry_get_relevant_gene_proof(prolog_query, variant, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -180,15 +198,33 @@ def retry_get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis
         )
 
         logger.info("Retrying get relevant gene proof")
-        result = prolog_query.get_relevant_gene_proof(variant, causal_gene)
+        raw_response = prolog_query.get_relevant_gene_proof(variant, samples=10)
+        
+        # Extract and parse the graphs from the Prolog response
+        graphs_raw = raw_response.get('response', [])
+        graphs_list = []
+        
+        for i, graph_str in enumerate(graphs_raw):
+            try:
+                if isinstance(graph_str, str):
+                    import json
+                    graph = json.loads(graph_str)
+                else:
+                    graph = graph_str
+                graphs_list.append(graph)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse graph {i}: {e}")
+                logger.error(f"Raw graph data: {graph_str}")
+        
+        logger.info(f"Retry: Received {len(graphs_list)} graphs from Prolog server")
        
         emit_task_update(
             hypothesis_id=hypothesis_id,
             task_name="Retrying to get relevant gene proof",
             state=TaskState.COMPLETED,
-            details={"retry_relevant_gene_proof": result}
+            details={"retry_relevant_gene_proof": graphs_list, "num_graphs": len(graphs_list)}
         ) 
-        return result
+        return graphs_list
     except Exception as e:
         emit_task_update(
             hypothesis_id=hypothesis_id,

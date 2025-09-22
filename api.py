@@ -121,7 +121,7 @@ class EnrichAPI(Resource):
             project_id=project_id
         )
         
-        return {"hypothesis_id": hypothesis_id}, 201
+        return {"parent_hypothesis_id": hypothesis_id}, 201
     
          
     @token_required
@@ -233,6 +233,14 @@ class HypothesisAPI(Resource):
                 'status': hypothesis.get('status'),
                 'task_history': last_pending_task
             }
+            
+            # Add graph metadata for separate graph hypotheses
+            if 'graph_index' in hypothesis:
+                formatted_hypothesis['graph_index'] = hypothesis['graph_index']
+            if 'total_graphs' in hypothesis:
+                formatted_hypothesis['total_graphs'] = hypothesis['total_graphs']
+            if 'parent_hypothesis_id' in hypothesis:
+                formatted_hypothesis['parent_hypothesis_id'] = hypothesis['parent_hypothesis_id']
             if 'enrich_id' in hypothesis and hypothesis.get('enrich_id') is not None:
                  formatted_hypothesis['enrich_id'] = hypothesis.get('enrich_id')
             if 'biological_context' in hypothesis and hypothesis.get('biological_context') is not None:
@@ -259,7 +267,7 @@ class HypothesisAPI(Resource):
         hypothesis_id = hypothesis['id']
         
         # Run the Prefect flow and return the result
-        flow_result = hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, self.hypotheses, self.prolog_query, self.llm)
+        flow_result = hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, self.hypotheses, self.prolog_query, self.llm, self.enrichment)
 
         return flow_result[0], flow_result[1]
 

@@ -13,7 +13,6 @@ class HypothesisHandler(BaseHandler):
         """Create a new hypothesis"""
         data['user_id'] = user_id
         result = self.hypothesis_collection.insert_one(data)
-        # Return the custom 'id' that was stored, not MongoDB's auto-generated _id
         created_id = data.get('id', str(result.inserted_id))
         return {'message': 'Hypothesis created', 'id': created_id}, 201
 
