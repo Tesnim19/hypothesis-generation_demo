@@ -82,10 +82,6 @@ def emit_task_update(hypothesis_id, task_name, state, progress=0, details=None, 
                     flask_url, 
                     headers=headers, 
                     transports=['websocket', 'polling'],
-                    retry=True,  
-                    retry_delay=3,  
-                    retry_delay_max=5,  
-                    retry_randomization=0.5,  
                     wait_timeout=10  
                 )
                 
