@@ -1,0 +1,44 @@
+[project]
+name = "hypothesis-generation-demo"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "numpy==1.26.0",
+    "outlines",
+    "Flask",
+    "flask-restful",
+    "gseapy",
+    "faiss-gpu",
+    "python-dotenv",
+    "PyJWT==2.9.0",
+    "pymongo",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "sentence-transformers",
+    "llama_index",
+    "llama-index-llms-anthropic",
+    "pengines",
+    "flask-cors",
+    "prefect",
+    "flask-socketio",
+    "eventlet",
+    "python-socketio",
+    "Flask-JWT-Extended==4.6.0",
+    "loguru",
+    "requests",
+    "gwaslab",
+    "cyvcf2",
+    "polars",
+    "websocket-client",
+    "optuna",
+    "tzlocal",
+    "pandas",
+    "PyYAML",
+    "psutil"
+]
+
+[project.optional-dependencies]
+r-integration = ["rpy2"]

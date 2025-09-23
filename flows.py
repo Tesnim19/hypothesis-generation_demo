@@ -31,6 +31,7 @@ from prefect.task_runners import ThreadPoolTaskRunner
 
 from utils import emit_task_update
 from config import Config, create_dependencies
+from status_tracker import TaskState
 
 ### Enrichment Flow
 @flow(log_prints=True, persist_result=False, task_runner=ThreadPoolTaskRunner(max_workers=4))
@@ -45,13 +46,13 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
     enrichr = deps['enrichr']
     llm = deps['llm']
     prolog_query = deps['prolog_query']
-    db = deps['db']
+    hypotheses = deps['hypotheses']
     
     try:
         logger.info(f"Running project-based enrichment for project {project_id}, variant {variant}")
         
         # Check for existing enrichment data
-        enrich = check_enrich.submit(db, current_user_id, variant, phenotype, hypothesis_id).result()
+        enrich = check_enrich.submit(deps['enrichment'], current_user_id, variant, phenotype, hypothesis_id).result()
         
         if enrich:
             logger.info("Retrieved enrich data from saved db")
@@ -60,36 +61,73 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         # Run enrichment analysis pipeline
         candidate_genes = get_candidate_genes.submit(prolog_query, variant, hypothesis_id).result()
         causal_gene = predict_causal_gene.submit(llm, phenotype, candidate_genes, hypothesis_id).result()
-        causal_graph, proof = get_relevant_gene_proof.submit(prolog_query, variant, causal_gene, hypothesis_id).result()
+        graphs_list = get_relevant_gene_proof.submit(prolog_query, variant, hypothesis_id).result()
 
-        if causal_graph is None:
-            causal_gene = retry_predict_causal_gene.submit(llm, phenotype, candidate_genes, proof, causal_gene, hypothesis_id).result()
-            causal_graph, proof = retry_get_relevant_gene_proof.submit(prolog_query, variant, causal_gene, hypothesis_id).result()
+        if not graphs_list or len(graphs_list) == 0:
+            causal_gene = retry_predict_causal_gene.submit(llm, phenotype, candidate_genes, graphs_list, causal_gene, hypothesis_id).result()
+            graphs_list = retry_get_relevant_gene_proof.submit(prolog_query, variant, hypothesis_id).result()
             logger.info(f"Retried causal gene: {causal_gene}")
-            logger.info(f"Retried causal graph: {causal_graph}")
+            logger.info(f"Retried graphs: {len(graphs_list) if graphs_list else 0} graphs received")
+
+        logger.info(f"Creating separate enrichments for {len(graphs_list) if graphs_list else 0} graphs from Prolog server")
 
         enrich_tbl = enrichr.run(causal_gene)
         relevant_gos = llm.get_relevant_go(phenotype, enrich_tbl)
 
-        # Create enrichment data with project context
-        enrich_id = create_enrich_data.submit(
-            db, current_user_id, project_id, variant, 
-            phenotype, causal_gene, relevant_gos, causal_graph, hypothesis_id
-        ).result()
+        enrichment_results = []
+        
+        for i, graph in enumerate(graphs_list):
+            graph_hypothesis_id = f"{hypothesis_id}_graph_{i}"
+            
+            graph_hypothesis_data = {
+                "id": graph_hypothesis_id,
+                "project_id": project_id,
+                "phenotype": phenotype,
+                "variant": variant,
+                "status": "pending",
+                "parent_hypothesis_id": hypothesis_id,
+                "graph_index": i,
+                "total_graphs": len(graphs_list),
+                "created_at": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
+                "task_history": [],
+            }
+            hypotheses.create_hypothesis(current_user_id, graph_hypothesis_data)
+            
+            enrich_id = create_enrich_data.submit(
+                deps['enrichment'], hypotheses, current_user_id, project_id, variant, 
+                phenotype, causal_gene, relevant_gos, {
+                    "graph": graph,
+                    "graph_index": i,
+                    "total_graphs": len(graphs_list),
+                    "parent_hypothesis_id": hypothesis_id
+                }, graph_hypothesis_id
+            ).result()
 
-        # Update hypothesis with enrichment ID
-        db.update_hypothesis(hypothesis_id, {
-            "enrich_id": enrich_id,
+            # Update this graph's hypothesis with enrichment ID
+            hypotheses.update_hypothesis(graph_hypothesis_id, {
+                "enrich_id": enrich_id,
+            })
+            
+            enrichment_results.append({
+                "hypothesis_id": graph_hypothesis_id,
+                "enrich_id": enrich_id,
+                "graph_index": i
+            })
+
+        # Update parent hypothesis with children references
+        hypotheses.update_hypothesis(hypothesis_id, {
+            "child_hypotheses": [r["hypothesis_id"] for r in enrichment_results],
+            "status": "enrichment_complete"
         })
 
-        logger.info(f"Enrichment flow completed: {enrich_id}")
+        logger.info(f"Enrichment flow completed: {len(enrichment_results)} enrichments created")
         
-        return {"id": enrich_id}, 201
+        return {"enrichments": enrichment_results, "total_graphs": len(graphs_list)}, 201
     except Exception as e:
         logger.error(f"Enrichment flow failed: {str(e)}")
         
         # Update hypothesis with error state
-        db.update_hypothesis(hypothesis_id, {
+        hypotheses.update_hypothesis(hypothesis_id, {
             "status": "failed",
             "error": str(e),
             "updated_at": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
@@ -107,13 +145,14 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
 
 ### Hypothesis Flow
 @flow(log_prints=True)
-def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, db, prolog_query, llm):
-    hypothesis = check_hypothesis(db, current_user_id, enrich_id, go_id, hypothesis_id)
+def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses, prolog_query, llm, enrichment):
+    
+    hypothesis = check_hypothesis(hypotheses, current_user_id, enrich_id, go_id, hypothesis_id)
     if hypothesis:
         logger.info("Retrieved hypothesis data from saved db")
         return {"summary": hypothesis.get('summary'), "graph": hypothesis.get('graph')}, 200
 
-    enrich_data = get_enrich(db, current_user_id, enrich_id, hypothesis_id)
+    enrich_data = get_enrich(enrichment, current_user_id, enrich_id, hypothesis_id)
     if not enrich_data:
         return {"message": "Invalid enrich_id or access denied."}, 404
 
@@ -123,16 +162,24 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, db, prolog
     variant_id = enrich_data['variant']
     phenotype = enrich_data['phenotype']
     coexpressed_gene_names = go_term[0]["genes"]
-    causal_graph = enrich_data['causal_graph']
-
-    logger.info(f"Enrich data: {enrich_data}")
-
-    # Handle case where causal_graph is None
-    if causal_graph is None:
-        logger.warning(f"No causal graph available for variant {variant_id} and gene {causal_gene}")
-        return {"message": "No causal graph data available for this variant-gene combination"}, 404
-
-    causal_gene_id = get_gene_ids(prolog_query, [causal_gene.lower()], hypothesis_id)[0]
+    causal_graph_data = enrich_data['causal_graph']
+    
+    graph = causal_graph_data["graph"]
+    graph_index = causal_graph_data.get("graph_index", 0)
+    total_graphs = causal_graph_data.get("total_graphs", 1)
+    
+    logger.info(f"Processing graph {graph_index + 1}/{total_graphs} from Prolog server")
+    
+    graph_prob = graph.get('prob', {}).get('value', 1.0)
+    logger.info(f"Processing graph {graph_index + 1}/{total_graphs} with probability {graph_prob}")
+    
+    causal_graph = graph      
+    
+    causal_gene_id = causal_gene.lower()
+    
+    causal_gene_names = execute_gene_query(prolog_query, f"maplist(gene_name, [gene({causal_gene_id})], X)", hypothesis_id)
+    causal_gene_name = causal_gene_names[0].upper() if causal_gene_names else causal_gene.upper()
+    
     coexpressed_gene_ids = get_gene_ids(prolog_query, [g.lower() for g in coexpressed_gene_names], hypothesis_id)
 
     nodes, edges = causal_graph["nodes"], causal_graph["edges"]
@@ -164,6 +211,10 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, db, prolog
         for edge in target_edges:
             edge["target"] = variant_id
             
+    # Add the causal gene node if not present
+    if causal_gene_id not in gene_ids:
+        nodes.append({"id": causal_gene_id, "type": "gene", "name": causal_gene_name})
+    
     nodes.append({"id": go_id, "type": "go", "name": go_name})
     phenotype_id = execute_phenotype_query(prolog_query, phenotype, hypothesis_id)
 
@@ -174,21 +225,25 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, db, prolog
         edges.append({"source": gene_id, "target": go_id, "label": "enriched_in"})
         edges.append({"source": causal_gene_id, "target": gene_id, "label": "coexpressed_with"})
 
+    final_causal_graph = {"nodes": nodes, "edges": edges}
 
-    causal_graph = {"nodes": nodes, "edges": edges}
+    summary = summarize_graph(llm, final_causal_graph, hypothesis_id)
 
-    summary = summarize_graph(llm, causal_graph, hypothesis_id)
-
+    hypothesis_data = {
+        "summary": summary, 
+        "graph": final_causal_graph,
+        "probability": graph_prob,
+    }
     
-    hypothesis_id = create_hypothesis(db, enrich_id, go_id, variant_id, phenotype, causal_gene, causal_graph, summary, current_user_id, hypothesis_id)
-
+    create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causal_gene, hypothesis_data, 
+                     summary, current_user_id, hypothesis_id)
     
-    return {"summary": summary, "graph": causal_graph}, 201
+    return {"summary": summary, "graph": final_causal_graph}, 201
 
 
 
 @flow(log_prints=True)
-def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
+def analysis_pipeline_flow(projects_handler, analysis_handler, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1, 
                            coverage=0.95, min_abs_corr=0.5):
@@ -206,7 +261,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
     
     try:
         # Get project-specific output directory (using Prefect task)
-        output_dir = get_project_analysis_path_task.submit(db, user_id, project_id).result()
+        output_dir = get_project_analysis_path_task.submit(projects_handler, user_id, project_id).result()
         logger.info(f"[PIPELINE] Using output directory: {output_dir}")
         
         # Save initial analysis state
@@ -217,7 +272,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
             "message": "Starting MungeSumstats preprocessing",
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
-        save_analysis_state_task.submit(db, user_id, project_id, initial_state).result()
+        save_analysis_state_task.submit(projects_handler, user_id, project_id, initial_state).result()
         
         logger.info(f"[PIPELINE] Stage 1: MungeSumstats preprocessing")
         munged_file_result = munge_sumstats_preprocessing.submit(gwas_file_path, output_dir, ref_genome=ref_genome, n_threads=14).result()
@@ -237,7 +292,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
             "message": "Preprocessing completed, filtering significant variants",
             "started_at": initial_state["started_at"]
         }
-        save_analysis_state_task.submit(db, user_id, project_id, preprocessing_state).result()
+        save_analysis_state_task.submit(projects_handler, user_id, project_id, preprocessing_state).result()
         
         logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
         significant_df_result = filter_significant_variants.submit(munged_df, output_dir).result()
@@ -255,7 +310,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
             "progress": 50,
             "message": "Filtering completed, running COJO analysis"
         }
-        save_analysis_state_task.submit(db, user_id, project_id, filtering_state).result()
+        save_analysis_state_task.submit(projects_handler, user_id, project_id, filtering_state).result()
         
         logger.info(f"[PIPELINE] Stage 3: COJO analysis")
        
@@ -278,7 +333,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
                 "progress": 50,
                 "message": "COJO analysis failed - no independent signals found",
             }
-            save_analysis_state_task.submit(db, user_id, project_id, failed_state).result()
+            save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_state).result()
             return None
         
         # Update analysis state after COJO
@@ -288,7 +343,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
             "progress": 70,
             "message": "COJO analysis completed, starting fine-mapping"
         }
-        save_analysis_state_task.submit(db, user_id, project_id, cojo_state).result()
+        save_analysis_state_task.submit(projects_handler, user_id, project_id, cojo_state).result()
         
         logger.info(f"[PIPELINE] Stage 4: Multiprocessing fine-mapping)")
         logger.info(f"[PIPELINE] Processing {len(cojo_results)} regions with {batch_size} regions per batch")
@@ -302,8 +357,8 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
         batch_data_list = []
         for i, batch in enumerate(region_batches):
             db_params = {
-                'uri': db.uri,
-                'db_name': db.db_name
+                'uri': mongodb_uri,
+                'db_name': db_name
             }
             batch_data = (batch, f"batch_{i}", sumstats_temp_file, {
                 'db_params': db_params,
@@ -375,7 +430,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
                 demo_credible_set_data = transform_credible_sets_to_locuszoom(demo_variant)
                 
                 # Save demo variant as credible set with proper format matching normal credible sets
-                db.save_credible_set(user_id, project_id, {
+                analysis_handler.save_credible_set(user_id, project_id, {
                     'set_id': 999,  # Unique set ID for demo
                     'variants': demo_credible_set_data,
                     'coverage': 0.95,
@@ -401,7 +456,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
             combined_results = pd.concat(all_results, ignore_index=True)
             
             # Save results using Prefect tasks
-            results_file = create_analysis_result_task.submit(db, user_id, project_id, combined_results, output_dir).result()
+            results_file = create_analysis_result_task.submit(analysis_handler, user_id, project_id, combined_results, output_dir).result()
             
             # Summary statistics
             total_variants = len(combined_results)
@@ -414,7 +469,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
                 "progress": 100,
                 "message": "Analysis completed successfully",
             }
-            save_analysis_state_task.submit(db, user_id, project_id, completed_state).result()
+            save_analysis_state_task.submit(projects_handler, user_id, project_id, completed_state).result()
             
             logger.info(f"[PIPELINE] Analysis completed successfully!")
             logger.info(f"[PIPELINE] - Total variants: {total_variants}")
@@ -438,7 +493,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
                 "progress": 70,
                 "message": "Fine-mapping failed - no results generated",
             }
-            save_analysis_state_task.submit(db, user_id, project_id, failed_finemap_state).result()
+            save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_finemap_state).result()
             raise RuntimeError("All fine-mapping batches failed")
             
     except Exception as e:
@@ -451,7 +506,7 @@ def analysis_pipeline_flow(db, user_id, project_id, gwas_file_path, ref_genome="
                 "progress": 0,
                 "message": f"Analysis pipeline failed: {str(e)}",
             }
-            save_analysis_state_task.submit(db, user_id, project_id, failed_state).result()
+            save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_state).result()
         except Exception as state_e:
             logger.error(f"[PIPELINE] Failed to save error state: {str(state_e)}")
         raise

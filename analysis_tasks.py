@@ -620,10 +620,6 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
         else:
             logger.warning(f"[FINEMAP] BIM file not found: {bim_file_path}, skipping LD dimension check")
         
-        # Final validation after LD dimension checks
-        if len(sub_region_sumstats_ld) < 10:
-            logger.warning(f"[FINEMAP] Too few SNPs after LD filtering ({len(sub_region_sumstats_ld)}), skipping region")
-            return None
             
         # Check and fix LD matrix semi-definiteness
         LD_mat = check_ld_semidefiniteness(LD_mat)
@@ -637,11 +633,6 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
             zhat = (sub_region_sumstats_ld["BETA"] / sub_region_sumstats_ld["SE"]).values.reshape(len(sub_region_sumstats_ld), 1)
         else:
             logger.error(f"[FINEMAP] Neither Z-scores nor BETA/SE available for Z-score calculation")
-            return None
-
-        # Basic validation of final data
-        if len(sub_region_sumstats_ld) < 10:
-            logger.error(f"[FINEMAP] Too few variants after all filtering: {len(sub_region_sumstats_ld)}")
             return None
         
         if LD_mat.shape[0] != len(zhat):
@@ -686,7 +677,7 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
                 logger.error(f"[FINEMAP] Error converting data to R objects: {str(e)}")
                 return None
         
-        # All SuSiE operations happen outside conversion context (like simplified_finemapping.py)
+        # All SuSiE operations happen outside conversion context
         
         # Import susieR once for all operations
         try:
@@ -776,45 +767,8 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
             logger.info(f"[DEBUG] susie_get_pip SUCCESS: {len(pips)} PIPs")
             
         except Exception as e:
-            logger.warning(f"[DEBUG] susie_get_pip failed: {type(e).__name__}: {e}")
-            logger.info(f"[DEBUG] Falling back to manual alpha extraction...")
-            
-            # Fallback: manual alpha calculation
-            try:
-                ro.globalenv['susie_fit'] = susie_fit
-                r_pip_code = """
-                tryCatch({
-                    fit <- susie_fit
-                    if (!is.null(fit$alpha) && is.matrix(fit$alpha)) {
-                        alpha_matrix <- fit$alpha
-                        pip_vals <- 1 - apply(1 - alpha_matrix, 2, prod)
-                    } else if (!is.null(fit$pip)) {
-                        pip_vals <- as.numeric(fit$pip)
-                    } else {
-                        stop("No alpha matrix or pip found")
-                    }
-                    
-                    # Ensure valid PIPs
-                    pip_vals <- as.numeric(pip_vals)
-                    pip_vals[is.na(pip_vals)] <- 0.0
-                    pip_vals[pip_vals < 0] <- 0.0
-                    pip_vals[pip_vals > 1] <- 1.0
-                    pip_vals
-                }, error = function(e) {
-                    rep(0.01, %d)
-                })
-                """ % len(sub_region_sumstats_ld)
-                
-                r_pip_result = ro.r(r_pip_code)
-                ro.r('rm(susie_fit)')
-                pips = np.array(r_pip_result, dtype=np.float64)
-                logger.info(f"[DEBUG] Manual extraction SUCCESS: {len(pips)} PIPs")
-                
-            except Exception as fallback_e:
-                logger.error(f"[DEBUG] Manual extraction FAILED: {fallback_e}")
-                # Last resort: uniform small PIPs
-                pips = np.full(len(sub_region_sumstats_ld), 0.01, dtype=np.float64)
-                logger.warning(f"[DEBUG] Using uniform PIPs as last resort: {len(pips)} PIPs")
+            logger.error(f"[DEBUG] susie_get_pip failed: {type(e).__name__}: {e}")
+            return None
         
         # Ensure PIP array has correct length
         if len(pips) != len(sub_region_sumstats_ld):
@@ -993,13 +947,13 @@ def finemap_region_batch_worker(batch_data):
         # Recreate database connection in worker process
         if db_params:
             try:
-                # Import Database locally to avoid circular imports in multiprocessing
-                from db import Database
-                db = Database(db_params['uri'], db_params['db_name'])
-                logger.info(f"[BATCH-{batch_id}] Database connection recreated in worker process")
+                # Import AnalysisHandler locally to avoid circular imports in multiprocessing
+                from db import AnalysisHandler
+                analysis_handler = AnalysisHandler(db_params['uri'], db_params['db_name'])
+                logger.info(f"[BATCH-{batch_id}] Analysis handler connection recreated in worker process")
             except Exception as db_e:
-                logger.error(f"[BATCH-{batch_id}] Error recreating database connection: {db_e}")
-                db = None
+                logger.error(f"[BATCH-{batch_id}] Error recreating analysis handler connection: {db_e}")
+                analysis_handler = None
     else:
         raise ValueError("No additional_params provided to worker - this should not happen")
     
@@ -1081,7 +1035,7 @@ def finemap_region_batch_worker(batch_data):
                     successful_regions += 1
                     
                     # Save to database if available
-                    if db and user_id and project_id:
+                    if analysis_handler and user_id and project_id:
                         try:
                             from utils import transform_credible_sets_to_locuszoom
                             # Determine lead variant
@@ -1146,7 +1100,7 @@ def finemap_region_batch_worker(batch_data):
                                 credible_set["completed_at"] = metadata["completed_at"]
                                 
                                 # Save individual credible set
-                                db.save_credible_set(user_id, project_id, credible_set)
+                                analysis_handler.save_credible_set(user_id, project_id, credible_set)
                             
                             logger.info(f"[BATCH-{batch_id}] Saved {len(credible_sets_data)} credible sets for {lead_variant_id}")
                             

@@ -70,11 +70,12 @@ COPY ./pl /app/pl
 RUN apt-get update && apt-get install -y git graphviz && \
     swipl -g "pack_install('prolog_library_collection', [interactive(false)])" -t halt && \
     swipl -g "pack_install('prolog_graphviz', [interactive(false)])" -t halt && \
-    swipl -g "pack_install('interpolate', [interactive(false)])" -t halt 
+    swipl -g "pack_install('interpolate', [interactive(false)])" -t halt && \
+    swipl -g "pack_install(cplint, [interactive(false)])" -t halt
     
 
 # Expose port 4242 for the Prolog server
 EXPOSE 4242
 
 # Command to load Prolog files and start the server on port 4242
-ENTRYPOINT ["swipl", "-s", "load_kbs.pl", "-s", "meta_interpreter.pl", "-s", "queries.pl", "-s", "rules.pl", "-g", "server_start(4242)", "-g", "thread_get_message(_)"]
+ENTRYPOINT ["swipl", "-s", "hypgen.pl", "-g", "init", "-g", "server_start(4242)", "-g", "thread_get_message(_)"]

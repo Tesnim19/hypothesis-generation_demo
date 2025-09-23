@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 
 ### Enrich Tasks
 @task(retries=2, cache_policy=None)
-def check_enrich(db, current_user_id, variant, phenotype, hypothesis_id):
+def check_enrich(enrichment, current_user_id, variant, phenotype, hypothesis_id):
     """Check if enrichment exists for variant and phenotype"""
     try: 
         emit_task_update(
@@ -22,8 +22,8 @@ def check_enrich(db, current_user_id, variant, phenotype, hypothesis_id):
             progress=0  
         )
         
-        if db.check_enrich(current_user_id, phenotype, variant):
-            enrich = db.get_enrich_by_phenotype_and_variant(phenotype, variant, current_user_id)
+        if enrichment.check_enrich(current_user_id, phenotype, variant):
+            enrich = enrichment.get_enrich_by_phenotype_and_variant(phenotype, variant, current_user_id)
             
             emit_task_update(
                 hypothesis_id=hypothesis_id,
@@ -111,7 +111,7 @@ def predict_causal_gene(llm, phenotype, candidate_genes, hypothesis_id):
         raise
 
 @task(retries=2)
-def get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis_id):
+def get_relevant_gene_proof(prolog_query, variant, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -121,15 +121,33 @@ def get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis_id):
         )
 
         logger.info("Executing: get relevant gene proof")
-        result = prolog_query.get_relevant_gene_proof(variant, causal_gene)
+        raw_response = prolog_query.get_relevant_gene_proof(variant, samples=10)
+        
+        # Extract and parse the graphs
+        graphs_raw = raw_response.get('response', [])
+        graphs_list = []
+        
+        for i, graph_str in enumerate(graphs_raw):
+            try:
+                if isinstance(graph_str, str):
+                    import json
+                    graph = json.loads(graph_str)
+                else:
+                    graph = graph_str
+                graphs_list.append(graph)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse graph {i}: {e}")
+                logger.error(f"Raw graph data: {graph_str}")
+        
+        logger.info(f"Received {len(graphs_list)} graphs from Prolog server")
 
         emit_task_update(
             hypothesis_id=hypothesis_id,
             task_name="Getting relevant gene proof",
             state=TaskState.COMPLETED,
-            details={"relevant_gene_proof": result}
+            details={"relevant_gene_proof": graphs_list, "num_graphs": len(graphs_list)}
         )
-        return result
+        return graphs_list
     except Exception as e:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -170,7 +188,7 @@ def retry_predict_causal_gene(llm, phenotype, candidate_genes, proof, causal_gen
         raise
 
 @task(retries=2)
-def retry_get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis_id):
+def retry_get_relevant_gene_proof(prolog_query, variant, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -180,15 +198,33 @@ def retry_get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis
         )
 
         logger.info("Retrying get relevant gene proof")
-        result = prolog_query.get_relevant_gene_proof(variant, causal_gene)
+        raw_response = prolog_query.get_relevant_gene_proof(variant, samples=10)
+        
+        # Extract and parse the graphs from the Prolog response
+        graphs_raw = raw_response.get('response', [])
+        graphs_list = []
+        
+        for i, graph_str in enumerate(graphs_raw):
+            try:
+                if isinstance(graph_str, str):
+                    import json
+                    graph = json.loads(graph_str)
+                else:
+                    graph = graph_str
+                graphs_list.append(graph)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse graph {i}: {e}")
+                logger.error(f"Raw graph data: {graph_str}")
+        
+        logger.info(f"Retry: Received {len(graphs_list)} graphs from Prolog server")
        
         emit_task_update(
             hypothesis_id=hypothesis_id,
             task_name="Retrying to get relevant gene proof",
             state=TaskState.COMPLETED,
-            details={"retry_relevant_gene_proof": result}
+            details={"retry_relevant_gene_proof": graphs_list, "num_graphs": len(graphs_list)}
         ) 
-        return result
+        return graphs_list
     except Exception as e:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -199,7 +235,7 @@ def retry_get_relevant_gene_proof(prolog_query, variant, causal_gene, hypothesis
         raise
         
 @task(cache_policy=None)
-def create_enrich_data(db, user_id, project_id, variant, phenotype, causal_gene, relevant_gos, causal_graph, hypothesis_id):
+def create_enrich_data(enrichment, hypotheses, user_id, project_id, variant, phenotype, causal_gene, relevant_gos, causal_graph, hypothesis_id):
     """Create enrichment data with project references"""
     try:
         emit_task_update(
@@ -209,7 +245,7 @@ def create_enrich_data(db, user_id, project_id, variant, phenotype, causal_gene,
         )
 
         logger.info("Creating enrich data in the database with project context")
-        enrich_id = db.create_enrich(
+        enrich_id = enrichment.create_enrich(
             user_id, project_id, variant,
             phenotype, causal_gene, relevant_gos, causal_graph
         )
@@ -226,7 +262,7 @@ def create_enrich_data(db, user_id, project_id, variant, phenotype, causal_gene,
         hypothesis_data = {
                 "task_history": hypothesis_history,
             }
-        db.update_hypothesis(hypothesis_id, hypothesis_data)
+        hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
 
         return enrich_id
     except Exception as e:
@@ -240,7 +276,7 @@ def create_enrich_data(db, user_id, project_id, variant, phenotype, causal_gene,
 
 ### Hypothesis Tasks
 @task(cache_policy=None, retries=2)
-def check_hypothesis(db, current_user_id, enrich_id, go_id, hypothesis_id):
+def check_hypothesis(hypotheses, current_user_id, enrich_id, go_id, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -250,8 +286,8 @@ def check_hypothesis(db, current_user_id, enrich_id, go_id, hypothesis_id):
         )
 
         logger.info("Checking hypothesis data")
-        if db.check_hypothesis(current_user_id, enrich_id, go_id):
-            hypothesis = db.get_hypothesis_by_enrich_and_go(enrich_id, go_id, current_user_id)
+        if hypotheses.check_hypothesis(current_user_id, enrich_id, go_id):
+            hypothesis = hypotheses.get_hypothesis_by_enrich_and_go(enrich_id, go_id, current_user_id)
             emit_task_update(
                 hypothesis_id=hypothesis_id,
                 task_name="Verifying existence of hypothesis data",
@@ -278,7 +314,7 @@ def check_hypothesis(db, current_user_id, enrich_id, go_id, hypothesis_id):
         raise
 
 @task(cache_policy=None, retries=2)
-def get_enrich(db, current_user_id, enrich_id, hypothesis_id):
+def get_enrich(enrichment, current_user_id, enrich_id, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -288,7 +324,7 @@ def get_enrich(db, current_user_id, enrich_id, hypothesis_id):
         )
 
         logger.info("Fetching enrich data...")
-        result = db.get_enrich(current_user_id, enrich_id)
+        result = enrichment.get_enrich(current_user_id, enrich_id)
 
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -451,7 +487,7 @@ def summarize_graph(llm, causal_graph, hypothesis_id):
         raise
 
 @task(cache_policy=None, retries=2)
-def create_hypothesis(db, enrich_id, go_id, variant_id, phenotype, causal_gene, causal_graph, summary, current_user_id, hypothesis_id):
+def create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causal_gene, causal_graph, summary, current_user_id, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -473,7 +509,7 @@ def create_hypothesis(db, enrich_id, go_id, variant_id, phenotype, causal_gene, 
                 "status": "completed",
                 "task_history": hypothesis_history,
             }
-        db.update_hypothesis(hypothesis_id, hypothesis_data)
+        hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
 
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -489,7 +525,7 @@ def create_hypothesis(db, enrich_id, go_id, variant_id, phenotype, causal_gene, 
         hypothesis_data = {
                 "task_history": hypothesis_history,
             }
-        db.update_hypothesis(hypothesis_id, hypothesis_data)
+        hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
         
         return hypothesis_id
     except Exception as e:

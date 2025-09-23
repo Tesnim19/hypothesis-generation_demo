@@ -1,6 +1,6 @@
 #  For susie 0.12.35
 #  Use an official Python runtime as a parent image
-FROM python:3.10
+FROM python:3.10-bookworm
 
 # Install all system dependencies in one layer
 RUN apt-get update && apt-get install -y \
@@ -123,9 +123,16 @@ RUN Rscript -e " \
     cat('R version:', R.version.string, '\n'); \
     "
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install -r requirements.txt rpy2
+# Install uv
+RUN wget -qO- https://astral.sh/uv/install.sh | sh && \
+    mv /root/.local/bin/uv /usr/local/bin/uv
+
+
+ENV UV_PROJECT_ENVIRONMENT=/opt/flask-venv
+ENV PATH="/opt/flask-venv/bin:$PATH"
+COPY pyproject.toml .
+RUN uv sync
+RUN uv pip install '.[r-integration]'
 
 # Copy application
 COPY . .

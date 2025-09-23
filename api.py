@@ -23,11 +23,13 @@ import re
 
 
 class EnrichAPI(Resource):
-    def __init__(self, enrichr, llm, prolog_query, db):
+    def __init__(self, enrichr, llm, prolog_query, enrichment, hypotheses, projects):
         self.enrichr = enrichr
         self.llm = llm
         self.prolog_query = prolog_query
-        self.db = db
+        self.enrichment = enrichment
+        self.hypotheses = hypotheses
+        self.projects = projects
 
     @token_required
     def get(self, current_user_id):
@@ -36,8 +38,8 @@ class EnrichAPI(Resource):
         project_id = request.args.get('project_id')
         
         if enrich_id:
-            # Fetch a specific enrich by enrich_id and user_id
-            enrich = self.db.get_enrich(current_user_id, enrich_id)
+                    # Fetch a specific enrich by enrich_id and user_id
+            enrich = self.enrichment.get_enrich(current_user_id, enrich_id)
             if not enrich:
                 return {"message": "Enrich not found or access denied."}, 404
             # Serialize datetime objects before returning
@@ -46,7 +48,7 @@ class EnrichAPI(Resource):
         
         if project_id:
             # Get all enrichments for a specific project
-            enrichments = self.db.get_enrich(user_id=current_user_id)
+            enrichments = self.enrichment.get_enrich(user_id=current_user_id)
             if isinstance(enrichments, list):
                 # Filter by project_id if it exists in the enrichment data
                 project_enrichments = [e for e in enrichments if e.get('project_id') == project_id]
@@ -60,7 +62,7 @@ class EnrichAPI(Resource):
                 return {"enrichments": []}, 200
           
         # Fetch all enrichments for the current user
-        enrich = self.db.get_enrich(user_id=current_user_id)
+        enrich = self.enrichment.get_enrich(user_id=current_user_id)
         # Serialize datetime objects before returning
         enrich = serialize_datetime_fields(enrich)
         return enrich, 200
@@ -75,7 +77,7 @@ class EnrichAPI(Resource):
             return {"error": "project_id is required"}, 400
         
         # Validate project exists and get phenotype from project
-        project = self.db.get_projects(current_user_id, project_id)
+        project = self.projects.get_projects(current_user_id, project_id)
         if not project:
             return {"error": "Project not found or access denied"}, 404
         
@@ -84,7 +86,7 @@ class EnrichAPI(Resource):
         logger.info(f"Project-based enrichment request for project {project_id}")
         
         # Check for existing hypothesis in project context
-        existing_hypothesis = self.db.get_hypothesis_by_phenotype_and_variant_in_project(
+        existing_hypothesis = self.hypotheses.get_hypothesis_by_phenotype_and_variant_in_project(
             current_user_id, project_id, phenotype, variant
         )
         
@@ -112,7 +114,7 @@ class EnrichAPI(Resource):
             "task_history": [],
         }
         
-        self.db.create_hypothesis(current_user_id, hypothesis_data)
+        self.hypotheses.create_hypothesis(current_user_id, hypothesis_data)
         
         invoke_enrichment_deployment(
             current_user_id=current_user_id, 
@@ -122,24 +124,25 @@ class EnrichAPI(Resource):
             project_id=project_id
         )
         
-        return {"hypothesis_id": hypothesis_id}, 201
+        return {"parent_hypothesis_id": hypothesis_id}, 201
     
          
     @token_required
     def delete(self, current_user_id):
         enrich_id = request.args.get('id')
         if enrich_id:
-            result = self.db.delete_enrich(current_user_id, enrich_id)
+            result = self.enrichment.delete_enrich(current_user_id, enrich_id)
             return result, 200
         return {"message": "enrich id is required!"}, 400
 
 
 class HypothesisAPI(Resource):
-    def __init__(self, enrichr, prolog_query, llm, db):
+    def __init__(self, enrichr, prolog_query, llm, hypotheses, enrichment):
         self.enrichr = enrichr
         self.prolog_query = prolog_query
         self.llm = llm
-        self.db = db
+        self.hypotheses = hypotheses
+        self.enrichment = enrichment
 
     @token_required
     def get(self, current_user_id):
@@ -148,7 +151,7 @@ class HypothesisAPI(Resource):
 
         if hypothesis_id:
             # Fetch a specific hypothesis by hypothesis_id and user_id
-            hypothesis = self.db.get_hypotheses(current_user_id, hypothesis_id)
+            hypothesis = self.hypotheses.get_hypotheses(current_user_id, hypothesis_id)
             if not hypothesis:
                 return {"message": "Hypothesis not found or access denied."}, 404
             
@@ -167,7 +170,7 @@ class HypothesisAPI(Resource):
 
             if is_complete:
                 enrich_id = hypothesis.get('enrich_id')
-                enrich_data = self.db.get_enrich(current_user_id, enrich_id)
+                enrich_data = self.enrichment.get_enrich(current_user_id, enrich_id)
                 # Remove 'causal_graph' field from enrich_data if it exists
                 if isinstance(enrich_data, dict):
                     enrich_data.pop('causal_graph', None)
@@ -197,7 +200,7 @@ class HypothesisAPI(Resource):
             if 'enrich_id' in hypothesis and hypothesis.get('enrich_id') is not None:
                 enrich_id = hypothesis.get('enrich_id')
                 status_data['enrich_id'] = enrich_id
-                enrich_data = self.db.get_enrich(current_user_id, enrich_id)
+                enrich_data = self.enrichment.get_enrich(current_user_id, enrich_id)
                 if isinstance(enrich_data, dict):
                     enrich_data.pop('causal_graph', None)
                 status_data['result'] = enrich_data
@@ -213,7 +216,7 @@ class HypothesisAPI(Resource):
             return status_data, 200
 
         # Fetch all hypotheses for the current user
-        hypotheses = self.db.get_hypotheses(user_id=current_user_id)
+        hypotheses = self.hypotheses.get_hypotheses(user_id=current_user_id)
         
         # Filter and format the response for all hypotheses
         formatted_hypotheses = []
@@ -233,6 +236,14 @@ class HypothesisAPI(Resource):
                 'status': hypothesis.get('status'),
                 'task_history': last_pending_task
             }
+            
+            # Add graph metadata for separate graph hypotheses
+            if 'graph_index' in hypothesis:
+                formatted_hypothesis['graph_index'] = hypothesis['graph_index']
+            if 'total_graphs' in hypothesis:
+                formatted_hypothesis['total_graphs'] = hypothesis['total_graphs']
+            if 'parent_hypothesis_id' in hypothesis:
+                formatted_hypothesis['parent_hypothesis_id'] = hypothesis['parent_hypothesis_id']
             if 'enrich_id' in hypothesis and hypothesis.get('enrich_id') is not None:
                  formatted_hypothesis['enrich_id'] = hypothesis.get('enrich_id')
             if 'biological_context' in hypothesis and hypothesis.get('biological_context') is not None:
@@ -252,14 +263,14 @@ class HypothesisAPI(Resource):
         go_id = request.args.get('go')
 
         # Get the hypothesis associated with this enrichment
-        hypothesis = self.db.get_hypothesis_by_enrich(current_user_id, enrich_id)
+        hypothesis = self.hypotheses.get_hypothesis_by_enrich(current_user_id, enrich_id)
         if not hypothesis:
             return {"message": "No hypothesis found for this enrichment"}, 404
         
         hypothesis_id = hypothesis['id']
         
         # Run the Prefect flow and return the result
-        flow_result = hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, self.db, self.prolog_query, self.llm)
+        flow_result = hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, self.hypotheses, self.prolog_query, self.llm, self.enrichment)
 
         return flow_result[0], flow_result[1]
 
@@ -268,13 +279,13 @@ class HypothesisAPI(Resource):
     def delete(self, current_user_id):
         hypothesis_id = request.args.get('hypothesis_id')
         if hypothesis_id:
-            return self.db.delete_hypothesis(current_user_id, hypothesis_id)
+            return self.hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
         return {"message": "Hypothesis ID is required"}, 400
         
     
 class BulkHypothesisDeleteAPI(Resource):
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, hypotheses):
+        self.hypotheses = hypotheses
         
     @token_required
     def post(self, current_user_id):
@@ -293,21 +304,21 @@ class BulkHypothesisDeleteAPI(Resource):
             return {"message": "hypothesis_ids list cannot be empty"}, 400
             
         # Call the bulk delete method
-        result, status_code = self.db.bulk_delete_hypotheses(current_user_id, hypothesis_ids)
+        result, status_code = self.hypotheses.bulk_delete_hypotheses(current_user_id, hypothesis_ids)
 
         return result, status_code
 
 class ChatAPI(Resource):
-    def __init__(self, llm, db):
+    def __init__(self, llm, hypotheses):
         self.llm = llm
-        self.db = db
+        self.hypotheses = hypotheses
 
     @token_required
     def post(self, current_user_id):
         query = request.form.get('query')
         hypothesis_id = request.form.get('hypothesis_id')
 
-        hypothesis = self.db.get_hypotheses(current_user_id, hypothesis_id)
+        hypothesis = self.hypotheses.get_hypotheses(current_user_id, hypothesis_id)
         print(f"Hypothesis: {hypothesis}")
         
         if not hypothesis:
@@ -318,7 +329,7 @@ class ChatAPI(Resource):
         response = {"response": response}
         return response
 
-def init_socket_handlers(db_instance):
+def init_socket_handlers(hypotheses_handler):
     logger.info("Initializing socket handlers...")
     
     # Store active timers for cleanup
@@ -452,9 +463,9 @@ def init_socket_handlers(db_instance):
             
            
             if current_user_id is None:
-                hypothesis = db_instance.get_hypothesis_by_id(hypothesis_id)
+                hypothesis = hypotheses_handler.get_hypothesis_by_id(hypothesis_id)
             else:
-                hypothesis = db_instance.get_hypotheses(current_user_id, hypothesis_id)
+                hypothesis = hypotheses_handler.get_hypotheses(current_user_id, hypothesis_id)
                 
             if not hypothesis:
                 logger.error(f"Hypothesis not found: {hypothesis_id}")
@@ -502,8 +513,11 @@ class ProjectsAPI(Resource):
     """
     API endpoint for managing projects
     """
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, projects, files, analysis, hypotheses):
+        self.projects = projects
+        self.files = files
+        self.analysis = analysis
+        self.hypotheses = hypotheses
     
     @token_required
     def get(self, current_user_id):
@@ -511,12 +525,12 @@ class ProjectsAPI(Resource):
         project_id = request.args.get('id')
         
         if project_id:
-            response_data, status_code = get_project_with_full_data(self.db, current_user_id, project_id)
+            response_data, status_code = get_project_with_full_data(self.projects, current_user_id, project_id)
             if status_code == 200:
                 response_data = serialize_datetime_fields(response_data)
             return response_data, status_code
         
-        projects = self.db.get_projects(current_user_id)
+        projects = self.projects.get_projects(current_user_id)
         enhanced_projects = []
         
         for project in projects:
@@ -527,9 +541,9 @@ class ProjectsAPI(Resource):
                 "created_at": project.get("created_at"),
             }
             
-            # Add GWAS file information
+            # Add GWAS file information using files handler
             try:
-                file_metadata = self.db.get_file_metadata(current_user_id, project["gwas_file_id"])
+                file_metadata = self.files.get_file_metadata(current_user_id, project["gwas_file_id"])
                 if file_metadata:
                     # Use stored download URL or generate fallback
                     enhanced_project["gwas_file"] = file_metadata.get("download_url", f"/download/{project['gwas_file_id']}")
@@ -542,7 +556,7 @@ class ProjectsAPI(Resource):
                         gwas_records_count = count_gwas_records(file_metadata["file_path"])
                         enhanced_project["gwas_records_count"] = gwas_records_count
                         # Update the database with calculated count
-                        self.db.file_metadata_collection.update_one(
+                        self.files.file_metadata_collection.update_one(
                             {'_id': ObjectId(project["gwas_file_id"])},
                             {'$set': {'record_count': gwas_records_count}}
                         )
@@ -556,7 +570,7 @@ class ProjectsAPI(Resource):
             
             # Add analysis status
             try:
-                analysis_state = self.db.load_analysis_state(current_user_id, project["id"])
+                analysis_state = self.projects.load_analysis_state(current_user_id, project["id"])
                 if analysis_state:
                     enhanced_project["status"] = analysis_state.get("status", "Not_started")
                 else:
@@ -574,7 +588,7 @@ class ProjectsAPI(Resource):
             total_variants_count = 0
             
             try:
-                credible_sets_raw = self.db.get_credible_sets_for_project(current_user_id, project["id"])
+                credible_sets_raw = self.analysis.get_credible_sets_for_project(current_user_id, project["id"])
                 if credible_sets_raw:
                     if isinstance(credible_sets_raw, list) and credible_sets_raw:
                         # Calculate totals from credible sets
@@ -591,7 +605,7 @@ class ProjectsAPI(Resource):
             # Count hypotheses for this project
             hypothesis_count = 0
             try:
-                all_hypotheses = self.db.get_hypotheses(current_user_id)
+                all_hypotheses = self.hypotheses.get_hypotheses(current_user_id)
                 if isinstance(all_hypotheses, list):
                     hypothesis_count = len([h for h in all_hypotheses if h.get('project_id') == project["id"]])
                 elif all_hypotheses and all_hypotheses.get('project_id') == project["id"]:
@@ -616,7 +630,7 @@ class ProjectsAPI(Resource):
             return {"error": "Missing required fields: name, gwas_file_id, phenotype"}, 400
         
         try:
-            project_id = self.db.create_project(
+            project_id = self.projects.create_project(
                 current_user_id, 
                 data['name'], 
                 data['gwas_file_id'],
@@ -626,7 +640,7 @@ class ProjectsAPI(Resource):
                 analysis_parameters=data.get('analysis_parameters')
             )
             
-            project = self.db.get_projects(current_user_id, project_id)
+            project = self.projects.get_projects(current_user_id, project_id)
             # Serialize datetime objects before returning
             project = serialize_datetime_fields(project)
             return {"project": project}, 201
@@ -640,12 +654,13 @@ class ProjectsAPI(Resource):
         if not project_id:
             return {"error": "Project ID is required"}, 400
         
-        success = self.db.delete_project(current_user_id, project_id)
+        success = self.projects.delete_project(current_user_id, project_id)
         if success:
             return {"message": "Project deleted successfully"}, 200
         return {"error": "Project not found or access denied"}, 404
 class BulkProjectDeleteAPI(Resource):
-    def __init__(self, db):
+    def __init__(self, projects, db):
+        self.projects = projects
         self.db = db
         
     @token_required
@@ -665,7 +680,7 @@ class BulkProjectDeleteAPI(Resource):
             return {"message": "project_ids list cannot be empty"}, 400
             
         # Call the bulk delete method
-        result = self.db.bulk_delete_projects(current_user_id, project_ids)
+        result = self.projects.bulk_delete_projects(current_user_id, project_ids)
         
         if result and isinstance(result, dict):
             if result['success']:
@@ -685,8 +700,11 @@ class BulkProjectDeleteAPI(Resource):
             return {"error": "Failed to delete projects"}, 500
 
 class AnalysisPipelineAPI(Resource):
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, projects, files, analysis, config):
+        self.projects = projects
+        self.files = files
+        self.analysis = analysis
+        self.config = config
 
     @token_required
     def post(self, current_user_id):
@@ -729,7 +747,7 @@ class AnalysisPipelineAPI(Resource):
                 
                 # Find the predefined file in data/raw/
                 from config import Config
-                data_dir = getattr(self.db.config if hasattr(self.db, 'config') else Config.from_env(), 'data_dir', 'data')
+                data_dir = getattr(self.config, 'data_dir', 'data')
                 raw_data_path = os.path.join(data_dir, 'raw')
                 
                 # Look for the file with various possible extensions since ID doesn't include extension
@@ -791,8 +809,8 @@ class AnalysisPipelineAPI(Resource):
             if seed < 1 or seed > 999999:
                 return {"error": "Seed must be between 1-999999"}, 400
             
-            if window < 500 or window > 10000:
-                return {"error": "Fine-mapping window must be between 500-10000 kb"}, 400
+            if window > 10000:
+                return {"error": "Fine-mapping window shouldn't be greater than 10000 kb"}, 400
             
             if L != -1 and (L < 1 or L > 50):
                 return {"error": "L must be -1 (auto) or between 1-50"}, 400
@@ -800,8 +818,8 @@ class AnalysisPipelineAPI(Resource):
             if coverage < 0.5 or coverage > 0.999:
                 return {"error": "Coverage must be between 0.5-0.999"}, 400
             
-            if min_abs_corr < 0.1 or min_abs_corr > 1.0:
-                return {"error": "Min absolute correlation must be between 0.1-1.0"}, 400
+            if min_abs_corr < 0.5 or min_abs_corr > 1.0:
+                return {"error": "Min absolute correlation must be between 0.5-1.0"}, 400
             
             if batch_size < 1 or batch_size > 20:
                 return {"error": "Batch size must be between 1-20"}, 400
@@ -835,9 +853,9 @@ class AnalysisPipelineAPI(Resource):
                 
                 gwas_records_count = count_gwas_records(file_path)
             
-            # Create file metadata in database with record count
+            # Create file metadata in database with record count through files handler
             original_filename = filename if not is_uploaded else gwas_file.filename
-            file_metadata_id = self.db.create_file_metadata(
+            file_metadata_id = self.files.create_file_metadata(
                 user_id=current_user_id,
                 filename=filename,
                 original_filename=original_filename,
@@ -846,12 +864,6 @@ class AnalysisPipelineAPI(Resource):
                 file_size=file_size,
                 record_count=gwas_records_count,
                 download_url=f"/download/{str(uuid.uuid4())}"
-            )
-            
-            # Update download URL with actual file ID
-            self.db.file_metadata_collection.update_one(
-                {'_id': ObjectId(file_metadata_id)},
-                {'$set': {'download_url': f"/download/{file_metadata_id}"}}
             )
             
             # Prepare analysis parameters
@@ -867,7 +879,7 @@ class AnalysisPipelineAPI(Resource):
             }
             
             # Create project with analysis parameters
-            project_id = self.db.create_project(
+            project_id = self.projects.create_project(
                 user_id=current_user_id,
                 name=project_name,
                 gwas_file_id=file_metadata_id,
@@ -913,7 +925,10 @@ class AnalysisPipelineAPI(Resource):
                     
                     # Run the analysis pipeline flow directly
                     credible_sets = analysis_pipeline_flow(
-                        db=self.db,
+                        projects_handler=self.projects,
+                        analysis_handler=self.analysis,
+                        mongodb_uri=self.config.mongodb_uri,
+                        db_name=self.config.db_name,
                         user_id=current_user_id,
                         project_id=project_id,
                         gwas_file_path=file_path,
@@ -960,8 +975,8 @@ class FileDownloadAPI(Resource):
     """
     API endpoint for downloading files
     """
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, files):
+        self.files = files
     
     @token_required
     def get(self, current_user_id, file_id):
@@ -970,7 +985,7 @@ class FileDownloadAPI(Resource):
             logger.info(f"[DOWNLOAD] Download request for file {file_id} by user {current_user_id}")
             
             # Get file metadata
-            file_metadata = self.db.get_file_metadata(current_user_id, file_id)
+            file_metadata = self.files.get_file_metadata(current_user_id, file_id)
             if not file_metadata:
                 logger.warning(f"[DOWNLOAD] File metadata not found for file {file_id}")
                 return {"error": "File not found or access denied"}, 404
@@ -1002,8 +1017,8 @@ class CredibleSetsAPI(Resource):
     """
     API endpoint for fetching credible sets
     """
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, analysis):
+        self.analysis = analysis
 
     @token_required
     def get(self, current_user_id):
@@ -1018,7 +1033,7 @@ class CredibleSetsAPI(Resource):
             return {"error": "Credible_set_id is required"}, 400
         
         try:
-            credible_set = self.db.get_credible_set_by_id(current_user_id, project_id, credible_set_id)
+            credible_set = self.analysis.get_credible_set_by_id(current_user_id, project_id, credible_set_id)
             if not credible_set:
                 return {"message": "No credible set found with this ID"}, 404
             
@@ -1046,9 +1061,9 @@ class GWASFilesAPI(Resource):
     """
     API endpoint for automatically discovering GWAS files and extracting their metadata
     """
-    def __init__(self, config, db):
+    def __init__(self, config, phenotypes):
         self.config = config
-        self.db = db
+        self.phenotypes = phenotypes
 
     def _extract_file_metadata(self, file_path):
         """Extract metadata from a GWAS file by examining its content"""
@@ -1256,10 +1271,10 @@ class GWASFilesAPI(Resource):
             phenotypes = []
             try:
                 # First, try to get obesity phenotypes specifically
-                obesity_phenotypes = self.db.get_phenotypes(search_term="obesity", limit=5)
+                obesity_phenotypes = self.phenotypes.get_phenotypes(search_term="obesity", limit=5)
                 
                 # Get other phenotypes (limit to 15 to make room for obesity ones)
-                other_phenotypes = self.db.get_phenotypes(limit=15)
+                other_phenotypes = self.phenotypes.get_phenotypes(limit=15)
                 
                 # Combine and deduplicate
                 all_phenotypes = obesity_phenotypes + other_phenotypes
@@ -1303,8 +1318,8 @@ class PhenotypesAPI(Resource):
     """
     API endpoint for getting phenotypes
     """
-    def __init__(self, db):
-        self.db = db
+    def __init__(self, phenotypes):
+        self.phenotypes = phenotypes
 
     def get(self):
         """Get phenotypes with optional filtering and pagination"""
@@ -1317,20 +1332,20 @@ class PhenotypesAPI(Resource):
             
             if phenotype_id:
                 # Get specific phenotype
-                phenotype = self.db.get_phenotypes(phenotype_id=phenotype_id)
+                phenotype = self.phenotypes.get_phenotypes(phenotype_id=phenotype_id)
                 if not phenotype:
                     return {"error": "Phenotype not found"}, 404
                 return {"phenotype": phenotype}, 200
             
             # Get all phenotypes with optional filtering
-            phenotypes = self.db.get_phenotypes(
+            phenotypes = self.phenotypes.get_phenotypes(
                 limit=limit, 
                 skip=skip, 
                 search_term=search_term
             )
             
             # Get total count for pagination
-            total_count = self.db.count_phenotypes(search_term=search_term)
+            total_count = self.phenotypes.count_phenotypes(search_term=search_term)
             
             response = {
                 "phenotypes": phenotypes,

@@ -1,63 +1,68 @@
-import json
-import pickle
-from pengines.Builder import PengineBuilder
-from pengines.Pengine import Pengine
 from loguru import logger
+import requests
 
 class PrologQuery:
 
     def __init__(self, host: str, port: int):
         self.host = host
         self.port = port
-        logger.info(f"Connecting to Prolog server at {host}:{port}")
-        self.pengine_builder = PengineBuilder(urlserver=f"http://{self.host}:{self.port}")
-        # self.pengine = Pengine(builder=pengine_builder)
-        # self.pengine.create()
+        self.server = f"http://{self.host}:{self.port}"
 
     def get_candidate_genes(self, variant_id):
         """
         Given a SNP, get candidate genes that are proximal to it.
         """
         logger.info(f"Getting candidate genes for variant {variant_id}")
-        query = f"candidate_genes(snp({variant_id}), Genes)"
-        pengine = Pengine(builder=self.pengine_builder)
-        pengine.doAsk(pengine.ask(query))
-        result = pengine.currentQuery.availProofs[0]
-        genes = [g.upper() for g in result["Genes"]]
+        payload = {"rsid": variant_id}
+        res = requests.get(f"{self.server}/api/hypgen/candidate_genes", params=payload)
+        if not res.ok:
+            logger.error(f"Prolog server error for variant {variant_id}: {res.status_code} - {res.text}")
+            raise RuntimeError(f"get_candidate_genes failed. Prolog server response: {res.text}")
+        result = res.json()
+        genes = [g.upper() for g in result["candidate_genes"]]
         return genes
     
-    def get_relevant_gene_proof(self, variant_id, gene):
-        gene_id = self.get_gene_ids([gene])[0]
-        query = f"json_proof_tree(relevant_gene(gene({gene_id}), snp({variant_id})), Graph)"
-        print(f"Gene Proof Query: {query}")
-        pengine = Pengine(builder=self.pengine_builder)
-        pengine.doAsk(pengine.ask(query))
-        if pengine.currentQuery is None:
-            pengine = Pengine(builder=self.pengine_builder)
-            pengine.doAsk(pengine.ask("meta_interpreter:rule_body(relevant_gene(G, S), R)")) #Get the body of the failed rule
-            rule = pengine.currentQuery.availProofs[0]["R"]
-            print(f"q rule: {rule}")
-            return None, rule
-        graph = pengine.currentQuery.availProofs[0]["Graph"]
-        # pengine.doStop()
-        return json.loads(graph), True
+    def get_relevant_gene_proof(self, variant_id, samples):
+        payload = {"rsid": variant_id, "samples": samples}
+        res = requests.get(f"{self.server}/api/hypgen", params=payload)
+        if not res.ok:
+            logger.error(f"Prolog server error for variant {variant_id}: {res.status_code} - {res.text}")
+            raise RuntimeError(f"get_relevant_gene_proof failed. Prolog server response: {res.text}")
+        
+        result = res.json()
+        logger.debug(f"Received response: {result}")
+        logger.info(f"Found {len(result) if isinstance(result, list) else 'unknown'} gene proof items")
+        return result
     
-    def get_gene_ids(self, genes):
-        genes = [g.lower() for g in genes]
-        query = f"maplist(gene_id, {genes}, GeneIds)"
-        pengine = Pengine(builder=self.pengine_builder)
-        pengine.doAsk(pengine.ask(query))
-        gene_ids = pengine.currentQuery.availProofs[0]["GeneIds"]
-        # self.pengine.doStop()
-        return gene_ids
-
     def execute_query(self, query):
-        pengine = Pengine(builder=self.pengine_builder)
-        pengine.doAsk(pengine.ask(query))
-        return pengine.currentQuery.availProofs[0]["X"]
+        logger.info(f"Executing Prolog query: {query}")
+        payload = {"query": query}
 
-if __name__ == "__main__":
-    prolog_query = PrologQuery(host="100.67.47.42", port=4242)
-    result = prolog_query.execute_query("maplist(variant_id, [snp(rs1421085)], X)")
-#     # result = prolog_query.get_candidate_genes("rs1421085")
-    print(result)
+        res = requests.get(f"{self.server}/api/query", params=payload)
+        if not res.ok:
+            logger.error(f"Prolog server error for query '{query}': {res.status_code} - {res.text}")
+            raise RuntimeError(f"execute_query failed. Prolog server response: {res.text}")
+        
+        result = res.json()
+        return result
+    
+    def get_gene_ids(self, gene_names):
+
+        logger.info(f"Getting gene IDs for genes: {gene_names}")
+        
+        # Query each gene name individually
+        gene_ids = []
+        for gene_name in gene_names:
+            query = f"gene_id('{gene_name}', X)"
+            try:
+                result = self.execute_query(query)
+                if result and len(result) > 0:
+                    gene_ids.append(result[0])
+                else:
+                    logger.warning(f"No gene ID found for gene name: {gene_name}")
+                    gene_ids.append(gene_name)  
+            except Exception as e:
+                logger.error(f"Error getting gene ID for {gene_name}: {e}")
+                gene_ids.append(gene_name)
+        
+        return gene_ids

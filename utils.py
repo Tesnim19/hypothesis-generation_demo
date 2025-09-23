@@ -160,9 +160,9 @@ def allowed_file(filename):
     ALLOWED_EXTENSIONS = {'tsv', 'csv', 'txt', 'bgz', 'gz'}
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def get_user_file_path(db, file_id, user_id):
+def get_user_file_path(files_handler, file_id, user_id):
     """Get file path from file ID using database metadata"""
-    file_metadata = db.get_file_metadata(user_id, file_id)
+    file_metadata = files_handler.get_file_metadata(user_id, file_id)
     if not file_metadata:
         raise FileNotFoundError(f"File with ID {file_id} not found for user {user_id}")
     
@@ -242,7 +242,7 @@ def transform_credible_sets_to_locuszoom(credible_sets_data):
             "minor_allele": df['A1'].astype(str).tolist(),
             "ref_allele_freq": df['FRQ'].astype(float).tolist(),
             "variant": [f"{row['CHR']}:{row['BP']}:{row['A2']}:{row['A1']}" for _, row in df.iterrows()],
-            "posterior_prob": df['PIP'].astype(float).tolist() if 'PIP' in df.columns else [0.0] * len(df),
+            "posterior_prob": df['PIP'].astype(float).tolist(),
             "is_member": (df.get('cs', 0) != 0).tolist(),
             "rs_id": df['RS_ID'].fillna('').astype(str).tolist() if 'RS_ID' in df.columns else [''] * len(df)
         },

@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 
 
 @task(cache_policy=None)
-def save_analysis_state_task(db, user_id, project_id, state_data):
+def save_analysis_state_task(projects_handler, user_id, project_id, state_data):
     """Save analysis state to file system"""
     try:
-        db.save_analysis_state(user_id, project_id, state_data)
+        projects_handler.save_analysis_state(user_id, project_id, state_data)
         logger.info(f"Saved analysis state for project {project_id}")
         return True
     except Exception as e:
@@ -18,10 +18,10 @@ def save_analysis_state_task(db, user_id, project_id, state_data):
 
 
 @task(cache_policy=None)
-def load_analysis_state_task(db, user_id, project_id):
+def load_analysis_state_task(projects_handler, user_id, project_id):
     """Load analysis state from file system"""
     try:
-        state = db.load_analysis_state(user_id, project_id)
+        state = projects_handler.load_analysis_state(user_id, project_id)
         if state:
             logger.info(f"Loaded analysis state for project {project_id}")
         else:
@@ -33,7 +33,7 @@ def load_analysis_state_task(db, user_id, project_id):
 
 
 @task(cache_policy=None)
-def create_analysis_result_task(db, user_id, project_id, combined_results, output_dir):
+def create_analysis_result_task(analysis_handler, user_id, project_id, combined_results, output_dir):
     """Create and save analysis results"""
     try:
         # Save to output directory
@@ -41,7 +41,7 @@ def create_analysis_result_task(db, user_id, project_id, combined_results, outpu
         combined_results.to_csv(results_file, index=False)
         
         # Save to database
-        db.save_analysis_results(user_id, project_id, combined_results.to_dict('records'))
+        analysis_handler.save_analysis_results(user_id, project_id, combined_results.to_dict('records'))
         
         logger.info(f"Analysis results saved: {results_file}")
         return results_file
@@ -52,10 +52,10 @@ def create_analysis_result_task(db, user_id, project_id, combined_results, outpu
 
 
 @task(cache_policy=None)
-def get_project_analysis_path_task(db, user_id, project_id):
+def get_project_analysis_path_task(projects_handler, user_id, project_id):
     """Get the analysis path for a project"""
     try:
-        analysis_path = db.get_project_analysis_path(user_id, project_id)
+        analysis_path = projects_handler.get_project_analysis_path(user_id, project_id)
         
         # Create directory structure if it doesn't exist
         os.makedirs(analysis_path, exist_ok=True)
@@ -105,16 +105,16 @@ def count_gwas_records(file_path):
         return 0
 
 
-def get_project_with_full_data(db, user_id, project_id):
+def get_project_with_full_data(projects_handler, user_id, project_id):
     """Get comprehensive project data including state, hypotheses, and credible sets"""
     try:
         # Get basic project info
-        project = db.get_projects(user_id, project_id)
+        project = projects_handler.get_projects(user_id, project_id)
         if not project:
             return {"error": "Project not found"}, 404
         
         # Get analysis state (may be None for new projects)
-        analysis_state = db.load_analysis_state(user_id, project_id)
+        analysis_state = projects_handler.load_analysis_state(user_id, project_id)
         if not analysis_state:
             analysis_state = {"status": "not_started"}
         
@@ -125,7 +125,7 @@ def get_project_with_full_data(db, user_id, project_id):
         analysis_parameters = project.get("analysis_parameters", {})
         
         try:
-            credible_sets_data = db.get_credible_sets_for_project(user_id, project_id)
+            credible_sets_data = projects_handler.get_credible_sets_for_project(user_id, project_id)
             if credible_sets_data:
                 total_credible_sets_count = len(credible_sets_data)
                 total_variants_count = sum(cs.get("variants_count", 0) for cs in credible_sets_data)
@@ -138,7 +138,13 @@ def get_project_with_full_data(db, user_id, project_id):
         # Get hypotheses for this project
         project_hypotheses = []
         try:
-            all_hypotheses = db.get_hypotheses(user_id)
+            # Import hypothesis handler here to avoid circular imports
+            from config import Config, create_dependencies
+            config = Config.from_env()
+            deps = create_dependencies(config)
+            hypothesis_handler = deps['hypotheses']
+            
+            all_hypotheses = hypothesis_handler.get_hypotheses(user_id)
             if isinstance(all_hypotheses, list):
                 project_hypotheses = [
                     {
