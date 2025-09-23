@@ -1046,8 +1046,9 @@ class GWASFilesAPI(Resource):
     """
     API endpoint for automatically discovering GWAS files and extracting their metadata
     """
-    def __init__(self, config):
+    def __init__(self, config, db):
         self.config = config
+        self.db = db
 
     def _extract_file_metadata(self, file_path):
         """Extract metadata from a GWAS file by examining its content"""
@@ -1251,52 +1252,101 @@ class GWASFilesAPI(Resource):
                 
                 gwas_files.append(gwas_file_entry)
             
-            # Mock phenotypes array for frontend testing
-            # TODO: Replace with real phenotype data later
-            mock_phenotypes = [
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Obesity"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Type 2 Diabetes"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Hypertension"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Body Mass Index (BMI)"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Height"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Coronary Artery Disease"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Alzheimer's Disease"
-                },
-                {
-                    "id": str(uuid.uuid4()),
-                    "name": "Depression"
-                }
-            ]
+            # Get real phenotypes from database (limit to 20, ensure obesity is included)
+            phenotypes = []
+            try:
+                # First, try to get obesity phenotypes specifically
+                obesity_phenotypes = self.db.get_phenotypes(search_term="obesity", limit=5)
+                
+                # Get other phenotypes (limit to 15 to make room for obesity ones)
+                other_phenotypes = self.db.get_phenotypes(limit=15)
+                
+                # Combine and deduplicate
+                all_phenotypes = obesity_phenotypes + other_phenotypes
+                seen_ids = set()
+                unique_phenotypes = []
+                
+                for p in all_phenotypes:
+                    if p["id"] not in seen_ids:
+                        unique_phenotypes.append(p)
+                        seen_ids.add(p["id"])
+                        if len(unique_phenotypes) >= 20:
+                            break
+                
+                # Format for frontend compatibility
+                phenotypes = [
+                    {
+                        "id": p["id"],
+                        "name": p["phenotype_name"]
+                    }
+                    for p in unique_phenotypes
+                ]
+                
+                logger.info(f"Loaded {len(phenotypes)} phenotypes from database")
+                    
+            except Exception as e:
+                logger.warning(f"Could not load phenotypes from database: {str(e)}, using empty list")
+                phenotypes = []
             
             return {
                 "gwas_files": gwas_files,
                 "total_files": len(gwas_files),
-                "phenotypes": mock_phenotypes
+                "phenotypes": phenotypes
             }, 200
             
         except Exception as e:
             logger.error(f"Error discovering GWAS files: {str(e)}")
             return {"error": f"Failed to discover GWAS files: {str(e)}"}, 500
+
+
+class PhenotypesAPI(Resource):
+    """
+    API endpoint for getting phenotypes
+    """
+    def __init__(self, db):
+        self.db = db
+
+    def get(self):
+        """Get phenotypes with optional filtering and pagination"""
+        try:
+            # Get query parameters
+            phenotype_id = request.args.get('id')
+            search_term = request.args.get('search')
+            limit = request.args.get('limit', type=int)
+            skip = request.args.get('skip', 0, type=int)
+            
+            if phenotype_id:
+                # Get specific phenotype
+                phenotype = self.db.get_phenotypes(phenotype_id=phenotype_id)
+                if not phenotype:
+                    return {"error": "Phenotype not found"}, 404
+                return {"phenotype": phenotype}, 200
+            
+            # Get all phenotypes with optional filtering
+            phenotypes = self.db.get_phenotypes(
+                limit=limit, 
+                skip=skip, 
+                search_term=search_term
+            )
+            
+            # Get total count for pagination
+            total_count = self.db.count_phenotypes(search_term=search_term)
+            
+            response = {
+                "phenotypes": phenotypes,
+                "total_count": total_count,
+                "skip": skip,
+                "limit": limit if limit else len(phenotypes)
+            }
+            
+            if search_term:
+                response["search_term"] = search_term
+            
+            return response, 200
+            
+        except Exception as e:
+            logger.error(f"Error getting phenotypes: {str(e)}")
+            return {"error": f"Failed to get phenotypes: {str(e)}"}, 500
 
 
 class GWASFileDownloadAPI(Resource):

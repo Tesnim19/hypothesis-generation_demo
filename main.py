@@ -19,6 +19,7 @@ from api import (
     FileDownloadAPI,
     GWASFilesAPI,
     GWASFileDownloadAPI,
+    PhenotypesAPI,
 )
 from dotenv import load_dotenv
 import os
@@ -121,8 +122,9 @@ def setup_api(config):
     api.add_resource(FileDownloadAPI, "/download/<string:file_id>", resource_class_kwargs={"db": deps['db']})
     
     # GWAS files and phenotypes
-    api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config})
+    api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config, "db": deps['db']})
     api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={"config": config})
+    api.add_resource(PhenotypesAPI, "/phenotypes", resource_class_kwargs={"db": deps['db']})
 
     # Initialize socket handlers 
     socket_namespace = init_socket_handlers(deps['db'])
