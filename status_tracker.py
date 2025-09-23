@@ -62,10 +62,28 @@ class StatusTracker:
             if self.__class__._db is not None:
                 self._db = self.__class__._db
             else:
-                config = Config.from_env()
-                deps = create_dependencies(config)
-                self._db = deps['db']
-                self.__class__._db = self._db
+                # Try to create minimal task handler directly first
+                try:
+                    from db.task_handler import TaskHandler
+                    import os
+                    mongodb_uri = os.getenv("MONGODB_URI")
+                    db_name = os.getenv("DB_NAME", "default")
+                    if mongodb_uri and db_name:
+                        self._db = TaskHandler(mongodb_uri, db_name)
+                        self.__class__._db = self._db
+                        return self._db
+                except Exception:
+                    pass
+                    
+                # If direct approach fails, try full dependency creation as fallback
+                try:
+                    config = Config.from_env()
+                    deps = create_dependencies(config)
+                    self._db = deps['tasks']
+                    self.__class__._db = self._db
+                except Exception as e:
+                    # If everything fails, return None and skip persistence
+                    return None
         return self._db
 
     def _persist_and_clear(self, hypothesis_id):
@@ -73,6 +91,13 @@ class StatusTracker:
         if hypothesis_id in self.task_history:
             # Ensure database connection
             db = self._ensure_db_connection()
+            
+            # Check if database connection is available
+            if db is None:
+                # If no database connection available, just clear from memory without persisting
+                del self.task_history[hypothesis_id]
+                self.completed_hypotheses.add(hypothesis_id)
+                return
             
             # Check if task handler is available
             if not hasattr(self.__class__, '_task_handler') or self.__class__._task_handler is None:

@@ -225,17 +225,11 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
         edges.append({"source": gene_id, "target": go_id, "label": "enriched_in"})
         edges.append({"source": causal_gene_id, "target": gene_id, "label": "coexpressed_with"})
 
-    final_causal_graph = {"nodes": nodes, "edges": edges}
+    final_causal_graph = {"nodes": nodes, "edges": edges, "probability": graph_prob}
 
-    summary = summarize_graph(llm, final_causal_graph, hypothesis_id)
+    summary = summarize_graph(llm, {"nodes": nodes, "edges": edges}, hypothesis_id)
 
-    hypothesis_data = {
-        "summary": summary, 
-        "graph": final_causal_graph,
-        "probability": graph_prob,
-    }
-    
-    create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causal_gene, hypothesis_data, 
+    create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causal_gene, final_causal_graph, 
                      summary, current_user_id, hypothesis_id)
     
     return {"summary": summary, "graph": final_causal_graph}, 201

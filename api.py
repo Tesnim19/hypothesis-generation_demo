@@ -117,9 +117,9 @@ class EnrichAPI(Resource):
         self.hypotheses.create_hypothesis(current_user_id, hypothesis_data)
         
         invoke_enrichment_deployment(
-            current_user_id=current_user_id, 
-            phenotype=phenotype, 
-            variant=variant, 
+            current_user_id=current_user_id,
+            phenotype=phenotype,
+            variant=variant,
             hypothesis_id=hypothesis_id,
             project_id=project_id
         )
@@ -525,7 +525,7 @@ class ProjectsAPI(Resource):
         project_id = request.args.get('id')
         
         if project_id:
-            response_data, status_code = get_project_with_full_data(self.projects, current_user_id, project_id)
+            response_data, status_code = get_project_with_full_data(self.projects, self.analysis, self.hypotheses, current_user_id, project_id)
             if status_code == 200:
                 response_data = serialize_datetime_fields(response_data)
             return response_data, status_code
@@ -854,7 +854,10 @@ class AnalysisPipelineAPI(Resource):
                 gwas_records_count = count_gwas_records(file_path)
             
             # Create file metadata in database with record count through files handler
-            original_filename = filename if not is_uploaded else gwas_file.filename
+            if is_uploaded:
+                original_filename = gwas_file.filename
+            else:
+                original_filename = filename
             file_metadata_id = self.files.create_file_metadata(
                 user_id=current_user_id,
                 filename=filename,
@@ -897,7 +900,7 @@ class AnalysisPipelineAPI(Resource):
                 'file_id': file_metadata_id,
                 'user_id': current_user_id,
                 'filename': filename,
-                'original_filename': gwas_file.filename,
+                'original_filename': original_filename,
                 'file_path': file_path,
                 'file_type': 'gwas',
                 'upload_date': str(datetime.now()),
@@ -1267,26 +1270,11 @@ class GWASFilesAPI(Resource):
                 
                 gwas_files.append(gwas_file_entry)
             
-            # Get real phenotypes from database (limit to 20, ensure obesity is included)
+            # Get all phenotypes from database
             phenotypes = []
             try:
-                # First, try to get obesity phenotypes specifically
-                obesity_phenotypes = self.phenotypes.get_phenotypes(search_term="obesity", limit=5)
-                
-                # Get other phenotypes (limit to 15 to make room for obesity ones)
-                other_phenotypes = self.phenotypes.get_phenotypes(limit=15)
-                
-                # Combine and deduplicate
-                all_phenotypes = obesity_phenotypes + other_phenotypes
-                seen_ids = set()
-                unique_phenotypes = []
-                
-                for p in all_phenotypes:
-                    if p["id"] not in seen_ids:
-                        unique_phenotypes.append(p)
-                        seen_ids.add(p["id"])
-                        if len(unique_phenotypes) >= 20:
-                            break
+                # Get all phenotypes without any limit
+                all_phenotypes = self.phenotypes.get_phenotypes()
                 
                 # Format for frontend compatibility
                 phenotypes = [
@@ -1294,7 +1282,7 @@ class GWASFilesAPI(Resource):
                         "id": p["id"],
                         "name": p["phenotype_name"]
                     }
-                    for p in unique_phenotypes
+                    for p in all_phenotypes
                 ]
                 
                 logger.info(f"Loaded {len(phenotypes)} phenotypes from database")

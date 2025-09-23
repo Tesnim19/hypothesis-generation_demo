@@ -105,7 +105,7 @@ def count_gwas_records(file_path):
         return 0
 
 
-def get_project_with_full_data(projects_handler, user_id, project_id):
+def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, user_id, project_id):
     """Get comprehensive project data including state, hypotheses, and credible sets"""
     try:
         # Get basic project info
@@ -125,7 +125,7 @@ def get_project_with_full_data(projects_handler, user_id, project_id):
         analysis_parameters = project.get("analysis_parameters", {})
         
         try:
-            credible_sets_data = projects_handler.get_credible_sets_for_project(user_id, project_id)
+            credible_sets_data = analysis_handler.get_credible_sets_for_project(user_id, project_id)
             if credible_sets_data:
                 total_credible_sets_count = len(credible_sets_data)
                 total_variants_count = sum(cs.get("variants_count", 0) for cs in credible_sets_data)
@@ -138,13 +138,7 @@ def get_project_with_full_data(projects_handler, user_id, project_id):
         # Get hypotheses for this project
         project_hypotheses = []
         try:
-            # Import hypothesis handler here to avoid circular imports
-            from config import Config, create_dependencies
-            config = Config.from_env()
-            deps = create_dependencies(config)
-            hypothesis_handler = deps['hypotheses']
-            
-            all_hypotheses = hypothesis_handler.get_hypotheses(user_id)
+            all_hypotheses = hypotheses_handler.get_hypotheses(user_id)
             if isinstance(all_hypotheses, list):
                 project_hypotheses = [
                     {
