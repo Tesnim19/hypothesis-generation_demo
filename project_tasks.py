@@ -105,7 +105,7 @@ def count_gwas_records(file_path):
         return 0
 
 
-def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, user_id, project_id):
+def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, enrichment_handler, user_id, project_id):
     """Get comprehensive project data including state, hypotheses, and credible sets"""
     try:
         # Get basic project info
@@ -140,17 +140,45 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
         try:
             all_hypotheses = hypotheses_handler.get_hypotheses(user_id)
             if isinstance(all_hypotheses, list):
-                project_hypotheses = [
-                    {
-                        "id": h["id"], 
-                        "variant": h.get("variant") or h.get("variant_id"),
-                        "status": h.get("status", "pending"),
-                        "causal_gene": h.get("causal_gene"),
-                        "created_at": h.get("created_at"),
-                    }
-                    for h in all_hypotheses 
-                    if h.get('project_id') == project_id
-                ]
+                project_hypotheses = []
+                for h in all_hypotheses:
+                    if h.get('project_id') == project_id:
+                        # Extract probability from hypothesis graph OR enrichment data
+                        probability = None
+                        
+                        # First try to get from hypothesis graph (if hypothesis is fully generated)
+                        if h.get("graph") and isinstance(h["graph"], dict):
+                            probability = h["graph"].get("probability")
+                        
+                        # If no probability in hypothesis, try to get from enrichment data
+                        if probability is None and h.get("enrich_id"):
+                            try:
+                                enrich_data = enrichment_handler.get_enrich(user_id, h["enrich_id"])
+                                if enrich_data and enrich_data.get("causal_graph"):
+                                    causal_graph = enrich_data["causal_graph"]
+                                    if isinstance(causal_graph, dict) and causal_graph.get("graph"):
+                                        graph = causal_graph["graph"]
+                                        if isinstance(graph, dict):
+                                            probability = graph.get('prob', {}).get('value') if isinstance(graph.get('prob'), dict) else None
+                            except Exception as e:
+                                logger.warning(f"Could not get enrichment data for hypothesis {h['id']}: {e}")
+                        
+                        hypothesis_data = {
+                            "id": h["id"], 
+                            "variant": h.get("variant") or h.get("variant_id"),
+                            "status": h.get("status", "pending"),
+                            "causal_gene": h.get("causal_gene"),
+                            "created_at": h.get("created_at"),
+                            "probability": probability  # Add confidence/probability score
+                        }
+                        
+                        # Log probability extraction for debugging
+                        prob_source = "hypothesis_graph" if h.get("graph") and h["graph"].get("probability") else ("enrichment" if probability is not None else "none")
+                        log_msg = f"Hypothesis {h['id']}: probability={probability}, source={prob_source}, has_graph={bool(h.get('graph'))}, enrich_id={h.get('enrich_id')}"
+                        logger.info(log_msg)
+                        print(f"[PROJECT_TASKS] {log_msg}")  # Backup print statement
+                        
+                        project_hypotheses.append(hypothesis_data)
         except Exception as hyp_e:
             logger.warning(f"Could not load hypotheses for project {project_id}: {hyp_e}")
             project_hypotheses = []

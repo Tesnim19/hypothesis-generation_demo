@@ -125,7 +125,8 @@ def setup_api(config):
         "projects": deps['projects'],
         "files": deps['files'],
         "analysis": deps['analysis'],
-        "hypotheses": deps['hypotheses']
+        "hypotheses": deps['hypotheses'],
+        "enrichment": deps['enrichment']
     })
     api.add_resource(BulkProjectDeleteAPI, "/projects/delete", resource_class_kwargs={"projects": deps['projects']})
     api.add_resource(AnalysisPipelineAPI, "/analysis-pipeline", resource_class_kwargs={

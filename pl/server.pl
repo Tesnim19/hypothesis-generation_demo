@@ -48,6 +48,23 @@ handle_candidate_genes(Request) :-
         })
     ).
 
+% Helper to convert Prolog terms to JSON-safe format
+term_to_json_safe(Term, JsonTerm) :-
+    % If it's a compound term, convert to string
+    compound(Term), !,
+    term_string(Term, JsonTerm).
+term_to_json_safe(Term, Term).
+
+% Helper to extract ID from compound terms like efo(ID) -> "efo(ID)"
+extract_term_id(Term, JsonTerm) :-
+    compound(Term),
+    functor(Term, Functor, 1),
+    arg(1, Term, Arg),
+    !,
+    % Return as "functor(arg)" format
+    format(atom(JsonTerm), '~w(~w)', [Functor, Arg]).
+extract_term_id(Term, Term).
+
 handle_query(Request) :-
     http_parameters(Request, 
             [query(QueryString, [optional(false)])]),
@@ -63,7 +80,9 @@ handle_query(Request) :-
             ;   Query = variant_id(Variant, X) ->
                 findall(X, variant_id(Variant, X), Results)
             ;   Query = term_name(Term, Name) ->
-                findall(Term, term_name(Term, Name), Results)
+                findall(Term, term_name(Term, Name), RawResults),
+                % Extract IDs from compound terms like efo(ID)
+                maplist(extract_term_id, RawResults, Results)
             ;   Query = maplist(Pred, List, X) ->
                 (call(Query) -> 
                     Results = X
@@ -72,7 +91,8 @@ handle_query(Request) :-
             ;   % Generic fallback - try to find X variable in any position
                 (functor(Query, _, Arity),
                  Arity > 0 ->
-                    findall(Query, call(Query), Results)
+                    findall(Query, call(Query), RawResults),
+                    maplist(term_to_json_safe, RawResults, Results)
                 ;   Results = []
                 )
             ),

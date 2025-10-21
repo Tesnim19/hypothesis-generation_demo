@@ -13,6 +13,14 @@ class ProjectHandler(BaseHandler):
     def __init__(self, uri, db_name):
         super().__init__(uri, db_name)
         self.projects_collection = self.db['projects']
+        # Initialize collections needed for cascade deletion
+        self.credible_sets_collection = self.db['credible_sets']
+        self.hypothesis_collection = self.db['hypotheses']
+        self.task_updates_collection = self.db['task_updates']
+        self.summary_collection = self.db['summary']
+        self.enrich_collection = self.db['enrich']
+        self.analysis_results_collection = self.db['analysis_results']
+        self.file_metadata_collection = self.db['file_metadata']
     
     def create_project(self, user_id, name, gwas_file_id, phenotype,population, ref_genome, analysis_parameters=None):
         """Create a new project"""

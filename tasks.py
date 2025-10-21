@@ -497,6 +497,17 @@ def create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causa
         )
         hypothesis_history = status_tracker.get_history(hypothesis_id)
         logger.info("Creating hypothesis in the database...")
+        
+        # Remove 'details' field from task history to reduce size
+        clean_history = []
+        for task in hypothesis_history:
+            task_copy = task.copy()
+            task_copy.pop('details', None)  # Remove details field
+            clean_history.append(task_copy)
+        
+        # Limit task_history to last 50 entries to avoid MongoDB document size limit (16MB)
+        limited_history = clean_history[-50:] if len(clean_history) > 50 else clean_history
+        
         hypothesis_data = {
                 "enrich_id": enrich_id,
                 "go_id": go_id,
@@ -507,8 +518,19 @@ def create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causa
                 "summary": summary,
                 "biological_context": "",
                 "status": "completed",
-                "task_history": hypothesis_history,
+                "task_history": limited_history,
             }
+        
+        # Log sizes for debugging
+        import json
+        try:
+            graph_size = len(json.dumps(causal_graph))
+            history_size = len(json.dumps(limited_history))
+            total_size = len(json.dumps(hypothesis_data))
+            logger.info(f"Document sizes - Graph: {graph_size/1024:.2f}KB, History: {history_size/1024:.2f}KB, Total: {total_size/1024/1024:.2f}MB")
+        except Exception as e:
+            logger.warning(f"Could not calculate document sizes: {e}")
+        
         hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
 
         emit_task_update(

@@ -124,7 +124,7 @@ class EnrichAPI(Resource):
             project_id=project_id
         )
         
-        return {"parent_hypothesis_id": hypothesis_id}, 201
+        return {"hypothesis_id": hypothesis_id, "project_id": project_id}, 202
     
          
     @token_required
@@ -143,6 +143,82 @@ class HypothesisAPI(Resource):
         self.llm = llm
         self.hypotheses = hypotheses
         self.enrichment = enrichment
+    
+    def _extract_probability(self, hypothesis, user_id):
+        """Extract probability from hypothesis graph or enrichment data"""
+        probability = None
+        
+        # First try to get from hypothesis graph
+        if hypothesis.get("graph") and isinstance(hypothesis["graph"], dict):
+            probability = hypothesis["graph"].get("probability")
+        
+        # If no probability in hypothesis, try to get from enrichment data
+        if probability is None and hypothesis.get("enrich_id"):
+            try:
+                enrich_data = self.enrichment.get_enrich(user_id, hypothesis["enrich_id"])
+                if enrich_data and enrich_data.get("causal_graph"):
+                    causal_graph = enrich_data["causal_graph"]
+                    if isinstance(causal_graph, dict) and causal_graph.get("graph"):
+                        graph = causal_graph["graph"]
+                        if isinstance(graph, dict):
+                            probability = graph.get('prob', {}).get('value') if isinstance(graph.get('prob'), dict) else None
+            except Exception as e:
+                logger.warning(f"Could not get enrichment data for hypothesis {hypothesis['id']}: {e}")
+        
+        return probability
+    
+    def _get_related_hypotheses(self, current_hypothesis, user_id):
+        """Get all hypotheses in the same project with the same variant"""
+        all_variant_hypotheses = []
+        
+        project_id = current_hypothesis.get('project_id')
+        variant = current_hypothesis.get('variant') or current_hypothesis.get('variant_id')
+        
+        if not project_id or not variant:
+            # If no project/variant info, return just the current hypothesis
+            current_probability = self._extract_probability(current_hypothesis, user_id)
+            return [{
+                'id': current_hypothesis['id'],
+                'causal_gene': current_hypothesis.get('causal_gene'),
+                'probability': current_probability,
+                'status': current_hypothesis.get('status', 'pending'),
+                'go_id': current_hypothesis.get('go_id')
+            }]
+        
+        try:
+            # Get all hypotheses for the user
+            all_hypotheses = self.hypotheses.get_hypotheses(user_id)
+            if isinstance(all_hypotheses, list):
+                for h in all_hypotheses:
+                    # Include ALL hypotheses with same project and variant (including current)
+                    if (h.get('project_id') == project_id and 
+                        (h.get('variant') == variant or h.get('variant_id') == variant)):
+                        
+                        probability = self._extract_probability(h, user_id)
+                        all_variant_hypotheses.append({
+                            'id': h['id'],
+                            'causal_gene': h.get('causal_gene'),
+                            'probability': probability,
+                            'status': h.get('status', 'pending'),
+                            'go_id': h.get('go_id')
+                        })
+                
+                # Sort by confidence (highest first) for better UX
+                all_variant_hypotheses.sort(key=lambda x: x.get('probability') or 0, reverse=True)
+                
+        except Exception as e:
+            logger.warning(f"Could not get variant hypotheses: {e}")
+            # Fallback: return just the current hypothesis
+            current_probability = self._extract_probability(current_hypothesis, user_id)
+            all_variant_hypotheses = [{
+                'id': current_hypothesis['id'],
+                'causal_gene': current_hypothesis.get('causal_gene'),
+                'probability': current_probability,
+                'status': current_hypothesis.get('status', 'pending'),
+                'go_id': current_hypothesis.get('go_id')
+            }]
+        
+        return all_variant_hypotheses
 
     @token_required
     def get(self, current_user_id):
@@ -174,6 +250,17 @@ class HypothesisAPI(Resource):
                 # Remove 'causal_graph' field from enrich_data if it exists
                 if isinstance(enrich_data, dict):
                     enrich_data.pop('causal_graph', None)
+                
+                # Extract confidence for current hypothesis
+                confidence = self._extract_probability(hypothesis, current_user_id)
+                
+                # Get related hypotheses with same variant in project
+                related_hypotheses = self._get_related_hypotheses(hypothesis, current_user_id)
+                
+                # Log for debugging
+                logger.info(f"Hypothesis {hypothesis_id}: confidence={confidence}, variant_hypotheses_count={len(related_hypotheses)}")
+                print(f"[HYPOTHESIS_API] Hypothesis {hypothesis_id}: confidence={confidence}, variant_hypotheses_count={len(related_hypotheses)}")
+                
                 response_data = {
                     'id': hypothesis_id,
                     'variant': hypothesis.get('variant') or hypothesis.get('variant_id'),
@@ -181,6 +268,8 @@ class HypothesisAPI(Resource):
                     'phenotype': hypothesis['phenotype'],
                     "status": "completed",
                     "created_at": hypothesis.get('created_at'),
+                    "probability": confidence,
+                    "hypotheses": related_hypotheses,
                     "result": enrich_data
                 }
                 # Serialize datetime objects before returning
@@ -189,6 +278,16 @@ class HypothesisAPI(Resource):
 
             latest_state = status_tracker.get_latest_state(hypothesis_id)
             
+            # Extract confidence for current hypothesis (even if pending)
+            confidence = self._extract_probability(hypothesis, current_user_id)
+            
+            # Get related hypotheses with same variant in project
+            related_hypotheses = self._get_related_hypotheses(hypothesis, current_user_id)
+            
+            # Log for debugging
+            logger.info(f"Pending Hypothesis {hypothesis_id}: confidence={confidence}, variant_hypotheses_count={len(related_hypotheses)}")
+            print(f"[HYPOTHESIS_API] Pending Hypothesis {hypothesis_id}: confidence={confidence}, variant_hypotheses_count={len(related_hypotheses)}")
+            
             status_data = {
                 'id': hypothesis_id,
                 'variant': hypothesis.get('variant') or hypothesis.get('variant_id'),
@@ -196,6 +295,8 @@ class HypothesisAPI(Resource):
                 'status': 'pending',
                 "created_at": hypothesis.get('created_at'),
                 'task_history': last_pending_task,
+                "probability": confidence,
+                "hypotheses": related_hypotheses,
             }
             if 'enrich_id' in hypothesis and hypothesis.get('enrich_id') is not None:
                 enrich_id = hypothesis.get('enrich_id')
@@ -230,26 +331,20 @@ class HypothesisAPI(Resource):
             
             formatted_hypothesis = {
                 'id': hypothesis['id'],
-                'phenotype': hypothesis['phenotype'],
+                'phenotype': hypothesis.get('phenotype', 'Unknown'),
                 'variant': hypothesis.get('variant') or hypothesis.get('variant_id'),
                 'created_at': hypothesis.get('created_at'),
                 'status': hypothesis.get('status'),
                 'task_history': last_pending_task
             }
             
-            # Add graph metadata for separate graph hypotheses
-            if 'graph_index' in hypothesis:
-                formatted_hypothesis['graph_index'] = hypothesis['graph_index']
-            if 'total_graphs' in hypothesis:
-                formatted_hypothesis['total_graphs'] = hypothesis['total_graphs']
-            if 'parent_hypothesis_id' in hypothesis:
-                formatted_hypothesis['parent_hypothesis_id'] = hypothesis['parent_hypothesis_id']
             if 'enrich_id' in hypothesis and hypothesis.get('enrich_id') is not None:
                  formatted_hypothesis['enrich_id'] = hypothesis.get('enrich_id')
             if 'biological_context' in hypothesis and hypothesis.get('biological_context') is not None:
                 formatted_hypothesis['biological_context'] = hypothesis.get('biological_context')
             if 'causal_gene' in hypothesis and hypothesis.get('causal_gene') is not None:
                 formatted_hypothesis['causal_gene'] = hypothesis.get('causal_gene')
+                
             formatted_hypotheses.append(formatted_hypothesis)
         
         # Serialize datetime objects before returning
@@ -513,11 +608,12 @@ class ProjectsAPI(Resource):
     """
     API endpoint for managing projects
     """
-    def __init__(self, projects, files, analysis, hypotheses):
+    def __init__(self, projects, files, analysis, hypotheses, enrichment):
         self.projects = projects
         self.files = files
         self.analysis = analysis
         self.hypotheses = hypotheses
+        self.enrichment = enrichment
     
     @token_required
     def get(self, current_user_id):
@@ -525,7 +621,7 @@ class ProjectsAPI(Resource):
         project_id = request.args.get('id')
         
         if project_id:
-            response_data, status_code = get_project_with_full_data(self.projects, self.analysis, self.hypotheses, current_user_id, project_id)
+            response_data, status_code = get_project_with_full_data(self.projects, self.analysis, self.hypotheses, self.enrichment, current_user_id, project_id)
             if status_code == 200:
                 response_data = serialize_datetime_fields(response_data)
             return response_data, status_code
@@ -659,9 +755,8 @@ class ProjectsAPI(Resource):
             return {"message": "Project deleted successfully"}, 200
         return {"error": "Project not found or access denied"}, 404
 class BulkProjectDeleteAPI(Resource):
-    def __init__(self, projects, db):
+    def __init__(self, projects):
         self.projects = projects
-        self.db = db
         
     @token_required
     def post(self, current_user_id):
@@ -1402,5 +1497,4 @@ class GWASFileDownloadAPI(Resource):
         except Exception as e:
             logger.error(f"[GWAS DOWNLOAD] Error downloading file {file_id}: {str(e)}")
             return {"error": f"Download failed: {str(e)}"}, 500
-
 
