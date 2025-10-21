@@ -197,6 +197,7 @@ data/1000Genomes_phase3
 data/raw
 data/ldsc
 data/ldsc_test
+data/gene_expression
 
 # Scripts
 
