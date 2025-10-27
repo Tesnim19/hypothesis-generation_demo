@@ -110,16 +110,6 @@ def emit_analysis_update(user_id, project_id, state_data):
         )
     except Exception as exc:
         logger.error(f"Failed to POST analysis update to {url}: {exc}")
-
-
-def save_analysis_state(user_id, state):
-    """Save the analysis state for the second flow"""
-    state_dir = os.path.join('data', 'states', user_id)
-    os.makedirs(state_dir, exist_ok=True)
-    
-    with open(os.path.join(state_dir, 'analysis_state.json'), 'w') as f:
-        json.dump(state, f, default=str)  # Use default=str to handle non-serializable objects
-
 def allowed_file(filename):
     """Check if the file extension is allowed"""
     ALLOWED_EXTENSIONS = {'tsv', 'csv', 'txt', 'bgz', 'gz'}
