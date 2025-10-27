@@ -1178,6 +1178,8 @@ async def post_analysis_pipeline(
         }
         with open(os.path.join(metadata_dir, f"{file_metadata_id}.json"), "w") as fh:
             json.dump(metadata, fh)
+        
+        
 
         total_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[API] Project {project_id} ready in {total_time:.1f}s, firing Prefect")
