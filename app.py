@@ -51,8 +51,17 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         deps = create_dependencies(config)
+        # Initialize status tracker
         status_tracker = StatusTracker()
-        status_tracker.initialize(deps["tasks"])
+        status_tracker.initialize(deps['tasks'], deps['status_cache'])
+
+        # Recover in-progress tasks on startup
+        try:
+            status_tracker.recover_from_cache()
+            logger.info("Startup recovery completed.")
+        except Exception as e:
+            logger.error(f"Startup recovery failed: {e}")
+
         init_deps(deps)
         logger.info("Application dependencies initialized")
         yield
