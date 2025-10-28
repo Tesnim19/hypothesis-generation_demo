@@ -27,6 +27,11 @@ from utils import transform_credible_sets_to_locuszoom, get_deps, get_shared_tem
 
 logging.basicConfig(level=logging.INFO)
 
+# Producer consumer pattern 
+import threading
+from queue import Queue
+from utils import transform_credible_sets_to_locuszoom
+
 try:
     import rpy2.robjects as ro
     from rpy2.robjects.packages import importr
@@ -428,6 +433,7 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
     """
     Run GCTA COJO analysis per chromosome and combine results.
     """
+    # run cojo per chromosome to find independent lead variants. 
     logger.info(f"[COJO] Starting per-chromosome COJO analysis for population {population}")
     
     # Get configuration
@@ -1069,7 +1075,6 @@ def create_region_batches(cojo_results, batch_size=3):
 
 @task(retries=3)
 def finemap_region_batch_worker(batch_data):
-
     # Unpack the batch_data tuple
     if len(batch_data) == 3:
         region_batch, batch_id, sumstats_file_path = batch_data
@@ -1114,9 +1119,6 @@ def finemap_region_batch_worker(batch_data):
     else:
         raise ValueError("No additional_params provided to worker - this should not happen")
     
-    batch_results = []
-    successful_regions = 0
-    failed_regions = 0
     
     logger.info(f"[BATCH-{batch_id}] Initializing single R session for entire batch")
     
@@ -1131,6 +1133,7 @@ def finemap_region_batch_worker(batch_data):
     
     # Now initialize susieR with clean R environment
     susieR = None
+
     try:
         # Clean R environment at start of worker to prevent variable pollution
         try:
@@ -1157,16 +1160,25 @@ def finemap_region_batch_worker(batch_data):
         logger.error(f"[BATCH-{batch_id}] susieR import failed: {susie_e}")
         return []
     
-    # Process regions with shared R session
-    for region_idx, region in enumerate(region_batch):
-        region_id = region['variant_id']
-        
-        logger.info(f"[BATCH-{batch_id}] Processing region {region_idx+1}/{len(region_batch)}: {region_id}")
-        
-        try:
+    # producer consumer shared queue
+    pc_queue = Queue()
+    EndofQueue = object()
+
+    batch_results = []
+    successful_regions = 0
+    failed_regions = 0
+
+    # Producer Thread
+    def producer(successful_regions, failed_regions):
+
+        # Process regions with shared R session
+        for region_idx, region in enumerate(region_batch):
+            region_id = region['variant_id']
+            logger.info(f"[BATCH-{batch_id}] Processing region {region_idx+1}/{len(region_batch)}: {region_id}")
             
             # Use the shared R session with proper context management
             logger.info(f"[BATCH-{batch_id}] Running fine-mapping for {region_id} with shared R session")
+            logger.info(f"[BATCH-{batch_id}] Producer processing {region_id}")
             
             # Call finemap_region directly without additional conversion context
             # The function handles its own conversion context internally
@@ -1185,7 +1197,7 @@ def finemap_region_batch_worker(batch_data):
                     ref_genome=ref_genome,
                     plink_dir=plink_dir
                 )
-                
+
                 if result is not None and len(result) > 0:
                     # Add batch and region metadata
                     result['batch_id'] = batch_id
@@ -1193,7 +1205,28 @@ def finemap_region_batch_worker(batch_data):
                     result['processed_by'] = f"mp-worker-{os.getpid()}"
                     batch_results.append(result)
                     successful_regions += 1
-                    
+
+                pc_queue.put((region,result))
+            
+            except Exception as e:
+                logger.error(f"[BATCH-{batch_id}] Producer error in {region_id}: {e}")
+                pc_queue.put((region, None))
+        
+        # Finally add singal to indicate end of a queue
+        pc_queue.put(EndofQueue)
+
+
+    #Consumer Thread        
+    def consumer(successful_regions, failed_regions):
+            while True:
+                item = pc_queue.get()
+                if item == EndofQueue:  
+                    break
+
+                region, result = item
+                region_id = region["variant_id"]
+
+                if result is not None and len(result) > 0:                    
                     # Save to database if available
                     if analysis_handler and user_id and project_id:
                         try:
@@ -1264,45 +1297,62 @@ def finemap_region_batch_worker(batch_data):
                             logger.info(f"[BATCH-{batch_id}] Saved {len(credible_sets_data)} credible sets for {lead_variant_id}")
                             
                         except Exception as save_e:
-                            logger.error(f"[BATCH-{batch_id}] Error saving credible sets for {region_id}: {save_e}")
+                            logger.error(f"[BATCH-{batch_id}] Consumer error saving {region_id}: {save_e}")
                 else:
                     failed_regions += 1
-                    logger.warning(f"[BATCH-{batch_id}] No results for {region_id}")
-                    
-            except Exception as finemap_e:
-                failed_regions += 1
-                logger.error(f"[BATCH-{batch_id}] Fine-mapping failed for {region_id}: {str(finemap_e)}")
-        
-        except Exception as processing_e:
-            failed_regions += 1
-            logger.error(f"[BATCH-{batch_id}] Error processing {region_id}: {str(processing_e)}")
-        
-        # cleanup after each region to prevent accumulation
-        try:
-            # Force Python garbage collection
-            collected = gc.collect()
-            
-            # Aggressive R cleanup (no conversion context to avoid pollution)
-            try:
-                # Remove all user objects except base packages
-                ro.r('rm(list=ls()[!(ls() %in% c("base", "stats", "utils", "methods", "grDevices", "graphics"))])')
-                
-                # Clear temporary variables that might be lingering
-                ro.r('rm(list=ls(pattern="^temp_", envir=.GlobalEnv))')
-                ro.r('rm(list=ls(pattern="^susie_", envir=.GlobalEnv))')
-                
-                # Force R garbage collection
-                ro.r('gc(verbose=FALSE, full=TRUE)')
-                
-                # Clear R's internal caches
-                ro.r('if(exists(".Last.value")) rm(.Last.value)')
-                
-            except Exception as r_cleanup_e:
-                logger.warning(f"[BATCH-{batch_id}] R cleanup error after {region_id}: {r_cleanup_e}")
-                
-        except Exception as cleanup_e:
-            logger.warning(f"[BATCH-{batch_id}] Cleanup error after {region_id}: {cleanup_e}")
+                    logger.warning(f"[BATCH-{batch_id}] Consumer received no results for {region_id}")
     
+                # cleanup after each region to prevent accumulation
+                try:
+                    # Force Python garbage collection
+                    collected = gc.collect()
+                    
+                    # Aggressive R cleanup (no conversion context to avoid pollution)
+                    try:
+                        # Remove all user objects except base packages
+                        ro.r('rm(list=ls()[!(ls() %in% c("base", "stats", "utils", "methods", "grDevices", "graphics"))])')
+                        
+                        # Clear temporary variables that might be lingering
+                        ro.r('rm(list=ls(pattern="^temp_", envir=.GlobalEnv))')
+                        ro.r('rm(list=ls(pattern="^susie_", envir=.GlobalEnv))')
+                        
+                        # Force R garbage collection
+                        ro.r('gc(verbose=FALSE, full=TRUE)')
+                        
+                        # Clear R's internal caches
+                        ro.r('if(exists(".Last.value")) rm(.Last.value)')
+                        
+                    except Exception as r_cleanup_e:
+                        logger.warning(f"[BATCH-{batch_id}] R cleanup error after {region_id}: {r_cleanup_e}")
+                        
+                except Exception as cleanup_e:
+                    logger.warning(f"[BATCH-{batch_id}] Cleanup error after {region_id}: {cleanup_e}")
+                
+    # Invoke Threads
+    producer_thread = threading.Thread(target=producer, args=[successful_regions,failed_regions] ,name=f"Producer-{batch_id}")
+    consumer_thread = threading.Thread(target=consumer, args=[successful_regions,failed_regions], name=f"Consumer-{batch_id}")
+
+    try:
+        producer_thread.start()
+        consumer_thread.start()
+
+        producer_thread.join()
+        consumer_thread.join()
+
+    except Exception as e:
+        logger.error(f"[BATCH-{batch_id}] Orchestrator error: {e}", exc_info=True)
+
+        # If something failed, make sure consumer stops
+        try:
+            pc_queue.put(EndofQueue)
+        except Exception:
+            pass
+
+        # Join threads to avoid zombie threads
+        producer_thread.join(timeout=2)
+        consumer_thread.join(timeout=2)
+
+        
     # Final cleanup of R session
     if r_session_initialized:
         try:
@@ -1363,6 +1413,3 @@ def cleanup_sumstats_file(temp_path):
             logger.warning(f"[MEMORY] Temporary file not found for cleanup: {temp_path}")
     except Exception as e:
         logger.error(f"[MEMORY] Error cleaning up temporary file {temp_path}: {e}")
-
-
-
