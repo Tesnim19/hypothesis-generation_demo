@@ -744,24 +744,8 @@ class AnalysisPipelineAPI(Resource):
             )
             
             # Save metadata to file system
-            metadata_dir = os.path.join('data', 'metadata', current_user_id)
-            os.makedirs(metadata_dir, exist_ok=True)
-            
-            metadata = {
-                'file_id': file_metadata_id,
-                'user_id': current_user_id,
-                'filename': filename,
-                'original_filename': gwas_file.filename,
-                'file_path': file_path,
-                'file_type': 'gwas',
-                'upload_date': str(datetime.now()),
-                'file_size': file_size,
-                'project_id': project_id
-            }
-            
-            with open(os.path.join(metadata_dir, f"{file_metadata_id}.json"), 'w') as f:
-                json.dump(metadata, f)
-            
+            file_metadata_id = self.files.create_file_metadata(self, current_user_id, filename, gwas_file.filename, file_path, 'gwas', file_size, md5_hash=None)
+
             total_time = (datetime.now() - start_time).total_seconds()
             logger.info(f"Completed: {filename} in {total_time:.1f} seconds")
             

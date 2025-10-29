@@ -11,6 +11,7 @@ class ProjectHandler(BaseHandler):
     def __init__(self, uri, db_name):
         super().__init__(uri, db_name)
         self.projects_collection = self.db['projects']
+        self.analysis_state_collection = self.db['analysis_states']
     
     def create_project(self, user_id, name, gwas_file_id, phenotype):
         """Create a new project"""
@@ -59,27 +60,27 @@ class ProjectHandler(BaseHandler):
             'user_id': user_id
         })
         return result.deleted_count > 0
-    
-    def get_project_analysis_path(self, user_id, project_id):
-        """Get the analysis path for a project"""
-        return f"data/projects/{user_id}/{project_id}/analysis"
-
-    def get_analysis_state_path(self, user_id, project_id):
-        """Get the analysis state file path"""
-        return f"data/states/{user_id}/{project_id}/analysis_state.json"
 
     def save_analysis_state(self, user_id, project_id, state_data):
-        """Save analysis state to file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        
-        with open(state_path, 'w') as f:
-            json.dump(state_data, f, default=str)
+        """Upsert analysis state into MongoDB"""
+        doc = {
+            'user_id': user_id,
+            'project_id': project_id,
+            'state': state_data,
+            'updated_at': datetime.now(timezone.utc),
+        }
+
+        self.analysis_state_collection.update_one(
+            {'user_id': user_id, 'project_id': project_id},
+            {'$set': doc},
+            upsert=True
+        )
 
     def load_analysis_state(self, user_id, project_id):
-        """Load analysis state from file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        if os.path.exists(state_path):
-            with open(state_path, 'r') as f:
-                return json.load(f)
-        return None
+        """Load analysis state from MongoDB"""
+        doc = self.analysis_state_collection.find_one(
+            {'user_id': user_id, 'project_id': project_id}
+        )
+        if not doc:
+            return None
+        return doc.get('state')
