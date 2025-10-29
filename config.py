@@ -6,6 +6,7 @@ from db import (
     UserHandler, ProjectHandler, FileHandler, AnalysisHandler,
     EnrichmentHandler, HypothesisHandler, SummaryHandler, TaskHandler
 )
+from db.state_cache.stateCache import RedisStatusCache
 
 class Config:
     """Centralized configuration for the application"""
@@ -18,6 +19,7 @@ class Config:
         self.swipl_port = 4242
         self.mongodb_uri = None
         self.db_name = None
+        self.redis_url = None
         self.embedding_model = "w601sxs/b1ade-embed-kd"
         self.plink_dir = "./data/1000Genomes_phase3/plink_format_b37"
         self.data_dir = "./data"
@@ -40,6 +42,7 @@ class Config:
         # Also load MongoDB config from environment
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
         return config
 
     @classmethod
@@ -53,6 +56,7 @@ class Config:
         config.swipl_port = int(os.getenv("SWIPL_PORT", "4242"))
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
         config.embedding_model = os.getenv("EMBEDDING_MODEL", "w601sxs/b1ade-embed-kd")
         config.plink_dir = os.getenv("PLINK_DIR", "./data/1000Genomes_phase3/plink_format_b37")
         config.data_dir = os.getenv("DATA_DIR", "./data")
@@ -80,6 +84,7 @@ def create_dependencies(config):
     # Use environment variables for MongoDB connection
     mongodb_uri = config.mongodb_uri 
     db_name = config.db_name
+    redis_url = config.redis_url
     
     # Validate MongoDB configuration
     if not mongodb_uri or not db_name:
@@ -96,5 +101,6 @@ def create_dependencies(config):
         'enrichment': EnrichmentHandler(mongodb_uri, db_name),
         'hypotheses': HypothesisHandler(mongodb_uri, db_name),
         'summaries': SummaryHandler(mongodb_uri, db_name),
-        'tasks': TaskHandler(mongodb_uri, db_name)
+        'tasks': TaskHandler(mongodb_uri, db_name),
+        'status_cache': RedisStatusCache(redis_url)
     }

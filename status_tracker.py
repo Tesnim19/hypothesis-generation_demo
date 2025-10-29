@@ -9,27 +9,25 @@ class TaskState(Enum):
 
 class StatusTracker:
     _instance = None
+    _task_handler = None
+    _cache = None
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.task_history = {}  # hypothesis_id -> list of task updates
-            cls._instance.completed_hypotheses = set()
         return cls._instance
     
     @classmethod
-    def initialize(cls, task_handler):
-        """Initialize the status tracker with a task handler"""
+    def initialize(cls, task_handler, cache):
+        """Initialize the status tracker with a task handler and cache"""
         cls._task_handler = task_handler
+        cls._cache = cache
     
     def add_update(self, hypothesis_id, progress, task_name, state, details=None, error=None):
         if not hypothesis_id:
               raise ValueError("Hypothesis ID is required")
         if not isinstance(state, TaskState):
             raise ValueError("Invalid task state provided")
-
-        if hypothesis_id not in self.task_history:
-            self.task_history[hypothesis_id] = []
             
         update = {
             "timestamp": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
@@ -43,7 +41,7 @@ class StatusTracker:
         if error:
             update["error"] = error
             
-        self.task_history[hypothesis_id].append(update)
+        self._cache.add_update(hypothesis_id, update)
 
         # Persist to DB on completion or failure
         if state in [TaskState.COMPLETED, TaskState.FAILED]:
@@ -51,36 +49,33 @@ class StatusTracker:
                 self._persist_and_clear(hypothesis_id)
     
     def _persist_and_clear(self, hypothesis_id):
-        """Persist task history to DB and clear from memory"""
-        if hypothesis_id in self.task_history:
-            # Get existing history from DB
-            db_history = self._task_handler.get_task_history(hypothesis_id) or []
-            new_history = self.task_history[hypothesis_id]
-            
-            # Combine and deduplicate
-            combined = db_history + new_history
-            deduplicated = {}
-            for update in combined:
-                key = (update['task'], update['timestamp'])
-                deduplicated[key] = update
-            
-            # Sort by timestamp
-            final_history = sorted(deduplicated.values(), key=lambda x: x['timestamp'])
-            
-            # Save to DB
-            self._task_handler.save_task_history(hypothesis_id, final_history)
-            
-            # Clear from memory
-            del self.task_history[hypothesis_id]
-            self.completed_hypotheses.add(hypothesis_id)
+        """Persist task history to DB and clear from cache """
+        # Get existing history from DB
+        db_history = self._task_handler.get_task_history(hypothesis_id) or []
+        new_history = self._cache.get_history(hypothesis_id) or [] 
+        
+        # Combine and deduplicate
+        combined = db_history + new_history
+        deduplicated = {}
+        for update in combined:
+            key = (update['task'], update['timestamp'])
+            deduplicated[key] = update
+        
+        # Sort by timestamp
+        final_history = sorted(deduplicated.values(), key=lambda x: x['timestamp'])
+        
+        # Save to DB
+        self._task_handler.save_task_history(hypothesis_id, final_history)
+        # Clear from Redis and mark persisted
+        self._cache.clear_history(hypothesis_id)
     
     def get_history(self, hypothesis_id):
         """Get complete task history from memory and DB without duplicates"""
-        memory_history = self.task_history.get(hypothesis_id, [])
-        db_history = self._task_handler.get_task_history(hypothesis_id) if hypothesis_id in self.completed_hypotheses else []
+        redis_history = self._cache.get_history(hypothesis_id) or []
+        db_history = self._task_handler.get_task_history(hypothesis_id) if self._cache.is_persisted(hypothesis_id) else []
         
         # Combine histories
-        combined_history = memory_history + db_history
+        combined_history = redis_history + db_history 
         
         if not combined_history:
             return []
@@ -97,8 +92,8 @@ class StatusTracker:
         return sorted_history
     
     def get_latest_state(self, hypothesis_id):
-        history = self.task_history.get(hypothesis_id, [])
-        return history[-1] if history else None
+        latest = self._cache.get_latest(hypothesis_id)
+        return latest
      
     def calculate_progress(self, task_history):
         """
@@ -158,6 +153,19 @@ class StatusTracker:
         hypothesis_percentage = (hypothesis_progress / total_hypothesis_weight) * 20
 
         return round(min(enrichment_percentage + hypothesis_percentage, 100), 2)
+
+    def recover_from_cache(self):
+        """startup recover: for each in-progress hypothesis in Redis, persist its history to DB and clear."""
+        ids = self._cache.list_inprogress()
+        for idx,hyp_id in enumerate(ids):
+            latest = self._cache.get_latest(hyp_id)
+            if latest:
+                latest["timestamp"] = latest.get("timestamp", datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z")
+                latest["state"] = latest.get("state", TaskState.FAILED.value)
+                latest["progress"] = latest.get("progress", 0)
+                self._cache.add_update(hyp_id, latest)
+        
+            self._persist_and_clear(hyp_id)
 
 # Global instance
 status_tracker = StatusTracker()

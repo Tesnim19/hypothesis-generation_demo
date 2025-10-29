@@ -4,8 +4,8 @@ import time
 from flask import json
 from loguru import logger
 from prefect import flow
-from status_tracker import TaskState
 import multiprocessing as mp
+from status_tracker import TaskState, status_tracker
 
 from tasks import (
     check_enrich, create_enrich_data, get_candidate_genes, predict_causal_gene, 
@@ -45,6 +45,9 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
     llm = deps['llm']
     prolog_query = deps['prolog_query']
     hypotheses = deps['hypotheses']
+
+    # initialize the status tracker in the prefect deployment process
+    status_tracker.initialize(deps['tasks'], deps['status_cache'])
     
     try:
         logger.info(f"Running project-based enrichment for project {project_id}, variant {variant}")
@@ -111,6 +114,9 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
     config = Config.from_env()
     deps = create_dependencies(config)
     enrichment = deps['enrichment']
+
+    # initialize the status tracker in the prefect deployment process
+    status_tracker.initialize(deps['tasks'], deps['status_cache'])
     
     hypothesis = check_hypothesis(hypotheses, current_user_id, enrich_id, go_id, hypothesis_id)
     if hypothesis:

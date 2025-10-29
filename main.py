@@ -79,7 +79,15 @@ def setup_api(config):
     
     # Initialize status tracker
     status_tracker = StatusTracker()
-    status_tracker.initialize(deps['tasks'])
+    status_tracker.initialize(deps['tasks'], deps['status_cache'])
+
+    # Recover in-progress tasks on startup
+    try:
+        status_tracker.recover_from_cache()
+        logger.info("Startup recovery completed.")
+    except Exception as e:
+        logger.error(f"Startup recovery failed: {e}")
+        
     try:
         hf_token = os.environ["HF_TOKEN"]
     except KeyError:

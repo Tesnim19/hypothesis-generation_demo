@@ -38,5 +38,6 @@ dependencies = [
     "pandas",
     "PyYAML",
     "psutil",
-    "rpy2"
+    "rpy2",
+    "redis>=5.0.0,<7.0.0",
 ]
