@@ -12,7 +12,9 @@ from api import (
     HypothesisAPI, 
     BulkHypothesisDeleteAPI,
     BulkProjectDeleteAPI,
-    ChatAPI, 
+    ChatAPI,
+    LDSCResultsAPI,
+    TissueSelectionAPI,
     init_socket_handlers,
     ProjectsAPI,
     AnalysisPipelineAPI,
@@ -117,6 +119,12 @@ def setup_api(config):
     
     # file management
     api.add_resource(FileDownloadAPI, "/download/<string:file_id>", resource_class_kwargs={"db": deps['db']})
+    #gene_expression
+    # api.add_resource(GeneExpressionAPI, '/api/gene-expression', resource_class_kwargs={"db": deps['db']})
+    # api.add_resource(GeneExpressionStatusAPI, '/api/gene-expression/status', resource_class_kwargs={"db": deps['db']})
+    # api.add_resource(CoexpressedGenesAPI, '/api/coexpressed-genes', resource_class_kwargs={"db": deps['db']})
+    api.add_resource(LDSCResultsAPI, '/api/ldsc-results', resource_class_kwargs={"db": deps['db']})
+    api.add_resource(TissueSelectionAPI, '/api/tissue-selection', resource_class_kwargs={"db": deps['db']})
 
     # Initialize socket handlers 
     socket_namespace = init_socket_handlers(deps['db'])

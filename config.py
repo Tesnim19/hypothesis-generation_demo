@@ -16,7 +16,7 @@ class Config:
         self.mongodb_uri = None
         self.db_name = None
         self.embedding_model = "w601sxs/b1ade-embed-kd"
-        self.plink_dir = "./data/1000Genomes_phase3/plink_format_b37"
+        self.plink_dir = "/app/data/1000Genomes_phase3/plink_format_b37"
         self.data_dir = "./data"
         self.host = "0.0.0.0"
         self.port = 5000

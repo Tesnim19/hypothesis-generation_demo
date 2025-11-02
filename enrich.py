@@ -33,44 +33,103 @@ class Enrich:
 
         return ensembl_ids
 
-    def get_coexpression_net(self, relevant_gene):
+    def get_coexpression_net(self, relevant_gene, tissue_name=None, cell_type='preadipocyte', k=500):
         """
-        Given a gene, tissue and cell_type, return the top correlated genes.
-        :param gene: Gene ID
-        :param tissue: Tissue name
-        :param cell_type: Cell Type
-        :return: List of genes
+        Given a gene, tissue and cell_type, return the top correlated genes using CellxGene API.
+        :param relevant_gene: Gene symbol (HGNC)
+        :param tissue_name: Tissue name from user selection
+        :param cell_type: Cell type for more specificity (like notebook)
+        :param k: Number of top correlated genes to return
+        :return: List of gene symbols (extracted from tuples like notebook)
         """
-        #TODO: Implement this using CellxGene API
-        config = Config.from_env()
-        brown_preadipocytes_top_corr_genes = pickle.load(open(f"{config.data_dir}/brown_preadipocytes_irx3_corr_top_500_genes.pkl", "rb"))
-        return brown_preadipocytes_top_corr_genes
+        if not tissue_name:
+            # Fallback to hardcoded data if no tissue specified
+            config = Config.from_env()
+            brown_preadipocytes_top_corr_genes = pickle.load(open(f"{config.data_dir}/brown_preadipocytes_irx3_corr_top_500_genes.pkl", "rb"))
+            return brown_preadipocytes_top_corr_genes
+        
+        try:
+            # Import the coexpression analysis function
+            from gene_expression_tasks import get_coexpression_matrix_for_tissue
+            
+            # Run tissue-specific coexpression analysis (matching notebook signature)
+            top_positive_tuples, top_negative_tuples, all_genes = get_coexpression_matrix_for_tissue(
+                relevant_gene, tissue_name, cell_type, k=k
+            )
+            
+            # Extract gene symbols from tuples like notebook: [(gene_symbol, correlation), ...]
+            if top_positive_tuples and isinstance(top_positive_tuples[0], tuple):
+                # Format: [(gene_symbol, correlation), ...] -> [gene_symbol, ...]
+                top_positive_genes = [gene_data[0] for gene_data in top_positive_tuples]
+            else:
+                # Fallback if format is different
+                top_positive_genes = top_positive_tuples
+            
+            return top_positive_genes
+            
+        except Exception as e:
+            print(f"Error running CellxGene coexpression analysis: {e}")
+            # Fallback to hardcoded data
+            config = Config.from_env()
+            brown_preadipocytes_top_corr_genes = pickle.load(open(f"{config.data_dir}/brown_preadipocytes_irx3_corr_top_500_genes.pkl", "rb"))
+            return brown_preadipocytes_top_corr_genes
 
 
-    def run(self, relevant_gene):
+    def run(self, relevant_gene, tissue_name=None):
         """
         Given a gene, return the enriched GO terms based on its co-expression network.
+        Now supports tissue-specific analysis when tissue_name is provided.
         """
         library = "GO_Biological_Process_2023"
         organism = "Human"
 
         config = Config.from_env()
-        background_genes = pickle.load(open(f"{config.data_dir}/brown_preadipocytes_irx3_corr_background_genes.pkl", "rb"))
-        gene_list = self.get_coexpression_net(relevant_gene)
-        # gene_list = self.get_hgnc_syms(gene_list)
-        # background_genes = self.get_hgnc_syms(background_genes) #TODO uncomment when working with CellxGene
+        
+        # Get coexpressed genes (now tissue-specific if tissue_name provided)
+        gene_list = self.get_coexpression_net(relevant_gene, tissue_name)
+        
+        # Use tissue-specific background or fallback to hardcoded
+        if tissue_name and gene_list:
+            # Get tissue-specific background genes from the coexpression analysis (like notebook)
+            try:
+                from gene_expression_tasks import get_coexpression_matrix_for_tissue
+                # Get all genes from the tissue analysis (this is our background)
+                _, _, all_tissue_genes = get_coexpression_matrix_for_tissue(relevant_gene, tissue_name, 'preadipocyte', k=500)
+                # Convert Ensembl IDs to HGNC symbols for background (matching the TODO comment)
+                background_genes = self.get_hgnc_syms(all_tissue_genes)
+                print(f"Running tissue-specific enrichment for {relevant_gene} in {tissue_name}")
+                print(f"Using tissue-specific background: {len(background_genes)} genes from CellxGene analysis")
+            except Exception as e:
+                print(f"Failed to get tissue-specific background genes: {e}")
+                print("Falling back to enrichr default background")
+                background_genes = None  # Let enrichr use its default background
+        else:
+            # Fallback to hardcoded background
+            background_genes = pickle.load(open(f"{config.data_dir}/brown_preadipocytes_irx3_corr_background_genes.pkl", "rb"))
+            # background_genes = self.get_hgnc_syms(background_genes) #TODO uncomment when working with CellxGene
+            print(f"Running standard enrichment for {relevant_gene}")
+        
         print(f"Relevant Gene: {relevant_gene}")
-        print(f"Gene list: {gene_list[:5]}")
+        print(f"Gene list: {gene_list[:5] if gene_list else []}")
+        print(f"Total coexpressed genes: {len(gene_list) if gene_list else 0}")
+        
+        if not gene_list:
+            print("No coexpressed genes found, returning empty results")
+            import pandas as pd
+            return pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes"])
+        
         res = gp.enrichr(gene_list=gene_list,
-                                      gene_sets=library,
-                                      background=background_genes,
-                                      organism=organism,
-                                      outdir=None).results
+                         gene_sets=library,
+                         background=background_genes,
+                         organism=organism,
+                         outdir=None).results
+        
         res.drop("Gene_set", axis=1, inplace=True)
         res.insert(1, "ID", res["Term"].apply(
             lambda x: x.split("(")[1].split(")")[0]))
         res["Term"] = res["Term"].apply(lambda x: x.split("(")[0])
         res = res[res["Adjusted P-value"] < 0.05]
+        
         desc = []
         for _, row in res.iterrows():
             go_id = row["ID"]
