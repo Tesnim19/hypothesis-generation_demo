@@ -206,6 +206,16 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
             "hypotheses": project_hypotheses
         }
         
+        # Log the hypotheses data being returned for debugging
+        summary_msg = f"Project {project_id} returning {len(project_hypotheses)} hypotheses with probabilities:"
+        logger.info(summary_msg)
+        print(f"[PROJECT_TASKS] {summary_msg}")  # Backup print statement
+        
+        for hyp in project_hypotheses:
+            hyp_msg = f"  - {hyp['id']}: probability={hyp.get('probability')}, status={hyp.get('status')}"
+            logger.info(hyp_msg)
+            print(f"[PROJECT_TASKS] {hyp_msg}")  # Backup print statement
+        
         return response, 200
         
     except Exception as e:

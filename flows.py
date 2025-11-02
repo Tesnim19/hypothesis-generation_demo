@@ -115,6 +115,8 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
             ).result()
             
             enrichment_data.append({
+            
+            enrichment_data.append({
                 "enrich_id": enrich_id,
                 "graph_index": original_i,
                 "graph_probability": prob
@@ -132,6 +134,8 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
             "status": "enrichment_complete"
         })
 
+        logger.info(f"Created {len(enrichment_data)} enrichments, main: {main_enrichment_id}")
+        logger.info(f"Child enrichments (will be processed on-demand): {all_enrich_ids[1:]}")
         logger.info(f"Created {len(enrichment_data)} enrichments, main: {main_enrichment_id}")
         logger.info(f"Child enrichments (will be processed on-demand): {all_enrich_ids[1:]}")
         
@@ -275,6 +279,8 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
     coexpressed_gene_ids = get_gene_ids(prolog_query, [g.lower() for g in coexpressed_gene_names], hypothesis_id)
 
     nodes, edges = causal_graph["nodes"], causal_graph["edges"]
+    
+    # Process variant nodes first to get their IDs
     
     # Process variant nodes first to get their IDs
     variant_nodes = [n for n in nodes if n["type"] == "snp"]
