@@ -50,8 +50,6 @@ RUN mkdir -p /opt/gcta && \
     find /opt/gcta -name "gcta64" -type f -exec ln -sf {} /usr/local/bin/gcta64 \; && \
     rm /tmp/gcta.zip
 
-RUN pip install --upgrade pip setuptools wheel
-
 # Install BiocManager first
 RUN Rscript -e " \
     options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
@@ -117,20 +115,53 @@ RUN Rscript -e " \
 
 # Final check
 RUN Rscript -e " \
-    cat('=== FINAL VERIFICATION ===\n'); \
-    cat('BiocManager:', as.character(packageVersion('BiocManager')), '\n'); \
-    cat('susieR:', as.character(packageVersion('susieR')), '\n'); \
-    cat('R version:', R.version.string, '\n'); \
+    cat('=== FINAL VERIFICATION ===\\n'); \
+    cat('BiocManager:', as.character(packageVersion('BiocManager')), '\\n'); \
+    cat('susieR:', as.character(packageVersion('susieR')), '\\n'); \
+    cat('R version:', R.version.string, '\\n'); \
     "
 
-# Install uv
+# Install Miniconda and set up LDSC environment
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p /opt/conda && \
+    rm /tmp/miniconda.sh && \
+    /opt/conda/bin/conda clean -afy
+
+# Create Python 2.7 environment only for LDSC
+RUN /opt/conda/bin/conda config --set channel_priority strict && \
+    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main && \
+    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r && \
+    /opt/conda/bin/conda create -n ldsc python=2.7 anaconda -y && \
+    /opt/conda/bin/conda clean -afy
+
+# Install LDSC in the conda environment
+RUN git clone https://github.com/bulik/ldsc.git /opt/ldsc
+WORKDIR /opt/ldsc
+
+# Install LDSC dependencies manually with compatible versions
+RUN /opt/conda/bin/conda install -n ldsc numpy scipy=1.2.1 pandas=0.24.2 bitarray -c conda-forge -y
+
+# Create wrapper scripts that activate the ldsc environment
+RUN echo '#!/bin/bash\nsource /opt/conda/bin/activate ldsc\npython /opt/ldsc/ldsc.py "$@"' > /usr/local/bin/ldsc && \
+    chmod +x /usr/local/bin/ldsc
+
+RUN echo '#!/bin/bash\nsource /opt/conda/bin/activate ldsc\npython /opt/ldsc/munge_sumstats.py "$@"' > /usr/local/bin/munge_sumstats && \
+    chmod +x /usr/local/bin/munge_sumstats
+
+# Reset workdir
+WORKDIR /app
+
+# Install uv (astral/uv) for Python dependency management
 RUN wget -qO- https://astral.sh/uv/install.sh | sh && \
     mv /root/.local/bin/uv /usr/local/bin/uv
 
+# Copy project files needed for uv
+COPY pyproject.toml .
+COPY uv.lock .
 
+# Set up Python environment with uv
 ENV UV_PROJECT_ENVIRONMENT=/opt/flask-venv
 ENV PATH="/opt/flask-venv/bin:$PATH"
-COPY pyproject.toml .
 RUN uv sync
 RUN uv pip install '.[r-integration]'
 

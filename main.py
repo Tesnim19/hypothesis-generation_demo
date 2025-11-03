@@ -12,7 +12,9 @@ from api import (
     HypothesisAPI, 
     BulkHypothesisDeleteAPI,
     BulkProjectDeleteAPI,
-    ChatAPI, 
+    ChatAPI,
+    LDSCResultsAPI,
+    TissueSelectionAPI,
     init_socket_handlers,
     ProjectsAPI,
     AnalysisPipelineAPI,
@@ -101,7 +103,8 @@ def setup_api(config):
             "prolog_query": deps['prolog_query'], 
             "enrichment": deps['enrichment'],
             "hypotheses": deps['hypotheses'],
-            "projects": deps['projects']
+            "projects": deps['projects'],
+            "gene_expression": deps['gene_expression']
         }
     )
     api.add_resource(HypothesisAPI, "/hypothesis", 
@@ -133,6 +136,7 @@ def setup_api(config):
         "projects": deps['projects'],
         "files": deps['files'],
         "analysis": deps['analysis'],
+        "gene_expression": deps['gene_expression'],
         "config": config
     })
     api.add_resource(CredibleSetsAPI, "/credible-sets", resource_class_kwargs={"analysis": deps['analysis']})
@@ -144,6 +148,8 @@ def setup_api(config):
     api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config, "phenotypes": deps['phenotypes']})
     api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={"config": config})
     api.add_resource(PhenotypesAPI, "/phenotypes", resource_class_kwargs={"phenotypes": deps['phenotypes']})
+    api.add_resource(LDSCResultsAPI, '/api/ldsc-results', resource_class_kwargs={"gene_expression": deps['gene_expression'], "projects": deps['projects']})
+    api.add_resource(TissueSelectionAPI, '/api/tissue-selection', resource_class_kwargs={"gene_expression": deps['gene_expression'], "projects": deps['projects']})
 
     # Initialize socket handlers 
     socket_namespace = init_socket_handlers(deps['hypotheses'])

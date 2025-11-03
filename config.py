@@ -4,7 +4,8 @@ from llm import LLM
 from query_swipl import PrologQuery
 from db import (
     UserHandler, ProjectHandler, FileHandler, AnalysisHandler,
-    EnrichmentHandler, HypothesisHandler, SummaryHandler, TaskHandler, PhenotypeHandler
+    EnrichmentHandler, HypothesisHandler, SummaryHandler, TaskHandler, PhenotypeHandler,
+    GeneExpressionHandler
 )
 
 class Config:
@@ -19,7 +20,7 @@ class Config:
         self.mongodb_uri = None
         self.db_name = None
         self.embedding_model = "w601sxs/b1ade-embed-kd"
-        self.plink_dir = "./data/1000Genomes_phase3/plink_format_b37"
+        self.plink_dir = "/app/data/1000Genomes_phase3/plink_format_b37"
         self.data_dir = "./data"
         self.host = "0.0.0.0"
         self.port = 5000
@@ -97,5 +98,6 @@ def create_dependencies(config):
         'hypotheses': HypothesisHandler(mongodb_uri, db_name),
         'summaries': SummaryHandler(mongodb_uri, db_name),
         'tasks': TaskHandler(mongodb_uri, db_name),
-        'phenotypes': PhenotypeHandler(mongodb_uri, db_name)
+        'phenotypes': PhenotypeHandler(mongodb_uri, db_name),
+        'gene_expression': GeneExpressionHandler(mongodb_uri, db_name)
     }

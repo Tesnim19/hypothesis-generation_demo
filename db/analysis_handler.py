@@ -205,3 +205,17 @@ class AnalysisHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Error getting credible set by ID: {str(e)}")
             raise
+    def update_analysis_state(self, project_id, user_id, update_data):
+        """Update analysis state by merging new data with existing state"""
+        # Load existing state
+        existing_state = self.load_analysis_state(user_id, project_id)
+        if existing_state is None:
+            existing_state = {}
+        
+        # Merge update data
+        existing_state.update(update_data)
+        
+        # Save updated state
+        self.save_analysis_state(user_id, project_id, existing_state)
+        logger.info(f"Updated analysis state for project {project_id} with keys: {list(update_data.keys())}")
+        return existing_state

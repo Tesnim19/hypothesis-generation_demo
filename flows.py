@@ -26,6 +26,13 @@ from project_tasks import (
     get_project_analysis_path_task
 )
 
+from gene_expression_tasks import (
+    run_background_ldsc_analysis, run_combined_ldsc_tissue_analysis, run_coexpression_pipeline, run_tissue_analysis_pipeline, setup_ldsc_environment, run_ldsc_analysis, process_ldsc_results,
+    load_ontology_mappings, map_tissues_to_cellxgene, run_coexpression_analysis,
+    convert_ensembl_to_hgnc, run_pathway_enrichment, find_munged_gwas_file,
+    extract_coexpressed_genes_for_enrichment, wait_for_ldsc_completion
+)
+
 import pandas as pd
 from datetime import datetime, timezone
 from prefect.task_runners import ThreadPoolTaskRunner
@@ -64,12 +71,16 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
     llm = deps['llm']
     prolog_query = deps['prolog_query']
     hypotheses = deps['hypotheses']
+    gene_expression = deps['gene_expression']
+    projects = deps['projects']
+    enrichment = deps['enrichment']
+    
     
     try:
         logger.info(f"Running project-based enrichment for project {project_id}, variant {variant}")
         
         # Check for existing enrichment data
-        enrich = check_enrich.submit(deps['enrichment'], current_user_id, variant, phenotype, hypothesis_id).result()
+        enrich = check_enrich.submit(enrichment, current_user_id, variant, phenotype, hypothesis_id).result()
         
         if enrich:
             logger.info("Retrieved enrich data from saved db")
@@ -93,33 +104,99 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         graphs_with_prob.sort(key=lambda x: x[2], reverse=True)
         logger.info(f"Graph probabilities: {[(i, prob) for i, _, prob in graphs_with_prob]}")
 
-        # Extract causal gene from the highest probability graph for enrichment analysis
-        temp_causal_gene = _extract_causal_gene_for_enrichment(graphs_with_prob[0][1] if graphs_with_prob else None, candidate_genes)
+        # Extract causal genes from ALL graphs to check if they differ
+        graph_genes = []
+        for idx, (original_i, graph, prob) in enumerate(graphs_with_prob):
+            gene = _extract_causal_gene_for_enrichment(graph, candidate_genes)
+            graph_genes.append((idx, gene))
         
-        enrich_tbl = enrichr.run(temp_causal_gene)
-        relevant_gos = llm.get_relevant_go(phenotype, enrich_tbl)
+        # Check if all graphs have the same causal gene
+        unique_genes = set(gene for _, gene in graph_genes)
+        use_shared_enrichment = len(unique_genes) == 1
+        
+        if use_shared_enrichment:
+            logger.info(f"All {len(graphs_with_prob)} graphs share the same causal gene: {list(unique_genes)[0]}")
+        else:
+            logger.info(f"Graphs have {len(unique_genes)} different causal genes: {unique_genes}")
+        
+        # Get tissue selection for enrichment
+        tissue_selection = gene_expression.get_tissue_selection(current_user_id, project_id, variant)
+        selected_tissue = None
+        
+        if tissue_selection:
+            selected_tissue = tissue_selection['tissue_name']
+            logger.info(f"Found user tissue selection: {selected_tissue} for variant {variant}")
+        else:
+            # Check for LDSC analysis
+            analysis_state = projects.load_analysis_state(current_user_id, project_id)
+            if analysis_state and 'ldsc_tissue_analysis' in analysis_state:
+                ldsc_tissue_data = analysis_state['ldsc_tissue_analysis']
+                if ldsc_tissue_data.get('status') == 'completed':
+                    tissue_rankings = ldsc_tissue_data.get('top_tissues', [])
+                    if tissue_rankings:
+                        selected_tissue = tissue_rankings[0].get('Name', tissue_rankings[0].get('tissue_name'))
+                        logger.info(f"Using top tissue from LDSC: {selected_tissue}")
 
         # Create enrichments for all graphs
         enrichment_data = []
         main_enrichment_id = None
+        shared_enrichment_cache = {}  # Cache for shared enrichments
         
         for idx, (original_i, graph, prob) in enumerate(graphs_with_prob):
+            this_causal_gene = graph_genes[idx][1]
+            
+            # If using shared enrichment and we've already computed for this gene
+            if use_shared_enrichment and this_causal_gene in shared_enrichment_cache:
+                logger.info(f"Reusing shared enrichment for gene {this_causal_gene}")
+                relevant_gos = shared_enrichment_cache[this_causal_gene]
+            else:
+                # Run enrichment for this specific gene
+                logger.info(f"Running enrichment for gene {this_causal_gene} (graph {idx+1}/{len(graphs_with_prob)})")
+                
+                emit_task_update(
+                    hypothesis_id=hypothesis_id,
+                    task_name=f"Enrichment Analysis ({idx+1}/{len(graphs_with_prob)})",
+                    state=TaskState.STARTED,
+                    details={"causal_gene": this_causal_gene, "tissue": selected_tissue or "standard"},
+                    progress=45 + (idx * 15 // len(graphs_with_prob))
+                )
+                
+                if selected_tissue:
+                    enrich_tbl = enrichr.run(this_causal_gene, tissue_name=selected_tissue)
+                else:
+                    enrich_tbl = enrichr.run(this_causal_gene)
+                
+                relevant_gos = llm.get_relevant_go(phenotype, enrich_tbl)
+                
+                # Cache if shared
+                if use_shared_enrichment:
+                    shared_enrichment_cache[this_causal_gene] = relevant_gos
+            
+            # Store metadata for the highest probability graph in the main hypothesis
+            if idx == 0:
+                best_causal_gene = this_causal_gene
+                
+                # Update hypothesis with best graph metadata (graph itself is in enrichment record)
+                hypotheses.update_hypothesis(hypothesis_id, {
+                    "causal_gene": best_causal_gene,
+                    "selected_tissue": selected_tissue,
+                    "enrichment_stage": "enrichment_running"
+                })
+            
             # Create enrichment for this graph
             enrich_id = create_enrich_data.submit(
-                deps['enrichment'], hypotheses, current_user_id, project_id, variant, 
-                phenotype, causal_gene, relevant_gos, {
+                enrichment, hypotheses, current_user_id, project_id, variant, 
+                phenotype, this_causal_gene, relevant_gos, {
                     "graph": graph,
                     "graph_index": original_i,
                     "total_graphs": len(graphs_list),
                 }, hypothesis_id
-            ).result()
-            
-            enrichment_data.append({
-            
+            ).result()            
             enrichment_data.append({
                 "enrich_id": enrich_id,
                 "graph_index": original_i,
-                "graph_probability": prob
+                "graph_probability": prob,
+                "causal_gene": this_causal_gene
             })
             
             if idx == 0:
@@ -450,7 +527,7 @@ def process_child_enrichments_simple(current_user_id, child_enrich_ids, parent_h
 
 
 @flow(log_prints=True)
-def analysis_pipeline_flow(projects_handler, analysis_handler, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
+def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1, 
                            coverage=0.95, min_abs_corr=0.5):
@@ -490,6 +567,13 @@ def analysis_pipeline_flow(projects_handler, analysis_handler, mongodb_uri, db_n
         else:
             munged_file = munged_file_result
             munged_df = pd.read_csv(munged_file, sep='\t')
+
+        # Start LDSC + tissue analysis immediately after munging (runs in parallel)
+        logger.info(f"[PIPELINE] Starting LDSC + tissue analysis in parallel after munging")
+        ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(gene_expression, analysis_handler,
+            munged_file, output_dir, project_id, user_id
+        )
+        logger.info(f"[PIPELINE] LDSC + tissue analysis started in background")
         
         # Update analysis state after preprocessing
         preprocessing_state = {
@@ -670,11 +754,40 @@ def analysis_pipeline_flow(projects_handler, analysis_handler, mongodb_uri, db_n
             high_pip_variants = len(combined_results[combined_results['PIP'] > 0.5])
             total_credible_sets = combined_results.get('credible_set', pd.Series([0])).max()
             
+            # Wait for parallel LDSC + tissue analysis to complete
+            logger.info(f"[PIPELINE] Stage 5: Waiting for LDSC + Tissue Analysis to complete")
+            
+            # Update analysis state for waiting on LDSC + tissue analysis
+            ldsc_tissue_state = {
+                "status": "Running",
+                "stage": "LDSC_Tissue_Analysis",
+                "progress": 85,
+                "message": "Fine-mapping completed, waiting for LDSC and tissue analysis"
+            }
+            save_analysis_state_task.submit(projects_handler, user_id, project_id, ldsc_tissue_state).result()
+            
+            try:
+                # Wait for the parallel LDSC + tissue analysis task to complete
+                ldsc_tissue_result = ldsc_tissue_future.result()
+                
+                logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!")
+                logger.info(f"[PIPELINE] - Analysis run ID: {ldsc_tissue_result['analysis_run_id']}")
+                logger.info(f"[PIPELINE] - Tissues analyzed: {ldsc_tissue_result['tissues_analyzed']}")
+                logger.info(f"[PIPELINE] - Significant tissues: {ldsc_tissue_result['significant_tissues']}")
+                
+                ldsc_status = "completed"
+                
+            except Exception as ldsc_e:
+                logger.error(f"[PIPELINE] LDSC + tissue analysis failed: {str(ldsc_e)}")
+                ldsc_status = "failed"
+                # Continue with pipeline completion even if LDSC fails
+            
             # Save completed analysis state
             completed_state = {
                 "status": "Completed",
                 "progress": 100,
                 "message": "Analysis completed successfully",
+                "ldsc_status": ldsc_status
             }
             save_analysis_state_task.submit(projects_handler, user_id, project_id, completed_state).result()
             

@@ -37,7 +37,13 @@ dependencies = [
     "tzlocal",
     "pandas",
     "PyYAML",
-    "psutil"
+    "psutil",
+    "scipy",
+    "pronto",
+    "tiledbsoma",
+    "cellxgene-census",
+    "
+
 ]
 
 [project.optional-dependencies]
