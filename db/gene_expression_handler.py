@@ -288,8 +288,7 @@ class GeneExpressionHandler(BaseHandler):
 
     # ==================== TISSUE SELECTION METHODS ====================
     
-    def save_tissue_selection(self, user_id, project_id, variant_id, tissue_name, tissue_data=None):
-        """Save user's tissue selection for a specific variant"""
+    def save_tissue_selection(self, user_id, project_id, variant_id, tissue_name):
         try:
             selection_data = {
                 'id': str(uuid4()),
@@ -297,7 +296,6 @@ class GeneExpressionHandler(BaseHandler):
                 'project_id': project_id,
                 'variant_id': variant_id,
                 'tissue_name': tissue_name,
-                'tissue_data': tissue_data or {},
                 'created_at': datetime.now(timezone.utc)
             }
             

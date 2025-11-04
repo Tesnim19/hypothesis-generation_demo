@@ -14,7 +14,6 @@ from api import (
     BulkProjectDeleteAPI,
     ChatAPI,
     LDSCResultsAPI,
-    TissueSelectionAPI,
     init_socket_handlers,
     ProjectsAPI,
     AnalysisPipelineAPI,
@@ -129,7 +128,8 @@ def setup_api(config):
         "files": deps['files'],
         "analysis": deps['analysis'],
         "hypotheses": deps['hypotheses'],
-        "enrichment": deps['enrichment']
+        "enrichment": deps['enrichment'],
+        "gene_expression": deps['gene_expression']
     })
     api.add_resource(BulkProjectDeleteAPI, "/projects/delete", resource_class_kwargs={"projects": deps['projects']})
     api.add_resource(AnalysisPipelineAPI, "/analysis-pipeline", resource_class_kwargs={
@@ -148,8 +148,7 @@ def setup_api(config):
     api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config, "phenotypes": deps['phenotypes']})
     api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={"config": config})
     api.add_resource(PhenotypesAPI, "/phenotypes", resource_class_kwargs={"phenotypes": deps['phenotypes']})
-    api.add_resource(LDSCResultsAPI, '/api/ldsc-results', resource_class_kwargs={"gene_expression": deps['gene_expression'], "projects": deps['projects']})
-    api.add_resource(TissueSelectionAPI, '/api/tissue-selection', resource_class_kwargs={"gene_expression": deps['gene_expression'], "projects": deps['projects']})
+    # Deprecated: LDSC and tissue-selection endpoints are now folded into /projects and /enrich
 
     # Initialize socket handlers 
     socket_namespace = init_socket_handlers(deps['hypotheses'])

@@ -71,11 +71,19 @@ class EnrichAPI(Resource):
     @token_required
     def post(self, current_user_id):
         args = request.args
-        variant = args['variant']
-        project_id = args.get('project_id')
+        json_data = None
+        try:
+            json_data = request.get_json(silent=True) or {}
+        except Exception:
+            json_data = {}
+
+        variant = args.get('variant') or (json_data.get('variant') if isinstance(json_data, dict) else None)
+        project_id = args.get('project_id') or (json_data.get('project_id') if isinstance(json_data, dict) else None)
         
         if not project_id:
             return {"error": "project_id is required"}, 400
+        if not variant:
+            return {"error": "variant is required"}, 400
         
         # Validate project exists and get phenotype from project
         project = self.projects.get_projects(current_user_id, project_id)
@@ -83,6 +91,24 @@ class EnrichAPI(Resource):
             return {"error": "Project not found or access denied"}, 404
         
         phenotype = project['phenotype']
+
+        tissue_name = (args.get('tissue_name') or (json_data.get('tissue_name') if isinstance(json_data, dict) else None))
+        if not tissue_name:
+            return {"error": "tissue_name is required"}, 400
+
+        # Validate tissue exists for the project and save selection 
+        try:
+            available_tissues = self.gene_expression.get_available_tissues_for_selection(current_user_id, project_id)
+            tissue_names = [t.get('tissue_name') for t in (available_tissues or [])]
+            if tissue_name not in tissue_names:
+                return {"error": f"Invalid tissue selection. Available tissues: {tissue_names}"}, 400
+            # Persist selection 
+            self.gene_expression.save_tissue_selection(
+                current_user_id, project_id, variant, tissue_name, {}
+            )
+            logger.info(f"Saved tissue selection in /enrich: {tissue_name} for variant {variant} in project {project_id}")
+        except Exception as e:
+            logger.warning(f"Failed to save/validate tissue selection: {e}")
         
         logger.info(f"Project-based enrichment request for project {project_id}")
         
@@ -633,12 +659,13 @@ class ProjectsAPI(Resource):
     """
     API endpoint for managing projects
     """
-    def __init__(self, projects, files, analysis, hypotheses, enrichment):
+    def __init__(self, projects, files, analysis, hypotheses, enrichment, gene_expression):
         self.projects = projects
         self.files = files
         self.analysis = analysis
         self.hypotheses = hypotheses
         self.enrichment = enrichment
+        self.gene_expression = gene_expression
     
     @token_required
     def get(self, current_user_id):
@@ -648,6 +675,16 @@ class ProjectsAPI(Resource):
         if project_id:
             response_data, status_code = get_project_with_full_data(self.projects, self.analysis, self.hypotheses, self.enrichment, current_user_id, project_id)
             if status_code == 200:
+                try:
+                    tissues = self.gene_expression.get_available_tissues_for_selection(current_user_id, project_id) or []
+                    response_data["tissues"] = tissues
+                    response_data["total_tissues"] = len(tissues)
+                    response_data["significant_tissues"] = len([t for t in tissues if t.get('is_significant')])
+                except Exception as e:
+                    logger.warning(f"Could not load tissues for project {project_id}: {e}")
+                    response_data["tissues"] = []
+                    response_data["total_tissues"] = 0
+                    response_data["significant_tissues"] = 0
                 response_data = serialize_datetime_fields(response_data)
             return response_data, status_code
         
@@ -1151,95 +1188,7 @@ class LDSCResultsAPI(Resource):
             logger.error(f"Error getting LDSC results: {str(e)}")
             return {"error": f"Error retrieving LDSC results: {str(e)}"}, 500
 
-class TissueSelectionAPI(Resource):
-    """API endpoint for tissue selection workflow"""
-    
-    def __init__(self, gene_expression, projects):
-        self.gene_expression = gene_expression
-        self.projects = projects
-    
-    @token_required
-    def get(self, current_user_id):
-        """Get available tissues for user selection"""
-        project_id = request.args.get('project_id')
-        
-        if not project_id:
-            return {"error": "project_id is required"}, 400
-        
-        try:
-            # Validate project access
-            project = self.projects.get_projects(current_user_id, project_id)
-            if not project:
-                return {"error": "Project not found or access denied"}, 404
-            
-            # Get available tissues from LDSC analysis
-            tissues = self.gene_expression.get_available_tissues_for_selection(current_user_id, project_id)
-            
-            if not tissues:
-                return {
-                    "error": "No tissue analysis results found. Please ensure the analysis pipeline has completed successfully."
-                }, 404
-            
-            response_data = {
-                "project_id": project_id,
-                "total_tissues": len(tissues),
-                "significant_tissues": len([t for t in tissues if t['is_significant']]),
-                "tissues": tissues
-            }
-            
-            return serialize_datetime_fields(response_data), 200
-            
-        except Exception as e:
-            logger.error(f"Error getting tissues for selection: {str(e)}")
-            return {"error": f"Error retrieving tissues: {str(e)}"}, 500
-    
-    @token_required
-    def post(self, current_user_id):
-        """Save user's tissue selection for a variant"""
-        try:
-            data = request.get_json()
-            
-            # Validate required fields
-            required_fields = ['project_id', 'variant_id', 'tissue_name']
-            for field in required_fields:
-                if not data.get(field):
-                    return {"error": f"{field} is required"}, 400
-            
-            project_id = data['project_id']
-            variant_id = data['variant_id']
-            tissue_name = data['tissue_name']
-            tissue_data = data.get('tissue_data', {})
-            
-            # Validate project access
-            project = self.projects.get_projects(current_user_id, project_id)
-            if not project:
-                return {"error": "Project not found or access denied"}, 404
-            
-            # Validate that the tissue exists in LDSC results
-            available_tissues = self.gene_expression.get_available_tissues_for_selection(current_user_id, project_id)
-            tissue_names = [t['tissue_name'] for t in available_tissues]
-            
-            if tissue_name not in tissue_names:
-                return {"error": f"Invalid tissue selection. Available tissues: {tissue_names}"}, 400
-            
-            # Save the tissue selection
-            selection_id = self.gene_expression.save_tissue_selection(
-                current_user_id, project_id, variant_id, tissue_name, tissue_data
-            )
-            
-            logger.info(f"Saved tissue selection: {tissue_name} for variant {variant_id} in project {project_id}")
-            
-            return {
-                "message": "Tissue selection saved successfully",
-                "selection_id": selection_id,
-                "project_id": project_id,
-                "variant_id": variant_id,
-                "tissue_name": tissue_name
-            }, 201
-            
-        except Exception as e:
-            logger.error(f"Error saving tissue selection: {str(e)}")
-            return {"error": f"Error saving tissue selection: {str(e)}"}, 500
+ 
 
 class FileDownloadAPI(Resource):
     """
