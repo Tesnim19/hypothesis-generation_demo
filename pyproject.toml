@@ -42,7 +42,6 @@ dependencies = [
     "pronto",
     "tiledbsoma",
     "cellxgene-census",
-    "
 
 ]
 

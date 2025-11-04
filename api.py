@@ -23,13 +23,14 @@ import re
 
 
 class EnrichAPI(Resource):
-    def __init__(self, enrichr, llm, prolog_query, enrichment, hypotheses, projects):
+    def __init__(self, enrichr, llm, prolog_query, enrichment, hypotheses, projects, gene_expression=None):
         self.enrichr = enrichr
         self.llm = llm
         self.prolog_query = prolog_query
         self.enrichment = enrichment
         self.hypotheses = hypotheses
         self.projects = projects
+        self.gene_expression = gene_expression
 
     @token_required
     def get(self, current_user_id):

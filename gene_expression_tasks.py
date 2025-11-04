@@ -865,30 +865,6 @@ def run_tissue_analysis_pipeline(gene_expression, analysis, current_user_id, pro
     return ldsc_results_data
 
 
-@task(log_prints=True)
-def wait_for_ldsc_completion(gene_expression, project_id, current_user_id, hypothesis_id, max_wait_time=600):
-    """Wait for LDSC completion with proper status updates"""
-    
-    wait_interval = 10   # Check every 10 seconds
-    waited = 0
-    
-    while waited < max_wait_time:
-        time.sleep(wait_interval)
-        waited += wait_interval
-        
-        ldsc_status = gene_expression.check_gene_expression_status(project_id, current_user_id)
-        if ldsc_status['status'] in ['completed', 'ldsc_completed']:
-            logger.info("LDSC analysis completed")
-            break
-        elif ldsc_status['status'] == 'failed':
-            raise RuntimeError("LDSC analysis failed")
-    else:
-        raise RuntimeError("LDSC analysis timed out")
-    
-    # Get LDSC results
-    ldsc_results = gene_expression.get_gene_expression_results(project_id=project_id, user_id=current_user_id)
-    return ldsc_results[0]['ldsc_results'][:10] if ldsc_results else []
-
 
 @task(log_prints=True)
 def run_coexpression_pipeline(current_user_id, project_id, causal_gene, tissue_rankings):
@@ -926,7 +902,7 @@ def run_coexpression_pipeline(current_user_id, project_id, causal_gene, tissue_r
 
 
 @task(log_prints=True)
-def run_combined_ldsc_tissue_analysis(gene_expression, analysis_handler, munged_file, output_dir, project_id, user_id):
+def run_combined_ldsc_tissue_analysis(gene_expression, projects_handler, munged_file, output_dir, project_id, user_id):
     """Combined LDSC + tissue analysis as part of main analysis pipeline"""
     analysis_run_id = None
     try:
@@ -1003,8 +979,8 @@ def run_combined_ldsc_tissue_analysis(gene_expression, analysis_handler, munged_
             }
         }
         
-        # Save to project analysis state
-        analysis_handler.update_analysis_state(project_id, user_id, analysis_summary)
+        # Save to project analysis state using projects_handler (not analysis_handler)
+        projects_handler.save_analysis_state(user_id, project_id, analysis_summary)
         
         logger.info(f"[PIPELINE] Combined LDSC + tissue analysis completed successfully!")
         logger.info(f"[PIPELINE] Analyzed {len(ldsc_results_data)} tissues, found {analysis_summary['ldsc_tissue_analysis']['significant_tissues_count']} significant")

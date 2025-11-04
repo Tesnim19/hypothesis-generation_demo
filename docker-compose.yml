@@ -19,8 +19,8 @@ services:
       - "4291:4242"
     volumes:
       - ./pl:/app/pl
-      - /mnt/hdd_1/tesnim/version1/prolog_out_v2:/mnt/prolog_out_v2
-      - /mnt/hdd_1/tesnim/version1/prolog_out_v3:/mnt/prolog_out_v3
+      - /mnt/hdd_2/tesnim/version1/prolog_out_v2:/mnt/prolog_out_v2
+      - /mnt/hdd_2/tesnim/version1/prolog_out_v3:/mnt/prolog_out_v3
     networks:
       - app_network
 
@@ -38,7 +38,7 @@ services:
     volumes:
       - .:/app
       - ./data:/app/data
-      - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data  
+      - /mnt/hdd_2/rediet/hypothesis-generation-demo/data:/app/data/external_data  
     depends_on:
       - mongo
       - prolog-service

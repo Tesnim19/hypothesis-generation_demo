@@ -30,7 +30,7 @@ from gene_expression_tasks import (
     run_background_ldsc_analysis, run_combined_ldsc_tissue_analysis, run_coexpression_pipeline, run_tissue_analysis_pipeline, setup_ldsc_environment, run_ldsc_analysis, process_ldsc_results,
     load_ontology_mappings, map_tissues_to_cellxgene, run_coexpression_analysis,
     convert_ensembl_to_hgnc, run_pathway_enrichment, find_munged_gwas_file,
-    extract_coexpressed_genes_for_enrichment, wait_for_ldsc_completion
+    extract_coexpressed_genes_for_enrichment
 )
 
 import pandas as pd
@@ -570,7 +570,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
 
         # Start LDSC + tissue analysis immediately after munging (runs in parallel)
         logger.info(f"[PIPELINE] Starting LDSC + tissue analysis in parallel after munging")
-        ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(gene_expression, analysis_handler,
+        ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(gene_expression, projects_handler,
             munged_file, output_dir, project_id, user_id
         )
         logger.info(f"[PIPELINE] LDSC + tissue analysis started in background")
