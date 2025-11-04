@@ -105,18 +105,13 @@ def count_gwas_records(file_path):
         return 0
 
 
-def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, enrichment_handler, user_id, project_id):
+def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, enrichment_handler, user_id, project_id, gene_expression_handler=None):
     """Get comprehensive project data including state, hypotheses, and credible sets"""
     try:
         # Get basic project info
         project = projects_handler.get_projects(user_id, project_id)
         if not project:
             return {"error": "Project not found"}, 404
-        
-        # Get analysis state (may be None for new projects)
-        analysis_state = projects_handler.load_analysis_state(user_id, project_id)
-        if not analysis_state:
-            analysis_state = {"status": "not_started"}
         
         # Get credible sets with simplified metadata
         credible_sets_data = []
@@ -134,6 +129,15 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
         except Exception as cs_e:
             logger.warning(f"Could not load credible sets for project {project_id}: {cs_e}")
             credible_sets_data = []
+        
+        # Get analysis state
+        analysis_state = projects_handler.load_analysis_state(user_id, project_id)
+        if not analysis_state:
+            # Infer status from whether results exist
+            if credible_sets_data and len(credible_sets_data) > 0:
+                analysis_state = {"status": "Completed"}
+            else:
+                analysis_state = {"status": "not_started"}
         
         # Get hypotheses for this project
         project_hypotheses = []
@@ -183,6 +187,16 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
             logger.warning(f"Could not load hypotheses for project {project_id}: {hyp_e}")
             project_hypotheses = []
         
+        # Get LDSC data
+        ldsc_data = None
+        if gene_expression_handler:
+            try:
+                ldsc_data = gene_expression_handler.get_ldsc_results_for_project(user_id, project_id, limit=10, format='summary')
+                if ldsc_data:
+                    logger.info(f"Retrieved LDSC summary from MongoDB for project {project_id}")
+            except Exception as ldsc_e:
+                logger.warning(f"Could not load LDSC data: {ldsc_e}")
+        
         # Build comprehensive response
         response = {
             "id": project["id"],
@@ -205,6 +219,9 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
             # Hypotheses information
             "hypotheses": project_hypotheses
         }
+        
+        if ldsc_data:
+            response["ldsc"] = ldsc_data
         
         # Log the hypotheses data being returned for debugging
         summary_msg = f"Project {project_id} returning {len(project_hypotheses)} hypotheses with probabilities:"

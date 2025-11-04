@@ -98,7 +98,7 @@ class EnrichAPI(Resource):
 
         # Validate tissue exists for the project and save selection 
         try:
-            available_tissues = self.gene_expression.get_available_tissues_for_selection(current_user_id, project_id)
+            available_tissues = self.gene_expression.get_ldsc_results_for_project(current_user_id, project_id, limit=20, format='selection')
             tissue_names = [t.get('tissue_name') for t in (available_tissues or [])]
             if tissue_name not in tissue_names:
                 return {"error": f"Invalid tissue selection. Available tissues: {tissue_names}"}, 400
@@ -673,18 +673,11 @@ class ProjectsAPI(Resource):
         project_id = request.args.get('id')
         
         if project_id:
-            response_data, status_code = get_project_with_full_data(self.projects, self.analysis, self.hypotheses, self.enrichment, current_user_id, project_id)
+            response_data, status_code = get_project_with_full_data(
+                self.projects, self.analysis, self.hypotheses, self.enrichment, 
+                current_user_id, project_id, gene_expression_handler=self.gene_expression
+            )
             if status_code == 200:
-                try:
-                    tissues = self.gene_expression.get_available_tissues_for_selection(current_user_id, project_id) or []
-                    response_data["tissues"] = tissues
-                    response_data["total_tissues"] = len(tissues)
-                    response_data["significant_tissues"] = len([t for t in tissues if t.get('is_significant')])
-                except Exception as e:
-                    logger.warning(f"Could not load tissues for project {project_id}: {e}")
-                    response_data["tissues"] = []
-                    response_data["total_tissues"] = 0
-                    response_data["significant_tissues"] = 0
                 response_data = serialize_datetime_fields(response_data)
             return response_data, status_code
         

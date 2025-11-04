@@ -127,15 +127,11 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
             selected_tissue = tissue_selection['tissue_name']
             logger.info(f"Found user tissue selection: {selected_tissue} for variant {variant}")
         else:
-            # Check for LDSC analysis
-            analysis_state = projects.load_analysis_state(current_user_id, project_id)
-            if analysis_state and 'ldsc_tissue_analysis' in analysis_state:
-                ldsc_tissue_data = analysis_state['ldsc_tissue_analysis']
-                if ldsc_tissue_data.get('status') == 'completed':
-                    tissue_rankings = ldsc_tissue_data.get('top_tissues', [])
-                    if tissue_rankings:
-                        selected_tissue = tissue_rankings[0].get('Name', tissue_rankings[0].get('tissue_name'))
-                        logger.info(f"Using top tissue from LDSC: {selected_tissue}")
+            # Get top tissue from LDSC analysis (from MongoDB)
+            ldsc_results = gene_expression.get_ldsc_results_for_project(current_user_id, project_id, limit=1, format='selection')
+            if ldsc_results and len(ldsc_results) > 0:
+                selected_tissue = ldsc_results[0].get('tissue_name')
+                logger.info(f"Using top tissue from LDSC (MongoDB): {selected_tissue}")
 
         # Create enrichments for all graphs
         enrichment_data = []

@@ -335,42 +335,74 @@ class GeneExpressionHandler(BaseHandler):
             logger.error(f"Error getting tissue selection: {str(e)}")
             return None
     
-    def get_available_tissues_for_selection(self, user_id, project_id, limit=20):
-        """Get available tissues from LDSC analysis for user selection"""
+    def get_ldsc_results_for_project(self, user_id, project_id, limit=10, format='summary'):
         try:
             # Get the latest LDSC analysis for this project
             latest_run = self.gene_expression_runs_collection.find_one(
                 {
                     'user_id': user_id,
                     'project_id': project_id,
-                    'gene_of_interest': 'project_analysis',  # Project-level analysis
+                    'gene_of_interest': 'project_analysis',
                     'status': {'$in': ['ldsc_tissue_completed', 'completed']}
                 },
                 sort=[('created_at', -1)]
             )
             
             if not latest_run:
-                return []
+                return None if format == 'summary' else []
             
-            # Get LDSC results for tissue selection
+            # Get top LDSC results sorted by p-value (most significant first)
             ldsc_results = list(self.ldsc_results_collection.find(
                 {'analysis_run_id': latest_run['id']}
-            ).sort('p_value', 1).limit(limit))  # Sort by p-value (most significant first)
+            ).sort('p_value', 1).limit(limit))
             
-            # Format for frontend selection
-            tissues = []
-            for result in ldsc_results:
-                tissue_data = {
-                    'tissue_name': result['tissue_name'],
-                    'coefficient': result.get('coefficient'),
-                    'p_value': result.get('p_value'),
-                    'rank_order': result.get('rank_order'),
-                    'is_significant': result.get('p_value', 1) < 0.05
+            if not ldsc_results:
+                return None if format == 'summary' else []
+            
+            if format == 'selection':
+                # Format for tissue selection UI
+                tissues = []
+                for result in ldsc_results:
+                    tissue_data = {
+                        'tissue_name': result['tissue_name'],
+                        'coefficient': result.get('coefficient'),
+                        'p_value': result.get('p_value'),
+                        'rank_order': result.get('rank_order'),
+                        'is_significant': result.get('p_value', 1) < 0.05
+                    }
+                    tissues.append(tissue_data)
+                return tissues
+            
+            else:  # format == 'summary'
+                # Get total counts
+                total_tissues = self.ldsc_results_collection.count_documents(
+                    {'analysis_run_id': latest_run['id']}
+                )
+                
+                significant_count = self.ldsc_results_collection.count_documents({
+                    'analysis_run_id': latest_run['id'],
+                    'p_value': {'$lt': 0.05}
+                })
+                
+                # Format for project API response
+                tissues = [
+                    {
+                        'name': r['tissue_name'],
+                        'coefficient': r.get('coefficient'),
+                        'coefficient_std_error': r.get('coefficient_se'),
+                        'p_value': r.get('p_value')
+                    }
+                    for r in ldsc_results
+                ]
+                
+                return {
+                    'status': 'completed',
+                    'tissues': tissues,
+                    'total_tissues_analyzed': total_tissues,
+                    'significant_tissues_count': significant_count,
+                    'completed_at': latest_run.get('updated_at') or latest_run.get('created_at')
                 }
-                tissues.append(tissue_data)
-            
-            return tissues
             
         except Exception as e:
-            logger.error(f"Error getting available tissues: {str(e)}")
-            return []
+            logger.error(f"Error getting LDSC results: {str(e)}")
+            return None if format == 'summary' else []

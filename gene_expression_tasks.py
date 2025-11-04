@@ -967,29 +967,17 @@ def run_combined_ldsc_tissue_analysis(gene_expression, projects_handler, munged_
         # Update status to completed
         gene_expression.update_gene_expression_run_status(analysis_run_id, 'ldsc_tissue_completed')
         
-        # Update project analysis state with summary
-        analysis_summary = {
-            "ldsc_tissue_analysis": {
-                "status": "completed",
-                "analysis_run_id": analysis_run_id,
-                "top_tissues": ldsc_results_data[:10],
-                "total_tissues_analyzed": len(ldsc_results_data),
-                "significant_tissues_count": len([t for t in ldsc_results_data if t.get('Coefficient_P_value', 1) < 0.05]),
-                "completed_at": datetime.now(timezone.utc).isoformat()
-            }
-        }
-        
-        # Save to project analysis state using projects_handler (not analysis_handler)
-        projects_handler.save_analysis_state(user_id, project_id, analysis_summary)
+    
+        significant_count = len([t for t in ldsc_results_data if t.get('Coefficient_P_value', 1) < 0.05])
         
         logger.info(f"[PIPELINE] Combined LDSC + tissue analysis completed successfully!")
-        logger.info(f"[PIPELINE] Analyzed {len(ldsc_results_data)} tissues, found {analysis_summary['ldsc_tissue_analysis']['significant_tissues_count']} significant")
+        logger.info(f"[PIPELINE] Analyzed {len(ldsc_results_data)} tissues, found {significant_count} significant")
         
         return {
             "success": True,
             "analysis_run_id": analysis_run_id,
             "tissues_analyzed": len(ldsc_results_data),
-            "significant_tissues": analysis_summary['ldsc_tissue_analysis']['significant_tissues_count'],
+            "significant_tissues": significant_count,
             "top_tissues": ldsc_results_data[:10]
         }
         
