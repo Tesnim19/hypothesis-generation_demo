@@ -47,7 +47,7 @@ class PhenotypeHandler(BaseHandler):
             raise
 
     def get_phenotypes(self, phenotype_id=None, limit=None, skip=0, search_term=None):
-        """Get phenotypes with optional filtering"""
+        """Get phenotypes with optional filtering and automatic memory protection"""
         try:
             query = {}
             
@@ -66,15 +66,21 @@ class PhenotypeHandler(BaseHandler):
             
             if skip > 0:
                 cursor = cursor.skip(skip)
-            if limit:
-                cursor = cursor.limit(limit)
                 
+            if limit is None:
+                DEFAULT_SAFE_LIMIT = 5000
+                logger.warning(f"No limit specified for phenotype query. Applying default safe limit of {DEFAULT_SAFE_LIMIT} to prevent memory issues.")
+                cursor = cursor.limit(DEFAULT_SAFE_LIMIT)
+            elif limit > 0:
+                cursor = cursor.limit(limit)                
             phenotypes = list(cursor)
             return phenotypes
             
         except Exception as e:
             logger.error(f"Error getting phenotypes: {str(e)}")
             raise
+
+
 
     def count_phenotypes(self, search_term=None):
         """Count total phenotypes with optional search filter"""

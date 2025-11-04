@@ -1365,11 +1365,13 @@ class GWASFilesAPI(Resource):
                 
                 gwas_files.append(gwas_file_entry)
             
-            # Get all phenotypes from database
+            # Get phenotypes from database with pagination to prevent memory issues
             phenotypes = []
             try:
-                # Get all phenotypes without any limit
-                all_phenotypes = self.phenotypes.get_phenotypes()
+                DEFAULT_PHENOTYPE_LIMIT = 1000
+                
+                limited_phenotypes = self.phenotypes.get_phenotypes(limit=DEFAULT_PHENOTYPE_LIMIT)
+                total_phenotype_count = self.phenotypes.count_phenotypes()
                 
                 # Format for frontend compatibility
                 phenotypes = [
@@ -1377,19 +1379,31 @@ class GWASFilesAPI(Resource):
                         "id": p["id"],
                         "name": p["phenotype_name"]
                     }
-                    for p in all_phenotypes
+                    for p in limited_phenotypes
                 ]
                 
-                logger.info(f"Loaded {len(phenotypes)} phenotypes from database")
+                logger.info(f"Loaded {len(phenotypes)} phenotypes from database (limited to {DEFAULT_PHENOTYPE_LIMIT}, total available: {total_phenotype_count})")
+                
+                # Add metadata about pagination
+                if total_phenotype_count > DEFAULT_PHENOTYPE_LIMIT:
+                    logger.warning(f"Only showing first {DEFAULT_PHENOTYPE_LIMIT} phenotypes out of {total_phenotype_count} total. Use PhenotypesAPI with pagination for full access.")
                     
             except Exception as e:
                 logger.warning(f"Could not load phenotypes from database: {str(e)}, using empty list")
                 phenotypes = []
             
+            # Include pagination metadata for phenotypes
+            phenotype_metadata = {
+                "phenotypes": phenotypes,
+                "phenotype_count": len(phenotypes),
+                "total_phenotypes": total_phenotype_count if 'total_phenotype_count' in locals() else len(phenotypes),
+                "has_more_phenotypes": total_phenotype_count > DEFAULT_PHENOTYPE_LIMIT if 'total_phenotype_count' in locals() and 'DEFAULT_PHENOTYPE_LIMIT' in locals() else False
+            }
+            
             return {
                 "gwas_files": gwas_files,
                 "total_files": len(gwas_files),
-                "phenotypes": phenotypes
+                **phenotype_metadata
             }, 200
             
         except Exception as e:
@@ -1405,7 +1419,7 @@ class PhenotypesAPI(Resource):
         self.phenotypes = phenotypes
 
     def get(self):
-        """Get phenotypes with optional filtering and pagination"""
+        """Get phenotypes with pagination to prevent memory issues"""
         try:
             # Get query parameters
             phenotype_id = request.args.get('id')
@@ -1418,9 +1432,14 @@ class PhenotypesAPI(Resource):
                 phenotype = self.phenotypes.get_phenotypes(phenotype_id=phenotype_id)
                 if not phenotype:
                     return {"error": "Phenotype not found"}, 404
-                return {"phenotype": phenotype}, 200
+                return serialize_datetime_fields({"phenotype": phenotype}), 200
             
-            # Get all phenotypes with optional filtering
+            # Set reasonable default limit to prevent memory issues
+            if limit is None:
+                limit = 100
+                logger.info(f"No limit specified, using default limit of {limit} for memory protection")
+            
+            # Get phenotypes with pagination
             phenotypes = self.phenotypes.get_phenotypes(
                 limit=limit, 
                 skip=skip, 
@@ -1434,13 +1453,15 @@ class PhenotypesAPI(Resource):
                 "phenotypes": phenotypes,
                 "total_count": total_count,
                 "skip": skip,
-                "limit": limit if limit else len(phenotypes)
+                "limit": limit,
+                "has_more": (skip + len(phenotypes)) < total_count,
+                "next_skip": skip + len(phenotypes) if (skip + len(phenotypes)) < total_count else None
             }
             
             if search_term:
                 response["search_term"] = search_term
             
-            return response, 200
+            return serialize_datetime_fields(response), 200
             
         except Exception as e:
             logger.error(f"Error getting phenotypes: {str(e)}")
