@@ -59,10 +59,13 @@ class PhenotypeHandler(BaseHandler):
                 return phenotype
             
             if search_term:
-                # Case-insensitive search in phenotype_name
-                query['phenotype_name'] = {'$regex': search_term, '$options': 'i'}
+                # Case-insensitive search in either phenotype_name or id
+                query['$or'] = [
+                    {'phenotype_name': {'$regex': search_term, '$options': 'i'}},
+                    {'id': {'$regex': search_term, '$options': 'i'}}
+                ]
             
-            cursor = self.phenotype_collection.find(query, {'_id': 0})  # Exclude MongoDB _id
+            cursor = self.phenotype_collection.find(query, {'_id': 0})
             
             if skip > 0:
                 cursor = cursor.skip(skip)
@@ -87,7 +90,10 @@ class PhenotypeHandler(BaseHandler):
         try:
             query = {}
             if search_term:
-                query['phenotype_name'] = {'$regex': search_term, '$options': 'i'}
+                query['$or'] = [
+                    {'phenotype_name': {'$regex': search_term, '$options': 'i'}},
+                    {'id': {'$regex': search_term, '$options': 'i'}}
+                ]
             return self.phenotype_collection.count_documents(query)
         except Exception as e:
             logger.error(f"Error counting phenotypes: {str(e)}")
