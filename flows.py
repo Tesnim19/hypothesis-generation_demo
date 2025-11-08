@@ -92,8 +92,14 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         if not graphs_list or len(graphs_list) == 0:
             graphs_list = retry_get_relevant_gene_proof.submit(prolog_query, variant, hypothesis_id).result()
             logger.info(f"Retried graphs: {len(graphs_list) if graphs_list else 0} graphs received")
+        
+        # If still no graphs after retry, fail the enrichment
+        if not graphs_list or len(graphs_list) == 0:
+            error_msg = f"No causal graphs found for variant {variant}. Prolog server returned 0 graphs."
+            logger.error(error_msg)
+            raise ValueError(error_msg)
 
-        logger.info(f"Creating enrichments for {len(graphs_list) if graphs_list else 0} graphs from Prolog server")
+        logger.info(f"Creating enrichments for {len(graphs_list)} graphs from Prolog server")
 
         # Sort graphs by probability (highest first)
         graphs_with_prob = []
@@ -175,7 +181,6 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 # Update hypothesis with best graph metadata (graph itself is in enrichment record)
                 hypotheses.update_hypothesis(hypothesis_id, {
                     "causal_gene": best_causal_gene,
-                    "selected_tissue": selected_tissue,
                     "enrichment_stage": "enrichment_running"
                 })
             
