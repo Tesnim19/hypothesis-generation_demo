@@ -356,8 +356,17 @@ class GeneExpressionHandler(BaseHandler):
                 {'analysis_run_id': latest_run['id']}
             ).sort('p_value', 1).limit(limit))
             
-            if not ldsc_results:
-                return None if format == 'summary' else []
+
+            if not ldsc_results and format != 'selection':
+                return {
+                    'status': latest_run.get('status', 'ldsc_tissue_completed'),
+                    'tissues': [],
+                    'total_tissues_analyzed': 0,
+                    'significant_tissues_count': 0,
+                    'completed_at': latest_run.get('updated_at') or latest_run.get('created_at')
+                }
+            if not ldsc_results and format == 'selection':
+                return []
             
             if format == 'selection':
                 # Format for tissue selection UI

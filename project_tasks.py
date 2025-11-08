@@ -176,6 +176,23 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
                             "probability": probability  # Add confidence/probability score
                         }
                         
+                        # Get tissue selection from tissue_selections collection
+                        selected_tissue = None
+                        if gene_expression_handler:
+                            try:
+                                variant_id = h.get("variant") or h.get("variant_id")
+                                if variant_id:
+                                    tissue_selection = gene_expression_handler.get_tissue_selection(
+                                        user_id, project_id, variant_id
+                                    )
+                                    if tissue_selection:
+                                        selected_tissue = tissue_selection.get('tissue_name')
+                                        logger.info(f"Retrieved tissue selection from DB for hypothesis {h['id']}: {selected_tissue}")
+                            except Exception as ts_e:
+                                logger.warning(f"Could not get tissue selection for hypothesis {h['id']}: {ts_e}")
+                        
+                        hypothesis_data["tissue_selected"] = selected_tissue
+                        
                         # Log probability extraction for debugging
                         prob_source = "hypothesis_graph" if h.get("graph") and h["graph"].get("probability") else ("enrichment" if probability is not None else "none")
                         log_msg = f"Hypothesis {h['id']}: probability={probability}, source={prob_source}, has_graph={bool(h.get('graph'))}, enrich_id={h.get('enrich_id')}"
