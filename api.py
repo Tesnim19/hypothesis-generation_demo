@@ -104,7 +104,7 @@ class EnrichAPI(Resource):
                 return {"error": f"Invalid tissue selection. Available tissues: {tissue_names}"}, 400
             # Persist selection 
             self.gene_expression.save_tissue_selection(
-                current_user_id, project_id, variant, tissue_name, {}
+                current_user_id, project_id, variant, tissue_name
             )
             logger.info(f"Saved tissue selection in /enrich: {tissue_name} for variant {variant} in project {project_id}")
         except Exception as e:
@@ -129,7 +129,7 @@ class EnrichAPI(Resource):
             )
             return {"hypothesis_id": existing_hypothesis['id'], "project_id": project_id}, 202
         
-        # Generate hypothesis_id and create with project context (no credible_set_id in hypothesis)
+        # Generate hypothesis_id and create with project context 
         hypothesis_id = str(uuid4())
         hypothesis_data = {
             "id": hypothesis_id,
@@ -1479,45 +1479,10 @@ class GWASFilesAPI(Resource):
                 
                 gwas_files.append(gwas_file_entry)
             
-            # Get phenotypes from database with pagination to prevent memory issues
-            phenotypes = []
-            try:
-                DEFAULT_PHENOTYPE_LIMIT = 1000
-                
-                limited_phenotypes = self.phenotypes.get_phenotypes(limit=DEFAULT_PHENOTYPE_LIMIT)
-                total_phenotype_count = self.phenotypes.count_phenotypes()
-                
-                # Format for frontend compatibility
-                phenotypes = [
-                    {
-                        "id": p["id"],
-                        "name": p["phenotype_name"]
-                    }
-                    for p in limited_phenotypes
-                ]
-                
-                logger.info(f"Loaded {len(phenotypes)} phenotypes from database (limited to {DEFAULT_PHENOTYPE_LIMIT}, total available: {total_phenotype_count})")
-                
-                # Add metadata about pagination
-                if total_phenotype_count > DEFAULT_PHENOTYPE_LIMIT:
-                    logger.warning(f"Only showing first {DEFAULT_PHENOTYPE_LIMIT} phenotypes out of {total_phenotype_count} total. Use PhenotypesAPI with pagination for full access.")
-                    
-            except Exception as e:
-                logger.warning(f"Could not load phenotypes from database: {str(e)}, using empty list")
-                phenotypes = []
-            
-            # Include pagination metadata for phenotypes
-            phenotype_metadata = {
-                "phenotypes": phenotypes,
-                "phenotype_count": len(phenotypes),
-                "total_phenotypes": total_phenotype_count if 'total_phenotype_count' in locals() else len(phenotypes),
-                "has_more_phenotypes": total_phenotype_count > DEFAULT_PHENOTYPE_LIMIT if 'total_phenotype_count' in locals() and 'DEFAULT_PHENOTYPE_LIMIT' in locals() else False
-            }
             
             return {
                 "gwas_files": gwas_files,
-                "total_files": len(gwas_files),
-                **phenotype_metadata
+                "total_files": len(gwas_files)
             }, 200
             
         except Exception as e:
@@ -1527,7 +1492,7 @@ class GWASFilesAPI(Resource):
 
 class PhenotypesAPI(Resource):
     """
-    API endpoint for getting phenotypes
+    API endpoint for getting and loading phenotypes
     """
     def __init__(self, phenotypes):
         self.phenotypes = phenotypes
@@ -1580,6 +1545,68 @@ class PhenotypesAPI(Resource):
         except Exception as e:
             logger.error(f"Error getting phenotypes: {str(e)}")
             return {"error": f"Failed to get phenotypes: {str(e)}"}, 500
+
+    def post(self):
+        """
+        Bulk load phenotypes from JSON data
+        
+        Expects JSON array with format:
+        [
+            {"name": "phenotype name", "id": "EFO_1234567"},
+            ...
+        ]
+        """
+        try:
+            # Get JSON data from request
+            data = request.get_json()
+            
+            if not data:
+                return {"error": "No JSON data provided"}, 400
+            
+            if not isinstance(data, list):
+                return {"error": "Expected JSON array of phenotypes"}, 400
+            
+            # Transform data to match database schema
+            # Input format: {"name": "...", "id": "..."}
+            # Database format: {"phenotype_name": "...", "id": "..."}
+            phenotypes_data = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                
+                # Map "name" to "phenotype_name" for database
+                phenotype = {
+                    "id": item.get("id", ""),
+                    "phenotype_name": item.get("name", "")
+                }
+                
+                # Validate that both fields exist
+                if phenotype["id"] and phenotype["phenotype_name"]:
+                    phenotypes_data.append(phenotype)
+                else:
+                    logger.warning(f"Skipping invalid phenotype entry: {item}")
+            
+            if not phenotypes_data:
+                return {"error": "No valid phenotypes found in JSON data"}, 400
+            
+            # Bulk insert phenotypes
+            logger.info(f"Loading {len(phenotypes_data)} phenotypes into database...")
+            result = self.phenotypes.bulk_create_phenotypes(phenotypes_data)
+            
+            response = {
+                "message": "Phenotypes loaded successfully",
+                "inserted_count": result['inserted_count'],
+                "skipped_count": result['skipped_count'],
+                "total_provided": len(phenotypes_data)
+            }
+            
+            logger.info(f"Phenotype load complete: {result['inserted_count']} inserted, {result['skipped_count']} skipped")
+            
+            return response, 201
+            
+        except Exception as e:
+            logger.error(f"Error loading phenotypes: {str(e)}")
+            return {"error": f"Failed to load phenotypes: {str(e)}"}, 500
 
 
 class GWASFileDownloadAPI(Resource):
