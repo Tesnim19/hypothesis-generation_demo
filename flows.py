@@ -209,7 +209,7 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         hypotheses.update_hypothesis(hypothesis_id, {
             "enrich_id": main_enrichment_id,
             "child_enrich_ids": all_enrich_ids[1:],
-            "status": "enrichment_complete"
+            "status": "pending"
         })
 
         logger.info(f"Created {len(enrichment_data)} enrichments, main: {main_enrichment_id}")
