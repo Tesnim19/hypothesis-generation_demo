@@ -27,7 +27,7 @@
 % :- set_lift(eta, 0.001).
 % :- set_lift(processor, cpu).  
 
-passes(relevant_gene(G, S)) :- relevant_gene(G, S).
+% passes(relevant_gene(G, S)) :- relevant_gene(G, S).
 
 :- begin_in.
 
@@ -37,6 +37,9 @@ relevant_gene(G, S): 0.25 :- regulatory_effect(S, G).
 
 relevant_gene(G, S): 0.25 :- eqtl_association(S, G).
 relevant_gene(G, S): 0.25 :- activity_by_contact(S, G).
+
+% relevant_gene(G, S): 0.25 :- eqtl_association(S, G), activity_by_contact(S, G).
+% relevant_gene(G, S): 0.25 :- pgboost(S, G).
 
 :- end_in.
 
@@ -89,9 +92,9 @@ retract_all([H|T]):-
   erase(H),
   retract_all(T).
 
-run_param(_, _, [], [], [], [], [], []).
+run_param(_, _, [], [], [], [], [], [], []).
 run_param(Dir, Program, [Fold|RestFold], [LPH|LPT],
-         [AROCH|AROCT], [APRH|ARPT], [ROCH|ROCT], [PRH|PRT]) :- 
+         [AROCH|AROCT], [APRH|ARPT], [ROCH|ROCT], [PRH|PRT], [Res|RRest]) :- 
   load_train_fold(Dir, Fold, TrainFold),
   load_test_fold(Dir, Fold, TestFold),
   append(TrainFold, TestFold, AllF),
@@ -108,40 +111,104 @@ run_param(Dir, Program, [Fold|RestFold], [LPH|LPT],
   findall(relevant_gene(I, G, S), (fold(test, Test), relevant_gene(I, G, S), member(I, Test)), TePos),
   findall(relevant_gene(I, G, S), (fold(train, Train), neg(relevant_gene(I, G, S)), member(I, Train)), TrNeg),
   findall(relevant_gene(I, G, S), (fold(test, Test), neg(relevant_gene(I, G, S)), member(I, Test)), TeNeg),
-  % length(TrainFold, NTrain),
-  % length(TestFold, NTest),
-  % length(TrPos, TrNPos),
-  % length(TePos, TeNPos),
-  % length(TrNeg, TrNNeg),
-  % length(TeNeg, TeNNeg),
-  % format('Fold ~w: Train size: ~w, Test size: ~w~n', [Fold, NTrain, NTest]),
-  % format('Fold ~w: Train Pos examples: ~w, Neg examples: ~w~n', [Fold, TrNPos, TrNNeg]),
-  % format('Fold ~w: Test Pos examples: ~w, Neg examples: ~w~n', [Fold, TeNPos, TeNNeg]),
+  length(TrainFold, NTrain),
+  length(TestFold, NTest),
+  length(TrPos, TrNPos),
+  length(TePos, TeNPos),
+  length(TrNeg, TrNNeg),
+  length(TeNeg, TeNNeg),
+  format('Fold ~w: Train size: ~w, Test size: ~w~n', [Fold, NTrain, NTest]),
+  TrPosPerc is (TrNPos / (TrNPos + TrNNeg))*100,
+  format('Fold ~w: Train Pos examples: ~w (~w %), Neg examples: ~w~n', [Fold, TrNPos, TrPosPerc, TrNNeg]),
+  TestPosPerc is (TeNPos / (TeNPos + TeNNeg))*100,
+  format('Fold ~w: Test Pos examples: ~w (~w %), Neg examples: ~w~n', [Fold, TeNPos, TestPosPerc, TeNNeg]),
   assertz(in(Program), ProgRef),
   induce_par_lift([train], LPH),
   test_lift(LPH, [test], LL, AROCH, _, APRH, _), 
   compute_area_points(LPH, [test], ROCH, PRH),
+  format('About to run test_prob_lift~n'),
+  test_prob_lift(LPH, [test], NPos, NNeg, _, Res),
+  format('Ran test_prob_lift~n'),
   retract_all(ModelsRef),
   retract_all([TrainFoldRef]),
   retract_all([TestFoldRef]),
   retract_all([AllFRef]),
-  run_param(Dir, Program, RestFold, LPT, AROCT, ARPT, ROCT, PRT).
+  run_param(Dir, Program, RestFold, LPT, AROCT, ARPT,
+   ROCT, PRT, RRest).
 
-run_param_learning(Dir, NumFolds, AUCROC, AUCPR, M_AUCROC, S_AUCROC, M_AUCPR, S_AUCPR) :-
+run_param_learning(Dir, NumFolds, AUCROC, AUCPR, M_AUCROC, S_AUCROC, M_AUCPR, S_AUCPR, Threshold, Results) :-
   numlist(0, NumFolds, Folds),
   format('Loading Program~n'),
   in(Program),
   format('Running parameter learning~n'),
-  run_param(Dir, Program, Folds, LP, AUCROC, AUCPR, ROC, PR), 
+  run_param(Dir, Program, Folds, LP, AUCROC, AUCPR, ROC, PR, Results), 
   mean(AUCROC, M_AUCROC),
   std_dev(AUCROC, S_AUCROC),
   mean(AUCPR, M_AUCPR),
-  std_dev(AUCPR, S_AUCPR), 
+  std_dev(AUCPR, S_AUCPR),
+  confusion_table(Results, Threshold, Dir, 0),
   format(atom(RocPath), '~w/charts/roc_plot.png', [Dir]),
   format(atom(PrPath), '~w/charts/pr_plot.png', [Dir]),
   init_py,
   py_version,
   py_call(inference_util:plot_curves(ROC, PR, RocPath, PrPath), _RetVal).
+  % retract(in(Program)).
+
+confusion_table([], _, _, _).
+confusion_table([Fold|Rest], Threshold, Dir, FoldC) :-
+  format('Confusion Fold: ~w~n', FoldC),
+  format(atom(FilePath), '~w/fold_~w/confusion_tbl.txt', [Dir, FoldC]),
+  setup_call_cleanup(
+     open(FilePath, write, Stream),
+     write_fold_confusion(Fold, Threshold, Stream),
+     close(Stream)
+  ),
+  NextFold is FoldC + 1,
+  confusion_table(Rest, Threshold, Dir, NextFold).
+
+write_fold_confusion(Results, Threshold, Stream) :-
+  confusion_counts(Results, Threshold, confusion(TP,FP,TN,FN)),
+  findall(P-Lit, (member(P-Lit, Results), is_pos(Lit), P >= Threshold), PosPred),
+  findall(P-H,   (member(P-(\+H), Results), P >= Threshold), NegPred),
+  findall(P-Lit, (member(P-Lit, Results), is_pos(Lit), P <  Threshold), PosMiss),
+  findall(P-H,   (member(P-(\+H), Results), P <  Threshold), NegMiss),
+  format(Stream, 'Prediction Threshold=~w~n', [Threshold]),
+  format(Stream, 'TP=~w, FP=~w, TN=~w, FN=~w~n', [TP, FP, TN, FN]),
+  format(Stream, '============ TP ============~n', []),
+  forall(member(P-Lit, PosPred),
+         format(Stream, '~w ~w~n', [P, Lit])),
+  format(Stream, '============ FP ============~n', []),
+  forall(member(P-H, NegPred),
+         format(Stream, '~w ~w~n', [P, H])),
+  format(Stream, '============ TN ============~n', []),
+  forall(member(P-H, NegMiss),
+         format(Stream, '~w ~w~n', [P, H])),
+  format(Stream, '============ FN ============~n', []),
+  forall(member(P-Lit, PosMiss),
+         format(Stream, '~w ~w~n', [P, Lit])),
+
+  flush_output(Stream).
+
+is_neg(\+ _).
+is_pos(Lit) :- \+ is_neg(Lit).
+% if P >= T, then it is a positive prediction, negative otherwise
+predicted_label(P, T, pos) :- P >= T, !.
+predicted_label(_, _, neg).
+
+confusion_counts(Results, Threshold, confusion(TP,FP,TN,FN)) :-
+  foldl(confusion_step(Threshold), Results, confusion(0, 0, 0, 0), 
+      confusion(TP,FP,TN,FN)).
+
+confusion_step(T, P-(\+H), confusion(TP0,FP0,TN0,FN0), confusion(TP,FP,TN,FN)) :-
+    predicted_label(P, T, Pred),
+    (   Pred == pos -> FP is FP0+1, TP=TP0,   TN=TN0,   FN=FN0
+    ;   TN is TN0+1, TP=TP0, FP=FP0, FN=FN0).
+
+confusion_step(T, P-H, confusion(TP0,FP0,TN0,FN0), confusion(TP,FP,TN,FN)) :-
+    is_pos(H),
+    predicted_label(P, T, Pred),
+    (   Pred == pos -> TP is TP0+1, FP=FP0,   TN=TN0,   FN=FN0
+    ;   FN is FN0+1, TP=TP0, FP=FP0, TN=TN0).
 
 convert_minus_pair_to_list(Key-Value, [Key, Value]).
 

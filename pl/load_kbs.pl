@@ -55,6 +55,7 @@
 :- multifile lower_resolution/2.
 :- multifile located_on_chain/2.
 :- multifile tfbs_snp/2.
+:- multifile tf_snp/2.
 :- multifile binds_to/2.
 :- multifile in_tad_region/2.
 :- multifile activity_by_contact/2.
@@ -63,6 +64,7 @@
 :- multifile histone_modification/2.
 :- multifile regulates/2.
 :- multifile distance/2.
+:- multifile pgboost/2.
 
 % Properties
 :- multifile chr/2.
@@ -106,9 +108,9 @@ load_with_time(Files, FileName) :-
     format("Loaded ~w!~n", [FileName]).
 
 
-user:file_search_path(prolog_out_v2,'/mnt/hdd_1/abdu/prolog_out_v2').
-user:file_search_path(prolog_out,'/mnt/hdd_1/abdu/prolog_out_v3').
-% user:file_search_path(prolog_out,'/mnt/hdd_2/abdu/prolog_out_v4').
+user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
+user:file_search_path(prolog_out_v3,'/mnt/hdd_2/abdu/prolog_out_v3').
+%user:file_search_path(prolog_out,'/mnt/hdd_2/abdu/prolog_out_v4').
 % user:file_search_path(prolog_out,'/mnt/hdd_2/abdu/prolog_out').
 user:file_search_path(gene, prolog_out('gencode/gene')).
 user:file_search_path(exon, prolog_out('gencode/exon')).
@@ -117,29 +119,29 @@ user:file_search_path(uniprot, prolog_out('uniprot')).
 user:file_search_path(gene_ontology, prolog_out('gene_ontology')).
 user:file_search_path(gaf, prolog_out('gaf')).
 % user:file_search_path(cellxgene, prolog_out('cellxgene')).
-user:file_search_path(tadmap, prolog_out('tadmap')).
-user:file_search_path(tflink, prolog_out('tflink')).
-%user:file_search_path(roadmap_chromatin_state, prolog_out('roadmap/chromatin_state')).
+user:file_search_path(tadmap, prolog_out_v3('tadmap')).
+user:file_search_path(tflink, prolog_out_v3('tflink')).
 %user:file_search_path(roadmap_dhs, prolog_out('roadmap/dhs')).
 %user:file_search_path(roadmap_h3_mark, prolog_out('roadmap/h3_mark')).
 
-user:file_search_path(refseq, prolog_out('refseq')).
-user:file_search_path(eqtl, prolog_out('gtex/eqtl')).
-user:file_search_path(abc, prolog_out('abc')).
+user:file_search_path(refseq, prolog_out_v3('refseq')).
+user:file_search_path(eqtl, prolog_out_v3('gtex/eqtl')).
+user:file_search_path(abc, prolog_out_v3('abc')).
 % user:file_search_path(cell_line_ontology, prolog_out('cell_line_ontology')).
 % user:file_search_path(uberon, prolog_out('uberon')).
 % user:file_search_path(efo, prolog_out('experimental_factor_ontology')).
 % user:file_search_path(bto, prolog_out('brenda_tissue_ontology')).
 % user:file_search_path(cadd, prolog_out('cadd')).
-user:file_search_path(dbsnp, prolog_out('dbsnp')).
-user:file_search_path(dbsuper, prolog_out('dbsuper')).
-user:file_search_path(enhancer_atlas, prolog_out('enhancer_atlas')).
+user:file_search_path(dbsnp, prolog_out_v3('dbsnp')).
+user:file_search_path(dbsuper, prolog_out_v3('dbsuper')).
+user:file_search_path(enhancer_atlas, prolog_out_v3('enhancer_atlas')).
 % user:file_search_path(epd, prolog_out('epd')).
 %user:file_search_path(fabian, prolog_out('fabian')).
-user:file_search_path(peregrine, prolog_out('peregrine')).
+user:file_search_path(peregrine, prolog_out_v3('peregrine')).
 % user:file_search_path(top_ld_eur, prolog_out('top_ld/EUR')).
-user:file_search_path(tfbs, prolog_out('tfbs')).
+user:file_search_path(tfbs, prolog_out_v3('tfbs')).
 user:file_search_path(tf_snp, prolog_out('tf_snp')).
+user:file_search_path(pgboost, prolog_out('pgboost')).
 user:file_search_path(enhancer_ccre, prolog_out('ccre/enhancer_ccre')).
 user:file_search_path(promoter_ccre, prolog_out('ccre/promoter_ccre')).
 
@@ -163,19 +165,20 @@ load_atomspace :-
     % load_with_time([cadd(nodes)], "cadd"),
     load_with_time([dbsnp(nodes)], "dbsnp"),
     load_with_time([dbsuper(nodes), dbsuper(edges)], "dbsuper"),
-    % load_with_time([enhancer_ccre(nodes), enhancer_ccre(edges)], "enhancer ccre"),
-    % load_with_time([promoter_ccre(nodes), promoter_ccre(edges)], "promoter ccre"),
-    load_with_time([enhancer_atlas(nodes), enhancer_atlas(edges)], "enhancer atlas"),
+    load_with_time([enhancer_ccre(nodes), enhancer_ccre(edges)], "enhancer ccre"),
+    load_with_time([promoter_ccre(nodes), promoter_ccre(edges)], "promoter ccre"),
+    % load_with_time([enhancer_atlas(nodes), enhancer_atlas(edges)], "enhancer atlas"),
     %load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
     %load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
     %load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
     % load_with_time([epd(nodes), epd(edges)], "epd"),
-    load_with_time([tflink(edges)], "tflink"),
-    load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
+    % load_with_time([tflink(edges)], "tflink"),
+    % load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
     %load_with_time([fabian(edges)], "fabian"),
     %load_with_time([top_ld_eur(edges)], "top_ld"),
-    load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
-    load_with_time([tf_snp(edges)], "tf_snp").
+    % load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
+    % load_with_time([tf_snp(edges)], "tf_snp"),
+    load_with_time([pgboost(edges)], "pgboost").
 
 % bgc declarations for parameter learning with cplint
 % Node predicates
@@ -222,7 +225,7 @@ bgc(tad(X)) :- tad(X), chr(tad(X), chr16).
 % bgc(belongs_to(X, Y)) :- belongs_to(X, Y).
 bgc(associated_with(X, Y)) :- associated_with(X, Y).
 bgc(regulates(X, Y)) :- regulates(X, Y).
-% bgc(eqtl_association(X, Y)) :- eqtl_association(X, Y).
+bgc(eqtl_association(X, Y)) :- eqtl_association(X, Y).
 bgc(closest_gene(X, Y)) :- closest_gene(X, Y), chr(Y, chr16).
 % bgc(upstream_gene(X, Y)) :- upstream_gene(X, Y).
 % bgc(downstream_gene(X, Y)) :- downstream_gene(X, Y).
@@ -234,7 +237,8 @@ bgc(tfbs(X)) :- tfbs(X), chr(X, chr16).
 bgc(tf_snp(X, Y)) :- tf_snp(X, Y).
 bgc(binds_to(X, Y)) :- binds_to(X, Y).
 bgc(in_tad_region(X, Y)) :- in_tad_region(X, Y), chr(Y, chr16).
-% bgc(activity_by_contact(X, Y)) :- activity_by_contact(X, Y).
+bgc(activity_by_contact(X, Y)) :- activity_by_contact(X, Y).
+bgc(pgboost(X, Y)) :- pgboost(X, Y).
 % bgc(chromatin_state(X, Y)) :- chromatin_state(X, Y).
 % bgc(in_dnase_I_hotspot(X, Y)) :- in_dnase_I_hotspot(X, Y).
 % bgc(histone_modification(X, Y)) :- histone_modification(X, Y).
@@ -269,4 +273,3 @@ bgc(score(X)) :- score(X, Y).
 % Additional binary predicates
 %bgc(synonyms(X, Y)) :- synonyms(X, Y).
 %bgc(rel_type(X, Y)) :- rel_type(X, Y).
-

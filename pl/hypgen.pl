@@ -1,15 +1,15 @@
-:- module(hypgen, [
-    server_start/1,
-    server_stop/1,
-    candidate_genes/2,
-    within_k_distance/3,
-    find_and_rank_tfs/3,
-    bgc/1,
-    relevant_gene/2,
-    % hideme/1,
-    load_atomspace/0, 
-    init/0, 
-    json_proof_tree/3]).
+% :- module(hypgen, [
+%     server_start/1,
+%     server_stop/1,
+%     candidate_genes/2,
+%     within_k_distance/3,
+%     find_and_rank_tfs/3,
+%     bgc/1,
+%     % relevant_gene/2,
+%     % hideme/1,
+%     load_atomspace/0, 
+%     init/0, 
+%     json_proof_tree/3]).
 
 :- use_module(library(janus)).
 :- use_module(library(http/http_client)).
@@ -24,12 +24,14 @@
 :- include('util.pl').
 :- include('load_kbs.pl').
 :- include('queries.pl').
-% :- include('rules.pl').
+:- include('rules.pl').
 :- include('pl_rules.pl').
 % :- include('param_learn.pl').
 :- include('server.pl').
 :- include('meta_interpreter').
 :- include('json_util').
+
+add(X, Y, Z) :- Z is X + Y.
 
 init :- 
     format("Loading atomspace...~n", []),

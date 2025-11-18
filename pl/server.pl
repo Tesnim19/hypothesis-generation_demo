@@ -10,7 +10,9 @@ server_stop(Port) :- http_stop_server(Port, []).
 
 
 :- http_handler('/api/hypgen', handle_hypgen, []).
-:- http_handler('/api/hypgen/candidate_genes', handle_candidate_genes, []).
+:- http_handler('/api/hypgen/candidate_genes/rsid', handle_candidate_genes_rsid, []).
+:- http_handler('/api/hypgen/candidate_genes/locus', handle_candidate_genes_locus, []).
+
 
 :- http_handler('/api/error', 
     throw(http_reply(server_error(json{message:'Internal server error'}))), 
@@ -47,32 +49,45 @@ handle_hypgen(Request) :-
             })
     ).
 
-handle_candidate_genes(Request) :-
-    % Get candidate genes for a given SNP
-    % Get genes and include rsid in response
+handle_candidate_genes_rsid(Request) :-
     http_parameters(Request, 
-              [pos(Pos, [integer, optional(false)]),
-               chr(Chr, [optional(false)]),
-               ref(Ref, [optional(false)]), 
-               alt(Alt, [optional(false)])]),
+            [rsid(Id, [atom, optional(false)])]),
+    ( candidate_genes(snp(Id), Genes) ->
+        reply_json(json{
+            rsid: Id,
+            candidate_genes: Genes
+        })
+    ;
+        format(string(Msg), 'No candidate gene found for given rsid: ~w', [Id]),
+        reply_json(json{
+            rsid: Id,
+            error: Msg
+        }, [status(404)])
+    ).
 
-    % Find SNP by position, ref, and alt
-    (findall(Snp, 
-            (chr(Snp, Chr), start(Snp, Pos), ref(Snp, Ref), alt(Snp, Alt)),
-              [Snp|_]) ->
-      Snp = snp(Id),
-      (candidate_genes(snp(Id), Genes) -> 
-          reply_json(json{
-              rsid: Id,
-              candidate_genes: Genes
-          })
-      ;   reply_json(json{
-              rsid: Id,
-              candidate_genes: []
-          })
-      )
-      ;
-      reply_json(json{
-          rsid: '',
-          candidate_genes: []
-      })).
+handle_candidate_genes_locus(Request) :-
+    http_parameters(Request, 
+            [chr(Chr, [atom, optional(false)]), 
+             pos(Pos, [integer, optional(false)]), 
+             ref(Ref, [atom, optional(false)]),
+             alt(Alt, [atom, optional(false)])]),
+    ((chr(Snp, Chr), start(Snp, Pos), 
+      ref(Snp, Ref), alt(Snp, Alt), Snp = snp(Id)) ->
+        (candidate_genes(Snp, Genes) -> 
+            reply_json(json{
+                rsid: Id,
+                candidate_genes: Genes
+            })
+        ;
+            format(string(Msg), 'No candidate gene found for given rsid: ~w', [Id]),
+            reply_json(json{
+                rsid: Id,
+                error: Msg
+            }, [status(404)])
+        )
+    ;
+        format(string(Msg2), 'Could not find a SNP with specified chr:pos:ref:alt (~w:~w:~w:~w)', [Chr, Pos, Ref, Alt]),
+        reply_json(json{
+            error: Msg2
+        }, [status(400)])
+    ).

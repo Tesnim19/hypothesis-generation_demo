@@ -144,9 +144,29 @@
 #   nodes: True
 #   edges: False
 
-enhancer_atlas_enhancer:
-  path: enhancer_atlas
-  nodes: False
+# enhancer_atlas_enhancer:
+#   path: enhancer_atlas
+#   nodes: False
+#   edges: True
+
+# pgboost:
+#   path: pgboost
+#   nodes: False
+#   edges: True
+
+# motif_diff:
+#   path: motif_diff
+#   nodes: False
+#   edges: True
+
+ccre_enhancer:
+  path: ccre/enhancer_ccre
+  nodes: True
+  edges: True
+
+ccre_promoter:
+  path: ccre/promoter_ccre
+  nodes: True
   edges: True
 
 # encode_tfbs:
@@ -154,10 +174,26 @@ enhancer_atlas_enhancer:
 #  nodes: True
 #  edges: True
 
-#gene_ontology:
-#  path: gene_ontology
-#  nodes: True
-#  edges: True
+polyphen:
+  path: polyphen-2
+  nodes: True
+  edges: False
+
+
+biological_process:
+  path: gene_ontology/biological_process
+  nodes: True
+  edges: True
+
+molecular_function:
+  path: gene_ontology/molecular_function
+  nodes: True
+  edges: True
+
+cellular_component:
+  path: gene_ontology/cellular_component
+  nodes: True
+  edges: True
 #
 #uberon:
 #  path: uberon
@@ -173,11 +209,7 @@ enhancer_atlas_enhancer:
 #  path: cell_ontology
 #  nodes: True
 #  edges: True
-#
-#fabian_tf_snp:
-#  path: fabian
-#  nodes: False
-#  edges: True
+
 #
 #experimental_factor_ontology:
 #  path: experimental_factor_ontology
