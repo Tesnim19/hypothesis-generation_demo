@@ -20,6 +20,11 @@ from utils import serialize_datetime_fields
 from project_tasks import count_gwas_records, get_project_with_full_data
 from bson import ObjectId
 import re
+from config import Config
+import pandas as pd
+import re
+import gzip
+import glob
 
 
 class EnrichAPI(Resource):
@@ -897,7 +902,6 @@ class AnalysisPipelineAPI(Resource):
                 logger.info(f"[API] Using predefined GWAS file ID: {predefined_file_id}")
                 
                 # Find the predefined file in data/raw/
-                from config import Config
                 data_dir = getattr(self.config, 'data_dir', 'data')
                 raw_data_path = os.path.join(data_dir, 'raw')
                 
@@ -1279,9 +1283,6 @@ class GWASFilesAPI(Resource):
 
     def _extract_file_metadata(self, file_path):
         """Extract metadata from a GWAS file by examining its content"""
-        import pandas as pd
-        import re
-        import gzip
         
         filename = os.path.basename(file_path)
         
@@ -1413,8 +1414,6 @@ class GWASFilesAPI(Resource):
     def get(self):
         """Automatically discover GWAS files and extract their metadata"""
         try:
-            import glob
-            import re
             
             # Get data directory
             data_dir = getattr(self.config, 'data_dir', 'data')
@@ -1619,8 +1618,6 @@ class GWASFileDownloadAPI(Resource):
     def get(self, file_id):
         """Download a predefined GWAS file by file_id"""
         try:
-            import glob
-            
             logger.info(f"[GWAS DOWNLOAD] Download request for file {file_id}")
             
             # Get data directory

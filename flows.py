@@ -7,7 +7,6 @@ from prefect import flow
 from status_tracker import TaskState
 import multiprocessing as mp
 from uuid import uuid4
-from analysis_tasks import create_guaranteed_demo_credible_set
 
 from tasks import (
     check_enrich, create_enrich_data, get_candidate_genes, predict_causal_gene, 
@@ -27,19 +26,19 @@ from project_tasks import (
 )
 
 from gene_expression_tasks import (
-    run_background_ldsc_analysis, run_combined_ldsc_tissue_analysis, run_coexpression_pipeline, run_tissue_analysis_pipeline, setup_ldsc_environment, run_ldsc_analysis, process_ldsc_results,
-    load_ontology_mappings, map_tissues_to_cellxgene, run_coexpression_analysis,
-    convert_ensembl_to_hgnc, run_pathway_enrichment, find_munged_gwas_file,
-    extract_coexpressed_genes_for_enrichment
+run_combined_ldsc_tissue_analysis
 )
 
 import pandas as pd
 from datetime import datetime, timezone
 from prefect.task_runners import ThreadPoolTaskRunner
-
 from utils import emit_task_update
 from config import Config, create_dependencies
-from status_tracker import TaskState
+from threading import Thread
+import traceback
+from utils import transform_credible_sets_to_locuszoom
+
+
 
 def _extract_causal_gene_for_enrichment(graph, candidate_genes):
     """Extract causal gene from graph for enrichment analysis, fallback to first candidate gene"""
@@ -164,7 +163,8 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 )
                 
                 if selected_tissue:
-                    enrich_tbl = enrichr.run(this_causal_gene, tissue_name=selected_tissue)
+                    enrich_tbl = enrichr.run(this_causal_gene, tissue_name=selected_tissue, 
+                                            user_id=current_user_id, project_id=project_id)
                 else:
                     enrich_tbl = enrichr.run(this_causal_gene)
                 
@@ -264,9 +264,7 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
         child_enrich_ids = parent_hypothesis.get('child_enrich_ids', [])
         if child_enrich_ids and len(child_enrich_ids) > 0:
             logger.info(f"Triggering background processing for {len(child_enrich_ids)} child enrichments")
-            
-            from threading import Thread
-            
+                        
             # Create deps dict from current context
             deps_for_bg = {
                 'hypotheses': hypotheses,
@@ -282,7 +280,6 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
                     )
                 except Exception as bg_e:
                     logger.error(f"Background child hypothesis generation failed: {str(bg_e)}")
-                    import traceback
                     logger.error(traceback.format_exc())
             
             bg_thread = Thread(target=run_background_hypotheses)
@@ -492,7 +489,6 @@ def process_child_enrichments_simple(current_user_id, child_enrich_ids, parent_h
                 new_hypothesis_id = str(uuid4())
                 
                 # Create the hypothesis record in DB FIRST (so it exists when hypothesis_flow runs)
-                from datetime import datetime, timezone
                 hypothesis_data = {
                     "id": new_hypothesis_id,
                     "enrich_id": enrich_id,
@@ -711,40 +707,6 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         
         # Combine and save results
         if all_results:
-            # Always add guaranteed demo variant
-            try:
-                demo_variant = create_guaranteed_demo_credible_set()
-                all_results.append(demo_variant)
-                logger.info("[PIPELINE] Added guaranteed demo variant rs1421085")
-                
-                # Also save demo variant as a proper credible set in database
-                from utils import transform_credible_sets_to_locuszoom
-                demo_credible_set_data = transform_credible_sets_to_locuszoom(demo_variant)
-                
-                # Save demo variant as credible set with proper format matching normal credible sets
-                analysis_handler.save_credible_set(user_id, project_id, {
-                    'set_id': 999,  # Unique set ID for demo
-                    'variants': demo_credible_set_data,
-                    'coverage': 0.95,
-                    'completed_at': datetime.now(timezone.utc).isoformat(),
-                    'metadata': {
-                        'type': 'demo',
-                        'description': 'Guaranteed demo credible set with rs1421085',
-                        'chr': 16,
-                        'position': 53767042,
-                        'lead_variant_id': 'rs1421085',
-                        'finemap_window_kb': 2000,
-                        'population': 'EUR',
-                        'ref_genome': 'GRCh37',
-                        'total_variants_analyzed': 1,
-                        'credible_sets_count': 1
-                    }
-                })
-                logger.info("[PIPELINE] Saved demo variant as credible set in database")
-                
-            except Exception as demo_e:
-                logger.error(f"[PIPELINE] Failed to add demo variant: {demo_e}")
-            
             combined_results = pd.concat(all_results, ignore_index=True)
             
             # Save results using Prefect tasks

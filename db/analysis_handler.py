@@ -2,6 +2,8 @@ from bson.objectid import ObjectId
 from datetime import datetime, timezone
 from loguru import logger
 from .base_handler import BaseHandler
+from bson import ObjectId
+
 
 
 class AnalysisHandler(BaseHandler):
@@ -189,7 +191,6 @@ class AnalysisHandler(BaseHandler):
     def get_credible_set_by_id(self, user_id, project_id, credible_set_id):
         """Get credible set data by credible set ID"""
         try:
-            from bson import ObjectId
             query = {
                 '_id': ObjectId(credible_set_id),
                 'user_id': user_id,

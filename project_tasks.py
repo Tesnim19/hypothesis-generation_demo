@@ -3,6 +3,7 @@ import pandas as pd
 from prefect import task
 from loguru import logger
 from datetime import datetime, timezone
+import gzip
 
 
 @task(cache_policy=None)
@@ -75,7 +76,6 @@ def get_project_analysis_path_task(projects_handler, user_id, project_id):
 def count_gwas_records(file_path):
     """Count the number of records in a GWAS file"""
     try:
-        import gzip
         
         if not os.path.exists(file_path):
             logger.warning(f"GWAS file not found: {file_path}")

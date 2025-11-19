@@ -6,6 +6,8 @@ from utils import emit_task_update
 from loguru import logger
 from cyvcf2 import VCF, Writer
 from prefect import task, flow
+import json
+
 
 
 logging.basicConfig(level=logging.INFO)
@@ -130,7 +132,6 @@ def get_relevant_gene_proof(prolog_query, variant, hypothesis_id):
         for i, graph_str in enumerate(graphs_raw):
             try:
                 if isinstance(graph_str, str):
-                    import json
                     graph = json.loads(graph_str)
                 else:
                     graph = graph_str
@@ -207,7 +208,6 @@ def retry_get_relevant_gene_proof(prolog_query, variant, hypothesis_id):
         for i, graph_str in enumerate(graphs_raw):
             try:
                 if isinstance(graph_str, str):
-                    import json
                     graph = json.loads(graph_str)
                 else:
                     graph = graph_str
@@ -522,7 +522,6 @@ def create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causa
             }
         
         # Log sizes for debugging
-        import json
         try:
             graph_size = len(json.dumps(causal_graph))
             history_size = len(json.dumps(limited_history))

@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from enum import Enum
 from config import Config, create_dependencies
+from db.task_handler import TaskHandler
+import os
 
 class TaskState(Enum):
     STARTED = "started"
@@ -64,8 +66,6 @@ class StatusTracker:
             else:
                 # Try to create minimal task handler directly first
                 try:
-                    from db.task_handler import TaskHandler
-                    import os
                     mongodb_uri = os.getenv("MONGODB_URI")
                     db_name = os.getenv("DB_NAME", "default")
                     if mongodb_uri and db_name:

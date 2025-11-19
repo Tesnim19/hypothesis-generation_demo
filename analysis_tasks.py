@@ -332,9 +332,7 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
             # Set ID as index
             if 'ID' in combined_cojo_df.columns:
                 combined_cojo_df = combined_cojo_df.set_index('ID')
-            
-            # Add demo variant rs1421085 for demonstration purposes
-            # combined_cojo_df = append_demo_variant_rs1421085(combined_cojo_df)
+
             
             # Save combined results
             os.makedirs(output_dir, exist_ok=True)
@@ -1204,26 +1202,5 @@ def cleanup_sumstats_file(temp_path):
             logger.warning(f"[MEMORY] Temporary file not found for cleanup: {temp_path}")
     except Exception as e:
         logger.error(f"[MEMORY] Error cleaning up temporary file {temp_path}: {e}")
-
-def create_guaranteed_demo_credible_set():
-    """Create rs1421085 demo credible set that always appears"""
-    logger.info("[DEMO] Creating guaranteed demo credible set with rs1421085")
-    
-    demo_variant_data = {
-        'CHR': [int(16)], 'BP': [int(53767042)], 'POS': [int(53767042)],
-        'ID': ['rs1421085'], 'RS_ID': ['rs1421085'],
-        'A2': ['T'], 'A1': ['C'], 'REF': ['T'], 'ALT': ['C'], 
-        'FRQ': [float(0.42)], 'AF': [float(0.42)],
-        'BETA': [float(0.39)], 'SE': [float(0.013)], 
-        'Z': [float(30.0)], 'P': [float(2.4e-82)], 'N': [int(681275)],
-        'PIP': [float(0.95)], 'cs': [int(999)], 
-        'region_id': ['demo_chr16:53767042'], 'region_chr': [int(16)],
-        'region_center': [int(53767042)], 'converged': [True],
-        'credible_set': [int(999)]
-    }
-    
-    demo_df = pd.DataFrame(demo_variant_data).set_index('ID')
-    logger.info("[DEMO] Created guaranteed demo credible set 999 with rs1421085")
-    return demo_df
 
 
