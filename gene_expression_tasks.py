@@ -19,6 +19,10 @@ import multiprocessing
 from functools import partial
 import re
 from collections import Counter
+from config import Config
+import shutil
+import pickle
+
 
 try:
     import warnings
@@ -56,7 +60,6 @@ def run_ldsc_analysis(ldsc_dir, gwas_file, output_prefix):
     # Always copy the GWAS file to ensure we use the latest version
     gwas_filename = os.path.basename(gwas_file)
     local_gwas_path = os.path.join(ldsc_data_dir, gwas_filename)
-    import shutil
     shutil.copy2(gwas_file, local_gwas_path)
     logger.info(f"Copied GWAS file to: {local_gwas_path}")
     
@@ -129,29 +132,36 @@ def process_ldsc_results(results_dir, output_prefix, top_n=10):
 
 @task(log_prints=True)
 def load_ontology_mappings(work_dir):
-    """Load mappings"""
-    work_dir = Path(work_dir)
-    work_dir.mkdir(parents=True, exist_ok=True)
+    """Load mappings - uses shared cache directory from config"""
+    # Get ontology cache directory from config (shared across all projects)
+    config = Config.from_env()
+    cache_dir = Path(config.ontology_cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
     
-    # Download ontology files
-    uberon_file = work_dir / "uberon.owl"
-    tissue_desc_file = work_dir / "tissue_descendants.json"
+    # Download ontology files to shared cache
+    uberon_file = cache_dir / "uberon.owl"
+    tissue_desc_file = cache_dir / "tissue_descendants.json"
     
     if not uberon_file.exists():
-        logger.info("Downloading uberon.owl...")
+        logger.info("Downloading uberon.owl to shared cache...")
         response = requests.get("http://purl.obolibrary.org/obo/uberon.owl")
         response.raise_for_status()
         with open(uberon_file, 'wb') as f:
             f.write(response.content)
+        logger.info(f"Saved uberon.owl to {uberon_file}")
+    else:
+        logger.info(f"Using cached uberon.owl from {uberon_file}")
     
     if not tissue_desc_file.exists():
-        logger.info("Downloading tissue_descendants.json...")
+        logger.info("Downloading tissue_descendants.json to shared cache...")
         response = requests.get("https://raw.githubusercontent.com/chanzuckerberg/cellxgene-ontology-guide/latest/ontology-assets/tissue_descendants.json")
         response.raise_for_status()
         tissue_descendants_data = response.json()
         with open(tissue_desc_file, 'w') as f:
             json.dump(tissue_descendants_data, f, indent=4)
+        logger.info(f"Saved tissue_descendants.json to {tissue_desc_file}")
     else:
+        logger.info(f"Using cached tissue_descendants.json from {tissue_desc_file}")
         with open(tissue_desc_file, 'r') as f:
             tissue_descendants_data = json.load(f)
     
@@ -390,10 +400,11 @@ def process_batch(start, *, batch_size, other_gene_joinids, other_genes,
 def run_coexpression_analysis(gene_of_interest, ontology_mapping_results, k=500):
     """Complete co-expression analysis"""
     
-    def get_coexpression_matrix(gene, tissue, k=500, batch_size=1000, use_prefilter=False):
+    def get_coexpression_matrix(gene, tissue_uberon_id, k=500, batch_size=1000, use_prefilter=False):
         with cellxgene_census.open_soma(census_version="2024-07-01") as census:
             experiment = census["census_data"]["homo_sapiens"]
-            value_filter = f"tissue == '{tissue}'"
+            # Use tissue_ontology_term_id to filter by UBERON ID
+            value_filter = f"tissue_ontology_term_id == '{tissue_uberon_id}'"
             
             try:
                 axis_query = experiment.axis_query(
@@ -401,7 +412,7 @@ def run_coexpression_analysis(gene_of_interest, ontology_mapping_results, k=500)
                     obs_query=soma.AxisQuery(value_filter=value_filter)
                 )
             except ValueError:
-                logger.warning(f"No cells found for tissue '{tissue}'")
+                logger.warning(f"No cells found for tissue UBERON ID '{tissue_uberon_id}'")
                 return [], [], []
 
             obs_joinids = axis_query.obs_joinids().to_numpy()
@@ -413,7 +424,7 @@ def run_coexpression_analysis(gene_of_interest, ontology_mapping_results, k=500)
                 n = len(obs_joinids)
                 
             if n == 0:
-                logger.warning(f"No cells found for tissue '{tissue}'")
+                logger.warning(f"No cells found for tissue UBERON ID '{tissue_uberon_id}'")
                 return [], [], []
 
             var_df = experiment.ms["RNA"].var.read(
@@ -532,34 +543,45 @@ def run_coexpression_analysis(gene_of_interest, ontology_mapping_results, k=500)
     processed_tissues = set()  # Track already processed tissues
     
     for tissue_key, tissue_value in ontology_mapping_results.items():
-        target_tissue = tissue_value.get("cellxgene_descendant_ontology_name") or tissue_value.get("cellxgene_parent_ontology_name")
+        # Use UBERON ID instead of ontology name
+        target_uberon_id = tissue_value.get("cellxgene_descendant_uberon_id") or tissue_value.get("cellxgene_parent_uberon_id")
+        target_tissue_name = tissue_value.get("cellxgene_descendant_ontology_name") or tissue_value.get("cellxgene_parent_ontology_name")
         
-        if target_tissue:
-            if target_tissue in processed_tissues:
-                logger.info(f"Skipping co-expression for tissue: {target_tissue} (already processed)")
+        if target_uberon_id:
+            if target_uberon_id in processed_tissues:
+                logger.info(f"Skipping co-expression for tissue: {target_tissue_name} ({target_uberon_id}) (already processed)")
                 continue
                 
-            logger.info(f"Processing co-expression for tissue: {target_tissue}")
-            top_pos, top_neg, all_gene_ids = get_coexpression_matrix(gene_of_interest, target_tissue, k)
+            logger.info(f"Processing co-expression for tissue: {target_tissue_name} ({target_uberon_id})")
+            top_pos, top_neg, all_gene_ids = get_coexpression_matrix(gene_of_interest, target_uberon_id, k)
             
-            cellxgene_coexp_results[target_tissue] = {
+            # Store results using the tissue name as key for readability
+            result_key = target_tissue_name or target_uberon_id
+            cellxgene_coexp_results[result_key] = {
                 'top_positive': top_pos,
                 'top_negative': top_neg,
                 'all_genes': all_gene_ids
             }
-            processed_tissues.add(target_tissue)
+            processed_tissues.add(target_uberon_id)
         else:
-            logger.warning(f"No target tissue found for {tissue_key}")
+            logger.warning(f"No target tissue UBERON ID found for {tissue_key}")
     
     return cellxgene_coexp_results
 
 
-def get_coexpression_matrix_for_tissue(gene, tissue, cell_type='preadipocyte', k=500):
+def get_coexpression_matrix_for_tissue(gene, tissue_uberon_id, cell_type=None, k=500):
     
-    def get_coexpression_matrix(gene, tissue, cell_type, k=500, batch_size=1000, use_prefilter=False):
+    def get_coexpression_matrix(gene, tissue_uberon_id, cell_type, k=500, batch_size=1000, use_prefilter=False):
         with cellxgene_census.open_soma(census_version="2024-07-01") as census:
             experiment = census["census_data"]["homo_sapiens"]
-            value_filter = f"tissue == '{tissue}'"
+            
+            # Use tissue_ontology_term_id to filter by UBERON ID
+            if cell_type:
+                # Filter by both tissue and cell type
+                value_filter = f"tissue_ontology_term_id == '{tissue_uberon_id}' and cell_type == '{cell_type}'"
+            else:
+                # Filter by tissue only
+                value_filter = f"tissue_ontology_term_id == '{tissue_uberon_id}'"
             
             try:
                 axis_query = experiment.axis_query(
@@ -567,7 +589,7 @@ def get_coexpression_matrix_for_tissue(gene, tissue, cell_type='preadipocyte', k
                     obs_query=soma.AxisQuery(value_filter=value_filter)
                 )
             except ValueError:
-                logger.warning(f"No cells found for tissue '{tissue}'")
+                logger.warning(f"No cells found for tissue UBERON ID '{tissue_uberon_id}'")
                 return [], [], []
 
             obs_joinids = axis_query.obs_joinids().to_numpy()
@@ -579,7 +601,7 @@ def get_coexpression_matrix_for_tissue(gene, tissue, cell_type='preadipocyte', k
                 n = len(obs_joinids)
                 
             if n == 0:
-                logger.warning(f"No cells found for tissue '{tissue}'")
+                logger.warning(f"No cells found for tissue UBERON ID '{tissue_uberon_id}'")
                 return [], [], []
 
             var_df = experiment.ms["RNA"].var.read(
@@ -610,7 +632,7 @@ def get_coexpression_matrix_for_tissue(gene, tissue, cell_type='preadipocyte', k
             # Filter cells with non-zero expression
             nonzero_mask = gene_expr > 0
             if np.sum(nonzero_mask) < 10:
-                logger.warning(f"Too few cells with non-zero expression for gene '{gene}' in tissue '{tissue}'")
+                logger.warning(f"Too few cells with non-zero expression for gene '{gene}' in tissue UBERON ID '{tissue_uberon_id}'")
                 return [], [], genes
 
             sub_joinids = obs_joinids[nonzero_mask]
@@ -673,7 +695,7 @@ def get_coexpression_matrix_for_tissue(gene, tissue, cell_type='preadipocyte', k
             return top_positive, top_negative, genes
 
     # Run the analysis
-    return get_coexpression_matrix(gene, tissue, cell_type, k)
+    return get_coexpression_matrix(gene, tissue_uberon_id, cell_type, k)
 
 
 @task(log_prints=True)
@@ -685,7 +707,6 @@ def convert_ensembl_to_hgnc(cellxgene_coexp_results, work_dir):
     
     if ensembl_to_hgnc_file.exists():
         try:
-            import pickle
             with open(ensembl_to_hgnc_file, 'rb') as f:
                 ensembl_to_hgnc_map = pickle.load(f)
         
@@ -822,7 +843,7 @@ def extract_coexpressed_genes_for_enrichment(hgnc_converted_results):
     logger.info(f"Extracted {len(unique_genes)} unique co-expressed genes for enrichment")
     return unique_genes
 
-@task(log_prints=True)
+@task(log_prints=True, cache_policy=None)
 def run_tissue_analysis_pipeline(gene_expression, analysis, current_user_id, project_id, causal_gene, hypothesis_id):
     """Run the complete tissue analysis pipeline using Prefect tasks"""
     
@@ -901,7 +922,7 @@ def run_coexpression_pipeline(current_user_id, project_id, causal_gene, tissue_r
     return tissue_enhanced_genes
 
 
-@task(log_prints=True)
+@task(log_prints=True, cache_policy=None)
 def run_combined_ldsc_tissue_analysis(gene_expression, projects_handler, munged_file, output_dir, project_id, user_id):
     """Combined LDSC + tissue analysis as part of main analysis pipeline"""
     analysis_run_id = None
@@ -988,7 +1009,7 @@ def run_combined_ldsc_tissue_analysis(gene_expression, projects_handler, munged_
         raise
 
 
-@task(log_prints=True)
+@task(log_prints=True, cache_policy=None)
 def run_background_ldsc_analysis(munged_file, output_dir, project_id, user_id, gene_expression):
     """Background LDSC analysis as a Prefect task - DEPRECATED, use run_combined_ldsc_tissue_analysis"""
     analysis_run_id = None

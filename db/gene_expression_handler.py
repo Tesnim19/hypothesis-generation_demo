@@ -83,6 +83,9 @@ class GeneExpressionHandler(BaseHandler):
                     'id': str(uuid4()),
                     'analysis_run_id': analysis_run_id,
                     'gtex_tissue_name': mapping_data.get('gtex_tissue_name', ''),
+                    'gtex_uberon_id': mapping_data.get('gtex_uberon_id', ''),
+                    'cellxgene_parent_uberon_id': mapping_data.get('cellxgene_parent_uberon_id', ''),
+                    'cellxgene_descendant_uberon_id': mapping_data.get('cellxgene_descendant_uberon_id', ''),
                     'cellxgene_parent_ontology_name': mapping_data.get('cellxgene_parent_ontology_name', ''),
                     'cellxgene_descendant_ontology_name': mapping_data.get('cellxgene_descendant_ontology_name', ''),
                     'match_type': mapping_data.get('match_type', ''),
@@ -333,6 +336,42 @@ class GeneExpressionHandler(BaseHandler):
             
         except Exception as e:
             logger.error(f"Error getting tissue selection: {str(e)}")
+            return None
+    
+    def get_tissue_mapping(self, user_id, project_id, tissue_name):
+        """Get tissue mapping with UBERON ID for a specific tissue from latest analysis"""
+        try:
+            # Get the latest LDSC analysis for this project
+            latest_run = self.gene_expression_runs_collection.find_one(
+                {
+                    'user_id': user_id,
+                    'project_id': project_id,
+                    'gene_of_interest': 'project_analysis',
+                    'status': {'$in': ['ldsc_tissue_completed', 'completed']}
+                },
+                sort=[('created_at', -1)]
+            )
+            
+            if not latest_run:
+                logger.warning(f"No completed LDSC analysis found for project {project_id}")
+                return None
+            
+            # Get the tissue mapping for this tissue name
+            mapping = self.tissue_mappings_collection.find_one({
+                'analysis_run_id': latest_run['id'],
+                'gtex_tissue_name': tissue_name
+            })
+            
+            if mapping:
+                mapping['_id'] = str(mapping['_id'])
+                logger.info(f"Found tissue mapping for '{tissue_name}': {mapping.get('cellxgene_parent_uberon_id')} or {mapping.get('cellxgene_descendant_uberon_id')}")
+            else:
+                logger.warning(f"No tissue mapping found for '{tissue_name}' in analysis {latest_run['id']}")
+                
+            return mapping
+            
+        except Exception as e:
+            logger.error(f"Error getting tissue mapping: {str(e)}")
             return None
     
     def get_ldsc_results_for_project(self, user_id, project_id, limit=10, format='summary'):
