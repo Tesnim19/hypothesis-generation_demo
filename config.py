@@ -22,6 +22,7 @@ class Config:
         self.embedding_model = "w601sxs/b1ade-embed-kd"
         self.plink_dir = "/app/data/1000Genomes_phase3/plink_format_b37"
         self.data_dir = "./data"
+        self.ontology_cache_dir = "./data/ontology"
         self.host = "0.0.0.0"
         self.port = 5000
 
@@ -57,6 +58,7 @@ class Config:
         config.embedding_model = os.getenv("EMBEDDING_MODEL", "w601sxs/b1ade-embed-kd")
         config.plink_dir = os.getenv("PLINK_DIR", "./data/1000Genomes_phase3/plink_format_b37")
         config.data_dir = os.getenv("DATA_DIR", "./data")
+        config.ontology_cache_dir = os.getenv("ONTOLOGY_CACHE_DIR", "./data/ontology")
         return config
 
 
