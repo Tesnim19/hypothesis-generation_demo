@@ -29,8 +29,8 @@ class PrologQuery:
             logger.error(f"Response text: {res.text}")
             raise RuntimeError(f"get_candidate_genes failed. Invalid JSON response from Prolog server. Response: {res.text[:500]}") from e
     
-    def get_relevant_gene_proof(self, variant_id, samples):
-        payload = {"rsid": variant_id, "samples": samples}
+    def get_relevant_gene_proof(self, variant_id, seed, samples):
+        payload = {"rsid": variant_id, "seed": seed,  "samples": samples}
         res = requests.get(f"{self.server}/api/hypgen", params=payload)
         if not res.ok:
             logger.error(f"Prolog server error for variant {variant_id}: {res.status_code} - {res.text}")
