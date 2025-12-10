@@ -75,15 +75,12 @@ class EnrichAPI(Resource):
 
     @token_required
     def post(self, current_user_id):
-        args = request.args
-        json_data = None
-        try:
-            json_data = request.get_json(silent=True) or {}
-        except Exception:
-            json_data = {}
+        json_data = request.get_json(silent=True) or {}
+        
+        variant = json_data.get('variant')
+        project_id = json_data.get('project_id')
+        seed = int(json_data.get('seed', 42))
 
-        variant = args.get('variant') or (json_data.get('variant') if isinstance(json_data, dict) else None)
-        project_id = args.get('project_id') or (json_data.get('project_id') if isinstance(json_data, dict) else None)
         
         if not project_id:
             return {"error": "project_id is required"}, 400
@@ -130,7 +127,8 @@ class EnrichAPI(Resource):
                 phenotype=phenotype, 
                 variant=variant, 
                 hypothesis_id=existing_hypothesis['id'],
-                project_id=project_id
+                project_id=project_id,
+                seed=seed
             )
             return {"hypothesis_id": existing_hypothesis['id'], "project_id": project_id}, 202
         
@@ -153,7 +151,8 @@ class EnrichAPI(Resource):
             phenotype=phenotype,
             variant=variant,
             hypothesis_id=hypothesis_id,
-            project_id=project_id
+            project_id=project_id,
+            seed=seed
         )
         
         return {"hypothesis_id": hypothesis_id, "project_id": project_id}, 202
