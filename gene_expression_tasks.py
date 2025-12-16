@@ -468,7 +468,7 @@ def get_coexpression_matrix_for_tissue(gene, tissue_uberon_id, cell_type=None, k
         return top_positive, top_negative, genes
 
 @task(log_prints=True, cache_policy=None)
-def run_combined_ldsc_tissue_analysis(gene_expression, projects_handler, munged_file, output_dir, project_id, user_id):
+def run_combined_ldsc_tissue_analysis(gene_expression,munged_file, output_dir, project_id, user_id):
     """Combined LDSC + tissue analysis as part of main analysis pipeline"""
     analysis_run_id = None
     try:
