@@ -47,7 +47,8 @@ dependencies = [
     "scikit-learn>=1.6.1",
     "scipy>=1.15.3",
     "watchdog>=6.0.0",
-
+    "prefect-dask",
+    "dask[distributed]"
 ]
 
 [project.optional-dependencies]
