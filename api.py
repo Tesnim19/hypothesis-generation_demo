@@ -77,8 +77,8 @@ class EnrichAPI(Resource):
     def post(self, current_user_id):
         json_data = request.get_json(silent=True) or {}
         
-        variant = json_data.get('variant')
-        project_id = json_data.get('project_id')
+        variant =  request.args.get('variant') or json_data.get('variant')
+        project_id = request.args.get('project_id') or json_data.get('project_id')
         seed = int(json_data.get('seed', 42))
 
         
@@ -94,7 +94,7 @@ class EnrichAPI(Resource):
         
         phenotype = project['phenotype']
 
-        tissue_name = (args.get('tissue_name') or (json_data.get('tissue_name') if isinstance(json_data, dict) else None))
+        tissue_name = (request.args.get('tissue_name') or (json_data.get('tissue_name') if isinstance(json_data, dict) else None))
         if not tissue_name:
             return {"error": "tissue_name is required"}, 400
 
