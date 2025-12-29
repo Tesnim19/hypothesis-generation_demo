@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import threading
 import time
+from dask.distributed import get_worker
 
 # Global persistent client for Prefect connections
 _prefect_client = None
@@ -266,3 +267,13 @@ def convert_variants_to_object_array(variants_data):
         result.append(variant_obj)
     
     return result
+
+
+def get_deps():
+    worker = get_worker()
+    deps = getattr(worker, "deps", None)
+
+    if not deps:
+        err = getattr(worker, "deps_error", "unknown")
+        raise RuntimeError(f"Worker dependencies not initialized: {err}")
+    return deps

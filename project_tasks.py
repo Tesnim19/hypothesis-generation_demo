@@ -4,15 +4,15 @@ from prefect import task
 from loguru import logger
 import gzip
 import re
-from dask.distributed import get_worker 
+from utils import get_deps
 
 
 @task(cache_policy=None)
 def save_analysis_state_task(user_id, project_id, state_data):
     """Save analysis state to file system"""
     try:
-        worker = get_worker()
-        projects_handler = worker.deps["projects"]
+        deps = get_deps()
+        projects_handler = deps["projects"]
         projects_handler.save_analysis_state(user_id, project_id, state_data)
         logger.info(f"Saved analysis state for project {project_id}")
         return True
@@ -45,8 +45,8 @@ def create_analysis_result_task(user_id, project_id, combined_results, output_di
         combined_results.to_csv(results_file, index=False)
         
         # Save to database
-        worker = get_worker()
-        analysis_handler = worker.deps["analysis"]
+        deps = get_deps()
+        analysis_handler = deps["analysis"]
         analysis_handler.save_analysis_results(user_id, project_id, combined_results.to_dict('records'))
         
         logger.info(f"Analysis results saved: {results_file}")
@@ -61,8 +61,8 @@ def create_analysis_result_task(user_id, project_id, combined_results, output_di
 def get_project_analysis_path_task(user_id, project_id):
     """Get the analysis path for a project"""
     try:
-        worker = get_worker()
-        projects_handler = worker.deps["projects"]
+        deps = get_deps()
+        projects_handler = deps["projects"]
         analysis_path = projects_handler.get_project_analysis_path(user_id, project_id)
         
         # Create directory structure if it doesn't exist

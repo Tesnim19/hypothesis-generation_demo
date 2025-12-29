@@ -1,3 +1,4 @@
+import os
 from loguru import logger
 from prefect import flow
 from status_tracker import TaskState
@@ -39,13 +40,7 @@ import traceback
 @flow(
     log_prints=True, 
     persist_result=False, 
-    task_runner=DaskTaskRunner(
-        cluster_kwargs={
-            "n_workers": 4,
-            "threads_per_worker": 1,
-            "preload": ["/app/dask_preload.py"]
-        }
-    )
+    task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
 )
 def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_id, seed):
     """
@@ -350,13 +345,7 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
 
 @flow(log_prints=True, 
     persist_result=False, 
-    task_runner=DaskTaskRunner(
-        cluster_kwargs={
-            "n_workers": 4,
-            "threads_per_worker": 1,
-            "preload": ["/app/dask_preload.py"]
-        }
-    )
+    task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
 )
 def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
                            population="EUR", batch_size=5, max_workers=3,
