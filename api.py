@@ -779,26 +779,37 @@ class AnalysisPipelineAPI(Resource):
                 if self.storage:
                     # MinIO path: uploads/{user_id}/{file_id}/{filename}
                     object_key = f"uploads/{current_user_id}/{file_id}/{filename}"
+                    
+                    # Create user-isolated temp directory for better organization and debugging
                     import tempfile
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp_file:
-                        gwas_file.save(tmp_file.name)
-                        file_size = os.path.getsize(tmp_file.name)
-                        gwas_records_count = count_gwas_records(tmp_file.name)
-                        
-                        # Upload to MinIO for persistence
-                        upload_success = self.storage.upload_file(tmp_file.name, object_key)
-                        
-                        if not upload_success:
-                            logger.error(f"Failed to upload file to MinIO")
-                            os.remove(tmp_file.name)
-                            return {"error": "File upload failed"}, 500
-                        
-                        # Use temp file for immediate harmonization processing
-                        file_path = tmp_file.name
-                        gwas_file_path = file_path
-                        
-                        logger.info(f"[API] Uploaded to MinIO: s3://hypothesis/{object_key}")
-                        logger.info(f"[API] Using temp file for processing: {file_path}")
+                    user_temp_dir = os.path.join(tempfile.gettempdir(), 'uploads', str(current_user_id), file_id)
+                    os.makedirs(user_temp_dir, exist_ok=True)
+                    
+                    # Save to isolated temp location
+                    temp_file_path = os.path.join(user_temp_dir, filename)
+                    gwas_file.save(temp_file_path)
+                    file_size = os.path.getsize(temp_file_path)
+                    gwas_records_count = count_gwas_records(temp_file_path)
+                    
+                    # Upload to MinIO for persistence
+                    upload_success = self.storage.upload_file(temp_file_path, object_key)
+                    
+                    if not upload_success:
+                        logger.error(f"Failed to upload file to MinIO")
+                        # Cleanup temp file on failure
+                        try:
+                            os.remove(temp_file_path)
+                            os.rmdir(user_temp_dir)  # Remove empty dir
+                        except:
+                            pass
+                        return {"error": "File upload failed"}, 500
+                    
+                    # Use temp file for immediate harmonization processing
+                    file_path = temp_file_path
+                    gwas_file_path = file_path
+                    
+                    logger.info(f"[API] Uploaded to MinIO: s3://hypothesis/{object_key}")
+                    logger.info(f"[API] Using temp file for processing: {file_path}")
                 else:
                     # Fallback: Save to local disk
                     logger.warning("[API] MinIO not configured, falling back to local storage")

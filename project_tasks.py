@@ -53,13 +53,7 @@ def get_project_analysis_path_task(projects_handler, user_id, project_id):
     try:
         analysis_path = projects_handler.get_project_analysis_path(user_id, project_id)
         
-        # Create directory structure if it doesn't exist
         os.makedirs(analysis_path, exist_ok=True)
-        os.makedirs(os.path.join(analysis_path, "preprocessed_data"), exist_ok=True)
-        os.makedirs(os.path.join(analysis_path, "plink_binary"), exist_ok=True)
-        os.makedirs(os.path.join(analysis_path, "cojo"), exist_ok=True)
-        os.makedirs(os.path.join(analysis_path, "expanded_regions"), exist_ok=True)
-        os.makedirs(os.path.join(analysis_path, "ld"), exist_ok=True)
         
         logger.info(f"Project analysis path: {analysis_path}")
         return analysis_path

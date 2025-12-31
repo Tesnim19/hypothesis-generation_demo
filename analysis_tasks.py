@@ -408,9 +408,16 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
     """
     logger.info(f"[COJO] Starting per-chromosome COJO analysis for population {population}")
     
-    # Create temporary directory for COJO processing
-    with tempfile.TemporaryDirectory(prefix="cojo_analysis_") as temp_dir:
-        logger.info(f"[COJO] Using temporary directory: {temp_dir}")
+    # Create user-isolated temporary directory for COJO processing
+    # Extract user/project info from output_dir path (format: data/projects/{user_id}/{project_id}/analysis)
+    import uuid
+    unique_id = str(uuid.uuid4())[:8]
+    temp_base = os.path.join(tempfile.gettempdir(), 'cojo_analysis', unique_id)
+    os.makedirs(temp_base, exist_ok=True)
+    
+    try:
+        temp_dir = temp_base
+        logger.info(f"[COJO] Using isolated temporary directory: {temp_dir}")
         
         # Support both old and new column names
         a1_col = 'effect_allele' if 'effect_allele' in significant_df.columns else 'A1'
@@ -553,6 +560,15 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
         else:
             logger.error("[COJO] No COJO results generated for any chromosome")
             raise RuntimeError("COJO analysis failed for all chromosomes")
+    finally:
+        # Cleanup isolated temp directory
+        try:
+            import shutil
+            if os.path.exists(temp_base):
+                shutil.rmtree(temp_base)
+                logger.info(f"[COJO] Cleaned up temp directory: {temp_base}")
+        except Exception as cleanup_e:
+            logger.warning(f"[COJO] Could not cleanup temp directory: {cleanup_e}")
 
 @task
 def check_ld_dimensions(ld_matrix, snp_df, bim_file_path):
@@ -1256,14 +1272,15 @@ def finemap_region_batch_worker(batch_data):
 def save_sumstats_for_workers(sumstats_df, temp_dir=None):
     """Save sumstats to a temporary file for memory-efficient worker access"""
     if temp_dir is None:
-        temp_dir = tempfile.gettempdir()
+        # Create isolated temp directory for sumstats sharing between workers
+        import uuid
+        unique_id = str(uuid.uuid4())[:8]
+        temp_dir = os.path.join(tempfile.gettempdir(), 'sumstats_shared', unique_id)
+        os.makedirs(temp_dir, exist_ok=True)
     
-    # Create a unique temporary file
-    temp_file = tempfile.NamedTemporaryFile(
-        mode='w', suffix='.tsv', dir=temp_dir, delete=False
-    )
-    temp_path = temp_file.name
-    temp_file.close()
+    # Create temporary file with better naming
+    import uuid as uuid_module
+    temp_path = os.path.join(temp_dir, f'sumstats_{uuid_module.uuid4().hex[:8]}.tsv')
     
     # Save the DataFrame
     sumstats_df.to_csv(temp_path, sep='\t', index=True)
