@@ -7,6 +7,7 @@ from db import (
     EnrichmentHandler, HypothesisHandler, SummaryHandler, TaskHandler,
     GeneExpressionHandler
 )
+from storage import create_minio_client_from_env
 
 class Config:
     """Centralized configuration for the application"""
@@ -96,6 +97,9 @@ def create_dependencies(config):
     if not mongodb_uri or not db_name:
         raise ValueError("Missing required MongoDB configuration: MONGODB_URI and DB_NAME environment variables must be set")
     
+    # Initialize MinIO storag
+    minio_storage = create_minio_client_from_env()
+    
     return {
         'enrichr': enrichr,
         'llm': llm,
@@ -108,5 +112,6 @@ def create_dependencies(config):
         'hypotheses': HypothesisHandler(mongodb_uri, db_name),
         'summaries': SummaryHandler(mongodb_uri, db_name),
         'tasks': TaskHandler(mongodb_uri, db_name),
-        'gene_expression': GeneExpressionHandler(mongodb_uri, db_name)
+        'gene_expression': GeneExpressionHandler(mongodb_uri, db_name),
+        'storage': minio_storage
     }

@@ -119,7 +119,7 @@ def run_command(cmd: str) -> subprocess.CompletedProcess:
 def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRCh37", 
                                      ref_dir=None, code_repo=None, script_dir=None,
                                      threshold=0.99, sample_size=None, timeout_seconds=14400, 
-                                     cleanup_upload=True):
+                                     cleanup_upload=True, storage=None, user_id=None, project_id=None):
     """
     Harmonize GWAS summary statistics using Nextflow-based harmonization pipeline.
     """
@@ -341,6 +341,17 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
         # Calculate processing time
         elapsed_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[HARMONIZE] Processing completed in {elapsed_time:.2f} seconds")
+        
+        # Upload to MinIO
+        if storage and user_id and project_id:
+            harmonized_filename = os.path.basename(harmonized_file_path)
+            object_key = f"harmonized/{user_id}/{project_id}/{harmonized_filename}"
+            
+            upload_success = storage.upload_file(harmonized_file_path, object_key)
+            if upload_success:
+                logger.info(f"[HARMONIZE] Uploaded to MinIO: s3://hypothesis/{object_key}")
+            else:
+                logger.warning(f"[HARMONIZE] Failed to upload to MinIO, file remains local only")
 
         return harmonized_df, harmonized_file_path
         

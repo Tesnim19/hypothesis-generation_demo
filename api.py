@@ -773,21 +773,42 @@ class AnalysisPipelineAPI(Resource):
                 filename = secure_filename(gwas_file.filename)
                 file_id = str(uuid.uuid4())
                 
-                # Create user upload directory
-                user_upload_dir = os.path.join('data', 'uploads', str(current_user_id))
-                os.makedirs(user_upload_dir, exist_ok=True)
-                
-                # File path for saving
-                file_path = os.path.join(user_upload_dir, f"{file_id}_{filename}")
-                
                 logger.info(f"Starting upload for file {filename} (ID: {file_id})")
                 
-                # Save file
-                gwas_file.save(file_path)
-                file_size = os.path.getsize(file_path)
-                gwas_file_path = file_path
-                
-                gwas_records_count = count_gwas_records(file_path)
+                # Upload to MinIO 
+                if self.storage:
+                    # MinIO path: uploads/{user_id}/{file_id}/{filename}
+                    object_key = f"uploads/{current_user_id}/{file_id}/{filename}"
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp_file:
+                        gwas_file.save(tmp_file.name)
+                        file_size = os.path.getsize(tmp_file.name)
+                        gwas_records_count = count_gwas_records(tmp_file.name)
+                        
+                        # Upload to MinIO for persistence
+                        upload_success = self.storage.upload_file(tmp_file.name, object_key)
+                        
+                        if not upload_success:
+                            logger.error(f"Failed to upload file to MinIO")
+                            os.remove(tmp_file.name)
+                            return {"error": "File upload failed"}, 500
+                        
+                        # Use temp file for immediate harmonization processing
+                        file_path = tmp_file.name
+                        gwas_file_path = file_path
+                        
+                        logger.info(f"[API] Uploaded to MinIO: s3://hypothesis/{object_key}")
+                        logger.info(f"[API] Using temp file for processing: {file_path}")
+                else:
+                    # Fallback: Save to local disk
+                    logger.warning("[API] MinIO not configured, falling back to local storage")
+                    user_upload_dir = os.path.join('data', 'uploads', str(current_user_id))
+                    os.makedirs(user_upload_dir, exist_ok=True)
+                    file_path = os.path.join(user_upload_dir, f"{file_id}_{filename}")
+                    gwas_file.save(file_path)
+                    file_size = os.path.getsize(file_path)
+                    gwas_file_path = file_path
+                    gwas_records_count = count_gwas_records(file_path)
             
             # Create file metadata in database with record count 
             original_filename = gwas_file.filename if is_uploaded else filename
@@ -876,7 +897,8 @@ class AnalysisPipelineAPI(Resource):
                         L=L,
                         coverage=coverage,
                         min_abs_corr=min_abs_corr,
-                        sample_size=sample_size
+                        sample_size=sample_size,
+                        storage=self.storage  
                     )
                     
                     logger.info(f"[API] Analysis pipeline for project {project_id} completed successfully")

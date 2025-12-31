@@ -344,7 +344,7 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
 def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1, 
-                           coverage=0.95, min_abs_corr=0.5, sample_size=None):
+                           coverage=0.95, min_abs_corr=0.5, sample_size=None, storage=None):
     """
     Complete analysis pipeline flow using Prefect for orchestration
     but multiprocessing for fine-mapping batches (R safety)
@@ -374,7 +374,8 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         
         logger.info(f"[PIPELINE] Stage 1: Nextflow harmonization")
         harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
-            gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size
+            gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
+            storage=storage, user_id=user_id, project_id=project_id
         ).result()
         
         # Extract the actual file path from the result

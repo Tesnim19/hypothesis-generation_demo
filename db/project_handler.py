@@ -13,6 +13,7 @@ class ProjectHandler(BaseHandler):
     def __init__(self, uri, db_name):
         super().__init__(uri, db_name)
         self.projects_collection = self.db['projects']
+        self.analysis_state_collection = self.db['analysis_states']  # New collection for analysis state
     
     def create_project(self, user_id, name, gwas_file_id, phenotype,population, ref_genome, analysis_parameters=None):
         """Create a new project"""
@@ -69,22 +70,39 @@ class ProjectHandler(BaseHandler):
         """Get the analysis path for a project"""
         return f"data/projects/{user_id}/{project_id}/analysis"
 
-    def get_analysis_state_path(self, user_id, project_id):
-        """Get the analysis state file path"""
-        return f"data/states/{user_id}/{project_id}/analysis_state.json"
-
     def save_analysis_state(self, user_id, project_id, state_data):
-        """Save analysis state to file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        
-        with open(state_path, 'w') as f:
-            json.dump(state_data, f, default=str)
+        """Save analysis state to MongoDB"""
+        try:
+            # Add metadata
+            state_doc = {
+                'user_id': user_id,
+                'project_id': project_id,
+                'state': state_data,
+                'updated_at': datetime.now(timezone.utc)
+            }
+            
+            # Upsert (update if exists, insert if not)
+            self.analysis_state_collection.update_one(
+                {'user_id': user_id, 'project_id': project_id},
+                {'$set': state_doc},
+                upsert=True
+            )
+            logger.info(f"Saved analysis state to MongoDB for project {project_id}")
+        except Exception as e:
+            logger.error(f"Error saving analysis state to MongoDB: {e}")
+            raise
 
     def load_analysis_state(self, user_id, project_id):
-        """Load analysis state from file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        if os.path.exists(state_path):
-            with open(state_path, 'r') as f:
-                return json.load(f)
-        return None
+        """Load analysis state from MongoDB"""
+        try:
+            result = self.analysis_state_collection.find_one({
+                'user_id': user_id,
+                'project_id': project_id
+            })
+            
+            if result:
+                return result.get('state')
+            return None
+        except Exception as e:
+            logger.error(f"Error loading analysis state from MongoDB: {e}")
+            return None
