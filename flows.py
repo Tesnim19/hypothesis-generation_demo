@@ -495,6 +495,7 @@ def process_child_enrichments_simple(current_user_id, child_enrich_ids, parent_h
                     "go_id": go_id,
                     "phenotype": phenotype,
                     "variant": variant,
+                    "variant_rsid": variant,
                     "status": "pending",
                     "created_at": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
                     "task_history": [],

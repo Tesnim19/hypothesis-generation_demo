@@ -180,14 +180,16 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
                         selected_tissue = None
                         if gene_expression_handler:
                             try:
-                                variant_id = h.get("variant") or h.get("variant_id")
+                                variant_id = h.get("variant_rsid") or h.get("variant") or h.get("variant_id")
                                 if variant_id:
                                     tissue_selection = gene_expression_handler.get_tissue_selection(
                                         user_id, project_id, variant_id
                                     )
                                     if tissue_selection:
                                         selected_tissue = tissue_selection.get('tissue_name')
-                                        logger.info(f"Retrieved tissue selection from DB for hypothesis {h['id']}: {selected_tissue}")
+                                        logger.info(f"Retrieved tissue selection from DB for hypothesis {h['id']} using variant_id={variant_id}: {selected_tissue}")
+                                    else:
+                                        logger.info(f"No tissue selection found for hypothesis {h['id']} with variant_id={variant_id}")
                             except Exception as ts_e:
                                 logger.warning(f"Could not get tissue selection for hypothesis {h['id']}: {ts_e}")
                         

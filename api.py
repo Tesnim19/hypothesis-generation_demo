@@ -139,6 +139,7 @@ class EnrichAPI(Resource):
             "project_id": project_id,
             "phenotype": phenotype,
             "variant": variant,
+            "variant_rsid": variant,  
             "status": "pending",
             "created_at": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
             "task_history": [],
@@ -168,12 +169,13 @@ class EnrichAPI(Resource):
 
 
 class HypothesisAPI(Resource):
-    def __init__(self, enrichr, prolog_query, llm, hypotheses, enrichment):
+    def __init__(self, enrichr, prolog_query, llm, hypotheses, enrichment, gene_expression=None):
         self.enrichr = enrichr
         self.prolog_query = prolog_query
         self.llm = llm
         self.hypotheses = hypotheses
         self.enrichment = enrichment
+        self.gene_expression = gene_expression
     
     def _extract_probability(self, hypothesis, user_id):
         """Extract probability from hypothesis graph or enrichment data"""
@@ -310,6 +312,26 @@ class HypothesisAPI(Resource):
                 else:
                     response_data['enrichment_type'] = 'standard'
 
+                # Get tissue selection from tissue_selections collection
+                selected_tissue = None
+                if self.gene_expression:
+                    try:
+                        variant_id = hypothesis.get('variant_rsid') or hypothesis.get('variant') or hypothesis.get('variant_id')
+                        project_id = hypothesis.get('project_id')
+                        if variant_id and project_id:
+                            tissue_selection = self.gene_expression.get_tissue_selection(
+                                current_user_id, project_id, variant_id
+                            )
+                            if tissue_selection:
+                                selected_tissue = tissue_selection.get('tissue_name')
+                                logger.info(f"Retrieved tissue selection for completed hypothesis {hypothesis_id} using variant_id={variant_id}: {selected_tissue}")
+                            else:
+                                logger.info(f"No tissue selection found for completed hypothesis {hypothesis_id}, variant_id={variant_id}")
+                    except Exception as ts_e:
+                        logger.warning(f"Could not get tissue selection for completed hypothesis {hypothesis_id}: {ts_e}")
+                
+                response_data['tissue_selected'] = selected_tissue
+
                 # Serialize datetime objects before returning
                 response_data = serialize_datetime_fields(response_data)
                 return response_data, 200
@@ -359,6 +381,27 @@ class HypothesisAPI(Resource):
             if latest_state and latest_state.get('state') == 'failed':
                 status_data['status'] = 'failed'
                 status_data['error'] = latest_state.get('error')
+
+            # Get tissue selection from tissue_selections collection
+            selected_tissue = None
+            if self.gene_expression:
+                try:
+                    # Use variant_rsid for lookup, fall back to variant if not available
+                    variant_id = hypothesis.get('variant_rsid') or hypothesis.get('variant') or hypothesis.get('variant_id')
+                    project_id = hypothesis.get('project_id')
+                    if variant_id and project_id:
+                        tissue_selection = self.gene_expression.get_tissue_selection(
+                            current_user_id, project_id, variant_id
+                        )
+                        if tissue_selection:
+                            selected_tissue = tissue_selection.get('tissue_name')
+                            logger.info(f"Retrieved tissue selection for pending hypothesis {hypothesis_id} using variant_id={variant_id}: {selected_tissue}")
+                        else:
+                            logger.info(f"No tissue selection found for pending hypothesis {hypothesis_id}, variant_id={variant_id}")
+                except Exception as ts_e:
+                    logger.warning(f"Could not get tissue selection for pending hypothesis {hypothesis_id}: {ts_e}")
+            
+            status_data['tissue_selected'] = selected_tissue
 
             # Serialize datetime objects before returning
             status_data = serialize_datetime_fields(status_data)
