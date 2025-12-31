@@ -221,13 +221,11 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                         os.remove(f)
                         logger.info(f"[HARMONIZE] Cleaned up: {f}")
             
-            # 2. Move logs to output_dir instead of deleting
+            # Delete logs on success
             upload_log_dir = os.path.join(upload_dir, "logs")
             if os.path.exists(upload_log_dir):
-                output_log_dir = os.path.join(output_dir, "logs")
-                if not os.path.exists(output_log_dir):
-                    shutil.move(upload_log_dir, output_log_dir)
-                    logger.info(f"[HARMONIZE] Moved logs to: {output_log_dir}")
+                shutil.rmtree(upload_log_dir)
+                logger.info(f"[HARMONIZE] Deleted logs (harmonization successful): {upload_log_dir}")
             
             # 3. Remove Nextflow work directories 
             nextflow_work_dir = os.path.join(upload_dir, "work")
@@ -348,9 +346,31 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
         
     except subprocess.TimeoutExpired:
         logger.error(f"[HARMONIZE] Harmonization timeout after {timeout_seconds} seconds")
+        # Preserve logs on failure
+        try:
+            upload_dir = os.path.dirname(gwas_file_path)
+            upload_log_dir = os.path.join(upload_dir, "logs")
+            if os.path.exists(upload_log_dir):
+                output_log_dir = os.path.join(output_dir, "logs")
+                if not os.path.exists(output_log_dir):
+                    shutil.move(upload_log_dir, output_log_dir)
+                    logger.info(f"[HARMONIZE] Preserved logs on failure: {output_log_dir}")
+        except Exception as log_e:
+            logger.warning(f"[HARMONIZE] Could not preserve logs: {log_e}")
         raise RuntimeError(f"Harmonization timeout after {timeout_seconds} seconds")
     except Exception as e:
         logger.error(f"[HARMONIZE] Error in harmonization: {str(e)}")
+        # Preserve logs on failure
+        try:
+            upload_dir = os.path.dirname(gwas_file_path)
+            upload_log_dir = os.path.join(upload_dir, "logs")
+            if os.path.exists(upload_log_dir):
+                output_log_dir = os.path.join(output_dir, "logs")
+                if not os.path.exists(output_log_dir):
+                    shutil.move(upload_log_dir, output_log_dir)
+                    logger.info(f"[HARMONIZE] Preserved logs on failure: {output_log_dir}")
+        except Exception as log_e:
+            logger.warning(f"[HARMONIZE] Could not preserve logs: {log_e}")
         raise
 
 

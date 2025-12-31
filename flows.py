@@ -29,6 +29,7 @@ run_combined_ldsc_tissue_analysis
 import pandas as pd
 from datetime import datetime, timezone
 from prefect.task_runners import ThreadPoolTaskRunner
+import os
 
 from utils import emit_task_update
 from config import Config, create_dependencies
@@ -403,11 +404,12 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
         significant_df_result = filter_significant_variants.submit(harmonized_df, output_dir).result()
         
-        # Extract the actual DataFrame
+        # Extract the actual DataFrame and file path
         if isinstance(significant_df_result, tuple):
-            significant_df, _ = significant_df_result
+            significant_df, sig_output_path = significant_df_result
         else:
             significant_df = significant_df_result
+            sig_output_path = None
         
         # Update analysis state after filtering
         filtering_state = {
@@ -424,11 +426,20 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         plink_dir = config.plink_dir
         cojo_result = run_cojo_per_chromosome.submit(significant_df, plink_dir, output_dir, maf_threshold=maf_threshold, population=population).result()
         
-        # Extract the actual DataFrame
+        # Extract the actual DataFrame and file path
         if isinstance(cojo_result, tuple):
-            cojo_results, _ = cojo_result
+            cojo_results, cojo_output_path = cojo_result
         else:
             cojo_results = cojo_result
+            cojo_output_path = None
+        
+        # Cleanup
+        if sig_output_path and os.path.exists(sig_output_path):
+            try:
+                os.remove(sig_output_path)
+                logger.info(f"[PIPELINE] Cleaned up temporary file: {sig_output_path}")
+            except Exception as cleanup_e:
+                logger.warning(f"[PIPELINE] Could not cleanup {sig_output_path}: {cleanup_e}")
         
         if cojo_results is None or len(cojo_results) == 0:
             logger.error("[PIPELINE] No COJO results to process")
@@ -527,6 +538,14 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         if all_results:
             logger.info(f"[PIPELINE] Combining results from {successful_batches} successful batches")
             combined_results = pd.concat(all_results, ignore_index=True)
+            
+            # Cleanup
+            if cojo_output_path and os.path.exists(cojo_output_path):
+                try:
+                    os.remove(cojo_output_path)
+                    logger.info(f"[PIPELINE] Cleaned up temporary file: {cojo_output_path}")
+                except Exception as cleanup_e:
+                    logger.warning(f"[PIPELINE] Could not cleanup {cojo_output_path}: {cleanup_e}")
             
             # Save results using Prefect tasks
             results_file = create_analysis_result_task.submit(analysis_handler, user_id, project_id, combined_results, output_dir).result()

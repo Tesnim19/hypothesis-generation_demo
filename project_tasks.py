@@ -37,15 +37,10 @@ def load_analysis_state_task(projects_handler, user_id, project_id):
 def create_analysis_result_task(analysis_handler, user_id, project_id, combined_results, output_dir):
     """Create and save analysis results"""
     try:
-        # Save to output directory
-        results_file = os.path.join(output_dir, "analysis_results.csv")
-        combined_results.to_csv(results_file, index=False)
-        
-        # Save to database
         analysis_handler.save_analysis_results(user_id, project_id, combined_results.to_dict('records'))
         
-        logger.info(f"Analysis results saved: {results_file}")
-        return results_file
+        logger.info(f"Analysis results saved to database for project {project_id}")
+        return None
     except Exception as e:
         logger.error(f"Error saving analysis results: {str(e)}")
         raise
