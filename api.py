@@ -1117,11 +1117,23 @@ class AnalysisPipelineAPI(Resource):
             logger.info(f"[API] Created project {project_id} with file {file_metadata_id}")
             
             # Start pipeline in background thread
-            def run_pipeline_background():
+            def run_pipeline_background(
+                proj_id=project_id,
+                user_id=current_user_id,
+                gwas_path=file_path,
+                ref_gen=ref_genome,
+                pop=population,
+                batch=batch_size,
+                workers=max_workers,
+                maf=maf_threshold,
+                seed_val=seed,
+                win=window,
+                L_val=L,
+                cov=coverage,
+                min_corr=min_abs_corr
+            ):
                 try:
-                    
-                    
-                    logger.info(f"[API] Running analysis pipeline for project {project_id}")
+                    logger.info(f"[API] Running analysis pipeline for project {proj_id}")
                     
                     # Run the analysis pipeline flow directly
                     credible_sets = analysis_pipeline_flow(
@@ -1130,29 +1142,29 @@ class AnalysisPipelineAPI(Resource):
                         gene_expression=self.gene_expression,
                         mongodb_uri=self.config.mongodb_uri,
                         db_name=self.config.db_name,
-                        user_id=current_user_id,
-                        project_id=project_id,
-                        gwas_file_path=file_path,
-                        ref_genome=ref_genome,
-                        population=population,
-                        batch_size=batch_size,
-                        max_workers=max_workers,
-                        maf_threshold=maf_threshold,
-                        seed=seed,
-                        window=window,
-                        L=L,
-                        coverage=coverage,
-                        min_abs_corr=min_abs_corr
+                        user_id=user_id,
+                        project_id=proj_id,
+                        gwas_file_path=gwas_path,
+                        ref_genome=ref_gen,
+                        population=pop,
+                        batch_size=batch,
+                        max_workers=workers,
+                        maf_threshold=maf,
+                        seed=seed_val,
+                        window=win,
+                        L=L_val,
+                        coverage=cov,
+                        min_abs_corr=min_corr
                     )
                     
-                    logger.info(f"[API] Analysis pipeline for project {project_id} completed successfully")
+                    logger.info(f"[API] Analysis pipeline for project {proj_id} completed successfully")
                     if credible_sets and isinstance(credible_sets, dict):
                         logger.info(f"[API] Generated {credible_sets.get('total_variants', 0)} variants in {credible_sets.get('total_credible_sets', 0)} credible sets")
                     else:
                         logger.info(f"[API] Analysis completed but no credible sets generated")
                     
                 except Exception as e:
-                    logger.error(f"[API] Analysis pipeline for project {project_id} failed: {str(e)}")
+                    logger.error(f"[API] Analysis pipeline for project {proj_id} failed: {str(e)}")
             
             # Start background thread
             background_thread = Thread(target=run_pipeline_background)

@@ -21,7 +21,11 @@ import optuna
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import Config
 import re
+import threading
 logging.basicConfig(level=logging.INFO)
+
+# Thread lock for R operations (rpy2 is not thread-safe)
+R_LOCK = threading.RLock()
 
 try:
     import rpy2.robjects as ro
@@ -116,6 +120,7 @@ def run_command(cmd: str) -> subprocess.CompletedProcess:
 def munge_sumstats_preprocessing(gwas_file_path, output_dir, ref_genome="GRCh37", n_threads=14):
     """
     Preprocess GWAS data using R's MungeSumstats package for standardization and QC.
+    Thread-safe: Uses R_LOCK to prevent concurrent R operations.
     """
     if not HAS_RPY2:
         logging.error("rpy2 not available for MungeSumstats preprocessing")
@@ -131,40 +136,42 @@ def munge_sumstats_preprocessing(gwas_file_path, output_dir, ref_genome="GRCh37"
     os.makedirs(log_dir, exist_ok=True)
     
     try:
-        # Set up conversion context for both import and execution
-        with localconverter(default_converter + pandas2ri.converter):
-            # Import MungeSumstats within conversion context
-            try:
-                mungesumstats = importr('MungeSumstats')
-                logger.info("[MUNGE] MungeSumstats package loaded successfully")
-            except Exception as e:
-                logger.error(f"[MUNGE] Error importing MungeSumstats: {e}")
-                raise RuntimeError("MungeSumstats package not available. Install with: BiocManager::install('MungeSumstats')")
+        # CRITICAL: Acquire lock before any R operations (rpy2 is NOT thread-safe)
+        with R_LOCK:
+            # Set up conversion context for both import and execution
+            with localconverter(default_converter + pandas2ri.converter):
+                # Import MungeSumstats within conversion context
+                try:
+                    mungesumstats = importr('MungeSumstats')
+                    logger.info("[MUNGE] MungeSumstats package loaded successfully")
+                except Exception as e:
+                    logger.error(f"[MUNGE] Error importing MungeSumstats: {e}")
+                    raise RuntimeError("MungeSumstats package not available. Install with: BiocManager::install('MungeSumstats')")
+                
+                # Run MungeSumstats formatting 
+                logger.info(f"[MUNGE] Processing with ref_genome={ref_genome}, threads={n_threads}")
+                formatted_file_path_r = mungesumstats.format_sumstats(
+                    path=gwas_file_path,
+                    ref_genome=ref_genome,
+                    save_path=munged_output_path,
+                    drop_indels=True,
+                    nThread=n_threads,
+                    log_folder=log_dir,
+                    log_mungesumstats_msgs=True,
+                    save_format="LDSC",
+                    # force_new=False
+                )
+                
+                formatted_file_path_raw = str(formatted_file_path_r[0])
+                path_match = re.search(r'"([^"]+)"', formatted_file_path_raw)
+                if path_match:
+                    formatted_file_path = path_match.group(1)
+                else:
+                    # Fallback: try to clean it manually
+                    formatted_file_path = formatted_file_path_raw.strip().replace('[1] "', '').replace('"', '').strip()
             
-            # Run MungeSumstats formatting 
-            logger.info(f"[MUNGE] Processing with ref_genome={ref_genome}, threads={n_threads}")
-            formatted_file_path_r = mungesumstats.format_sumstats(
-                path=gwas_file_path,
-                ref_genome=ref_genome,
-                save_path=munged_output_path,
-                drop_indels=True,
-                nThread=n_threads,
-                log_folder=log_dir,
-                log_mungesumstats_msgs=True,
-                save_format="LDSC",
-                # force_new=False
-            )
-            
-            formatted_file_path_raw = str(formatted_file_path_r[0])
-            path_match = re.search(r'"([^"]+)"', formatted_file_path_raw)
-            if path_match:
-                formatted_file_path = path_match.group(1)
-            else:
-                # Fallback: try to clean it manually
-                formatted_file_path = formatted_file_path_raw.strip().replace('[1] "', '').replace('"', '').strip()
+            logger.info(f"[MUNGE] MungeSumstats completed. Output: {formatted_file_path}")
         
-        logger.info(f"[MUNGE] MungeSumstats completed. Output: {formatted_file_path}")
-            
         # Load and post-process the munged data
         logger.info("[MUNGE] Loading and post-processing munged data")
         munged_df = pd.read_csv(formatted_file_path, sep='\t', low_memory=False)
