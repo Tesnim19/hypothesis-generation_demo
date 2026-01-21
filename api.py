@@ -850,12 +850,13 @@ class BulkProjectDeleteAPI(Resource):
             return {"error": "Failed to delete projects"}, 500
 
 class AnalysisPipelineAPI(Resource):
-    def __init__(self, projects, files, analysis, gene_expression, config):
+    def __init__(self, projects, files, analysis, gene_expression, config, gwas_library=None):
         self.projects = projects
         self.files = files
         self.analysis = analysis
         self.gene_expression = gene_expression
         self.config = config
+        self.gwas_library = gwas_library
 
     @token_required
     def post(self, current_user_id):
@@ -896,28 +897,98 @@ class AnalysisPipelineAPI(Resource):
                 
                 logger.info(f"[API] Using predefined GWAS file ID: {predefined_file_id}")
                 
-                # Find the predefined file in data/raw/
-                from config import Config
-                data_dir = getattr(self.config, 'data_dir', 'data')
-                raw_data_path = os.path.join(data_dir, 'raw')
-                
-                # Look for the file with various possible extensions since ID doesn't include extension
-                possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
                 gwas_file_path = None
                 filename = None
+                file_size = 0
                 
-                for ext in possible_extensions:
-                    candidate_path = os.path.join(raw_data_path, f"{predefined_file_id}{ext}")
-                    if os.path.exists(candidate_path):
-                        gwas_file_path = candidate_path
-                        filename = f"{predefined_file_id}{ext}"
-                        break
+                # OPTION 1: Check GWAS library first (for files from the library)
+                if self.gwas_library:
+                    try:
+                        entry = self.gwas_library.get_gwas_entry(file_id=predefined_file_id)
+                        if entry:
+                            logger.info(f"[API] Found file in GWAS library")
+                            
+                            # Check if already downloaded/cached
+                            if entry.get('downloaded') and entry.get('local_path'):
+                                gwas_file_path = entry['local_path']
+                                if os.path.exists(gwas_file_path):
+                                    logger.info(f"[API] Using cached file: {gwas_file_path}")
+                                    filename = entry.get('filename', predefined_file_id)
+                                    file_size = os.path.getsize(gwas_file_path)
+                                else:
+                                    logger.warning(f"[API] Cached file missing, will download")
+                                    entry = None  # Force download
+                            
+                            # If not cached, download it now
+                            if not gwas_file_path and entry:
+                                logger.info(f"[API] File not cached, downloading on-demand")
+                                
+                                # Determine download URL
+                                download_url = entry.get('aws_url') or entry.get('dropbox_url')
+                                if not download_url and entry.get('wget_command'):
+                                    import re
+                                    url_match = re.search(r'(https?://[^\s]+)', entry['wget_command'])
+                                    if url_match:
+                                        download_url = url_match.group(1)
+                                
+                                if not download_url:
+                                    return {"error": "No download URL available for this file"}, 404
+                                
+                                # Setup cache path
+                                data_dir = getattr(self.config, 'data_dir', 'data')
+                                cache_dir = os.path.join(data_dir, 'gwas_cache')
+                                os.makedirs(cache_dir, exist_ok=True)
+                                
+                                filename = entry.get('filename', predefined_file_id)
+                                gwas_file_path = os.path.join(cache_dir, filename)
+                                
+                                # Download the file
+                                logger.info(f"[API] Downloading from {download_url}")
+                                import requests
+                                import shutil
+                                
+                                try:
+                                    response = requests.get(download_url, stream=True, timeout=600)
+                                    response.raise_for_status()
+                                    
+                                    with open(gwas_file_path, 'wb') as f:
+                                        shutil.copyfileobj(response.raw, f)
+                                    
+                                    file_size = os.path.getsize(gwas_file_path)
+                                    
+                                    # Update database
+                                    self.gwas_library.mark_as_downloaded(predefined_file_id, gwas_file_path, file_size)
+                                    logger.info(f"[API] Downloaded and cached: {gwas_file_path}")
+                                    
+                                except Exception as e:
+                                    logger.error(f"[API] Download failed: {e}")
+                                    if os.path.exists(gwas_file_path):
+                                        os.remove(gwas_file_path)
+                                    return {"error": f"Failed to download file: {str(e)}"}, 500
+                    except Exception as e:
+                        logger.warning(f"[API] GWAS library lookup failed: {e}")
+                
+                # OPTION 2: Fallback to data/raw/ for legacy files
+                if not gwas_file_path:
+                    logger.info(f"[API] File not in library, checking data/raw/")
+                    data_dir = getattr(self.config, 'data_dir', 'data')
+                    raw_data_path = os.path.join(data_dir, 'raw')
+                    
+                    # Look for the file with various possible extensions
+                    possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
+                    
+                    for ext in possible_extensions:
+                        candidate_path = os.path.join(raw_data_path, f"{predefined_file_id}{ext}")
+                        if os.path.exists(candidate_path):
+                            gwas_file_path = candidate_path
+                            filename = f"{predefined_file_id}{ext}"
+                            file_size = os.path.getsize(gwas_file_path)
+                            logger.info(f"[API] Found in data/raw: {gwas_file_path}")
+                            break
                 
                 if not gwas_file_path:
-                    return {"error": f"Predefined GWAS file not found for ID: {predefined_file_id}"}, 404
+                    return {"error": f"GWAS file not found: {predefined_file_id}"}, 404
                 
-                logger.info(f"[API] Found predefined file: {filename} at {gwas_file_path}")
-                file_size = os.path.getsize(gwas_file_path)
                 file_id = str(uuid.uuid4())
                 
             else:
