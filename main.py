@@ -132,7 +132,8 @@ def setup_api(config):
         "files": deps['files'],
         "analysis": deps['analysis'],
         "gene_expression": deps['gene_expression'],
-        "config": config
+        "config": config,
+        "storage": deps['storage']
     })
     api.add_resource(CredibleSetsAPI, "/credible-sets", resource_class_kwargs={"analysis": deps['analysis']})
     # GWAS files

@@ -68,11 +68,17 @@ def run_ldsc_analysis(ldsc_dir, gwas_file, output_prefix):
         ldsc_df['A1'] = df['effect_allele']
         ldsc_df['A2'] = df['other_allele']
         
+        # Add sample size column (required by LDSC)
+        if 'N' in df.columns:
+            ldsc_df['N'] = df['N']
+        
         # Remove rows with missing rsid/SNP
         ldsc_df = ldsc_df.dropna(subset=['SNP'])
         ldsc_df = ldsc_df[ldsc_df['SNP'] != '.']  # Remove missing rs IDs
         
         logger.info(f"After filtering missing SNPs: {len(ldsc_df)} variants")
+        logger.info(f"LDSC dataframe columns: {ldsc_df.columns.tolist()}")
+        logger.info(f"LDSC dataframe sample (first 3 rows):\n{ldsc_df.head(3)}")
         
         ldsc_df.to_csv(local_gwas_path, sep='\t', index=False, compression='gzip')
         logger.info(f"Converted GWAS file saved to: {local_gwas_path}")
@@ -83,6 +89,42 @@ def run_ldsc_analysis(ldsc_dir, gwas_file, output_prefix):
         logger.error(f"Failed to convert SSF to LDSC format: {e}")
         shutil.copy2(gwas_file, local_gwas_path)
         logger.warning(f"Using original file without conversion: {local_gwas_path}")
+    
+    # Check if LDSC data directory and reference files exist
+    if not os.path.exists(ldsc_data_dir):
+        raise FileNotFoundError(
+            f"LDSC data directory does not exist: {ldsc_data_dir}\n"
+            f"Please create it and download the required reference files:\n"
+            f"  - 1000G_Phase3_baselineLD_ldscores/\n"
+            f"  - 1000G_Phase3_weights_hm3_no_MHC/\n"
+            f"  - Multi_tissue_gene_expr_gtex.ldcts\n"
+            f"  - gtex_tissue_mappings_updated.tsv"
+        )
+    
+    # Check for required reference files
+    required_files = [
+        'Multi_tissue_gene_expr_gtex.ldcts',
+        '1000G_Phase3_baselineLD_ldscores',
+        '1000G_Phase3_weights_hm3_no_MHC'
+    ]
+    
+    missing_files = []
+    for req_file in required_files:
+        file_path = os.path.join(ldsc_data_dir, req_file)
+        if not os.path.exists(file_path):
+            missing_files.append(req_file)
+    
+    if missing_files:
+        raise FileNotFoundError(
+            f"Missing required LDSC reference files in {ldsc_data_dir}:\n" +
+            "\n".join(f"  - {f}" for f in missing_files) +
+            "\n\nPlease download these files from:\n"
+            "  - Baseline LD: https://data.broadinstitute.org/alkesgroup/LDSCORE/1000G_Phase3_baselineLD_v2.2_ldscores.tgz\n"
+            "  - Weights: https://data.broadinstitute.org/alkesgroup/LDSCORE/1000G_Phase3_weights_hm3_no_MHC.tgz\n"
+            "  - GTEx: https://data.broadinstitute.org/alkesgroup/LDSCORE/LDSC_SEG_ldscores/Multi_tissue_gene_expr_gtex_1000Gv3_ldscores.tgz"
+        )
+    
+    logger.info(f"All LDSC reference files found in {ldsc_data_dir}")
     
     # Use the wrapper script from Dockerfile
     cmd = [
@@ -115,7 +157,15 @@ def run_ldsc_analysis(ldsc_dir, gwas_file, output_prefix):
         rc = process.poll()
         if rc != 0:
             logger.error(f"LDSC command failed with return code: {rc}")
-            raise RuntimeError(f"LDSC failed with return code: {rc}")
+            logger.error(f"Last 10 lines of LDSC output:")
+            for line in output_lines[-10:]:
+                logger.error(f"  {line}")
+            raise RuntimeError(
+                f"LDSC failed with return code: {rc}\n"
+                f"Command: {' '.join(cmd)}\n"
+                f"Working dir: {ldsc_data_dir}\n"
+                f"Last output lines:\n" + "\n".join(output_lines[-10:])
+            )
         
         logger.info("LDSC command completed successfully")
         return True

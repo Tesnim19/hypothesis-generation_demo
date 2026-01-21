@@ -640,12 +640,13 @@ class ProjectsAPI(Resource):
 
 
 class AnalysisPipelineAPI(Resource):
-    def __init__(self, projects, files, analysis, gene_expression, config):
+    def __init__(self, projects, files, analysis, gene_expression, config,storage):
         self.projects = projects
         self.files = files
         self.analysis = analysis
         self.gene_expression = gene_expression
         self.config = config
+        self.storage = storage
 
     @token_required
     def post(self, current_user_id):
@@ -909,7 +910,7 @@ class AnalysisPipelineAPI(Resource):
                         coverage=coverage,
                         min_abs_corr=min_abs_corr,
                         sample_size=sample_size,
-                        storage=self.storage  
+                        storage=self.storage
                     )
                     
                     logger.info(f"[API] Analysis pipeline for project {project_id} completed successfully")
@@ -920,6 +921,7 @@ class AnalysisPipelineAPI(Resource):
                     
                 except Exception as e:
                     logger.error(f"[API] Analysis pipeline for project {project_id} failed: {str(e)}")
+                    raise e
             
             # Start background thread
             background_thread = Thread(target=run_pipeline_background)

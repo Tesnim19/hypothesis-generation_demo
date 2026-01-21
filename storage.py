@@ -20,13 +20,19 @@ class MinIOStorage:
         self.bucket = bucket
         self.endpoint = endpoint
         
-        # Create boto3 client
+        # Create boto3 client with path-style addressing for MinIO
         self.client = boto3.client(
             's3',
             endpoint_url=f"{'https' if use_ssl else 'http'}://{endpoint}",
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            config=Config(signature_version='s3v4'),
+            config=Config(
+                signature_version='s3v4',
+                s3={'addressing_style': 'path'},  # Force path-style for MinIO compatibility
+                connect_timeout=60,  # Increased timeout for remote MinIO
+                read_timeout=300,  # 5 minutes for large file uploads
+                retries={'max_attempts': 3}
+            ),
             region_name='us-east-1'
         )
         
