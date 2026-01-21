@@ -13,6 +13,7 @@ from .task_handler import TaskHandler
 from .base_handler import BaseHandler
 from .phenotype_handler import PhenotypeHandler
 from .gene_expression_handler import GeneExpressionHandler
+from .gwas_library_handler import GWASLibraryHandler
 
 __all__ = [
     'UserHandler', 
@@ -25,5 +26,6 @@ __all__ = [
     'TaskHandler',
     'BaseHandler',
     'PhenotypeHandler',
-    'GeneExpressionHandler'
+    'GeneExpressionHandler',
+    'GWASLibraryHandler'
 ]
