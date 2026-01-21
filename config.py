@@ -27,7 +27,7 @@ class Config:
         self.host = "0.0.0.0"
         self.port = 5000
         # Harmonization workflow configuration
-        self.harmonizer_ref_dir = "./data/harmonizer_ref"  # Fixed: Use relative path consistent with docker-compose mounts
+        self.harmonizer_ref_dir = "./data/harmonizer_ref/b38"  # Fixed: Use relative path consistent with docker-compose mounts
         self.harmonizer_code_repo = "./gwas-sumstats-harmoniser"  # Nextflow workflow
         self.harmonizer_script_dir = "./scripts/1000Genomes_phase3"  # Shell scripts
 
@@ -65,7 +65,7 @@ class Config:
         config.data_dir = os.getenv("DATA_DIR", "./data")
         config.ontology_cache_dir = os.getenv("ONTOLOGY_CACHE_DIR", "./data/ontology")
         # Harmonization workflow configuration
-        config.harmonizer_ref_dir = os.getenv("HARMONIZER_REF_DIR", "./data/harmonizer_ref")  # Fixed: Use relative path
+        config.harmonizer_ref_dir = os.getenv("HARMONIZER_REF_DIR_38", "./data/harmonizer_ref/b38")  # Fixed: Use relative path
         config.harmonizer_code_repo = os.getenv("HARMONIZER_CODE_REPO", "./gwas-sumstats-harmoniser")  # Nextflow workflow
         config.harmonizer_script_dir = os.getenv("HARMONIZER_SCRIPT_DIR", "./scripts/1000Genomes_phase3")  # Shell scripts
         return config

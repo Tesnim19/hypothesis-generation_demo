@@ -133,7 +133,7 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
     # Get configuration
     config = Config.from_env()
     if ref_dir is None:
-        ref_dir = getattr(config, 'harmonizer_ref_dir', '/data/harmonizer_ref')
+        ref_dir = getattr(config, 'harmonizer_ref_dir', '/data/harmonizer_ref/b38')
     if code_repo is None:
         code_repo = getattr(config, 'harmonizer_code_repo', '/app/gwas-sumstats-harmoniser')
     if script_dir is None:
@@ -221,11 +221,12 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                         os.remove(f)
                         logger.info(f"[HARMONIZE] Cleaned up: {f}")
             
-            # Delete logs on success
-            upload_log_dir = os.path.join(upload_dir, "logs")
-            if os.path.exists(upload_log_dir):
-                shutil.rmtree(upload_log_dir)
-                logger.info(f"[HARMONIZE] Deleted logs (harmonization successful): {upload_log_dir}")
+            # Delete logs on success (check both upload_dir and parent_upload_dir)
+            for logs_base_dir in [upload_dir, parent_upload_dir]:
+                upload_log_dir = os.path.join(logs_base_dir, "logs")
+                if os.path.exists(upload_log_dir):
+                    shutil.rmtree(upload_log_dir)
+                    logger.info(f"[HARMONIZE] Deleted logs (harmonization successful): {upload_log_dir}")
             
             # 3. Remove Nextflow work directories 
             nextflow_work_dir = os.path.join(upload_dir, "work")
@@ -238,20 +239,25 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                 shutil.rmtree(parent_work_dir)
                 logger.info(f"[HARMONIZE] Removed Nextflow work directory: {parent_work_dir}")
             
-            # 4. Remove Nextflow timestamp directories 
-            for item in os.listdir(upload_dir):
-                item_path = os.path.join(upload_dir, item)
-                if os.path.isdir(item_path) and (
-                    len(item.split('_')) >= 2 or  
-                    item.startswith('2') or  
-                    item == '.nextflow' or  
-                    item.startswith('results') 
-                ):
-                    try:
-                        shutil.rmtree(item_path)
-                        logger.info(f"[HARMONIZE] Removed directory: {item_path}")
-                    except Exception as e:
-                        logger.warning(f"[HARMONIZE] Could not remove directory {item_path}: {e}")
+            # 4. Remove Nextflow timestamp directories from parent_upload_dir (where original file is)
+            for cleanup_dir in [upload_dir, parent_upload_dir]:
+                if not os.path.exists(cleanup_dir):
+                    continue
+                    
+                for item in os.listdir(cleanup_dir):
+                    item_path = os.path.join(cleanup_dir, item)
+                    if os.path.isdir(item_path) and (
+                        len(item.split('_')) >= 2 or  
+                        item.startswith('2') or  
+                        item == '.nextflow' or  
+                        item.startswith('results') or
+                        item == os.path.splitext(os.path.basename(gwas_file_path))[0]  # Remove {basename} directory
+                    ):
+                        try:
+                            shutil.rmtree(item_path)
+                            logger.info(f"[HARMONIZE] Removed directory: {item_path}")
+                        except Exception as e:
+                            logger.warning(f"[HARMONIZE] Could not remove directory {item_path}: {e}")
             
             # 5. Remove .nextflow.log files from both upload_dir and parent_upload_dir
             for log_dir in [upload_dir, parent_upload_dir]:
@@ -262,10 +268,16 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                     except Exception as e:
                         logger.warning(f"[HARMONIZE] Could not remove {f}: {e}")
             
-            # 6.  remove original uploaded file
+            # 6. Remove original uploaded file (but NOT predefined files from data/raw/)
             if cleanup_upload and os.path.exists(gwas_file_path):
-                os.remove(gwas_file_path)
-                logger.info(f"[HARMONIZE] Removed original uploaded file: {gwas_file_path}")
+                # Check if this is a predefined file (in data/raw/ directory)
+                is_predefined = '/data/raw/' in gwas_file_path or '\\data\\raw\\' in gwas_file_path
+                
+                if is_predefined:
+                    logger.info(f"[HARMONIZE] Keeping predefined file: {gwas_file_path}")
+                else:
+                    os.remove(gwas_file_path)
+                    logger.info(f"[HARMONIZE] Removed original uploaded file: {gwas_file_path}")
             elif not cleanup_upload:
                 logger.info(f"[HARMONIZE] Keeping original uploaded file: {gwas_file_path}")
             
