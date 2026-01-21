@@ -1434,16 +1434,18 @@ class GWASFilesAPI(Resource):
             # Transform entries to match expected API format
             gwas_files = []
             for entry in entries:
+                file_id = entry.get('file_id') or entry.get('filename')
                 gwas_file_entry = {
-                    "id": entry.get('phenotype_code'),
+                    "id": file_id,  # Use filename as ID
                     "display_name": entry.get('display_name'),
                     "description": entry.get('description'),
                     "phenotype_code": entry.get('phenotype_code'),
+                    "filename": entry.get('filename'),
                     "sex": entry.get('sex'),
                     "source": entry.get('source'),
                     "downloaded": entry.get('downloaded', False),
                     "download_count": entry.get('download_count', 0),
-                    "url": f"/gwas-files/download/{entry.get('phenotype_code')}",
+                    "url": f"/gwas-files/download/{file_id}",
                     "showcase_link": entry.get('showcase_link', ''),
                 }
                 
@@ -1642,15 +1644,15 @@ class GWASFileDownloadAPI(Resource):
             return False
 
     def get(self, file_id):
-        """Download a GWAS file by phenotype code (downloads on-demand if needed)"""
+        """Download a GWAS file by file_id (filename) - downloads on-demand if needed"""
         try:
-            logger.info(f"[GWAS DOWNLOAD] Download request for phenotype: {file_id}")
+            logger.info(f"[GWAS DOWNLOAD] Download request for file: {file_id}")
             
             # Get entry from library
-            entry = self.gwas_library.get_gwas_entry(phenotype_code=file_id)
+            entry = self.gwas_library.get_gwas_entry(file_id=file_id)
             
             if not entry:
-                logger.error(f"[GWAS DOWNLOAD] Entry not found for phenotype: {file_id}")
+                logger.error(f"[GWAS DOWNLOAD] Entry not found for file: {file_id}")
                 return {"error": "GWAS file not found in library"}, 404
             
             # Check if file is already downloaded
