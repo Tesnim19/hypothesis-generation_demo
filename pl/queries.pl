@@ -39,6 +39,7 @@ overlaps_with(A, B) :-
 within_k_distance(G, S, K) :-
     chr(S, Chr),
     chr(G, Chr),
+    G \= S,
     start(S, Pos),
     start(G, StartG),
     end(G, EndG),

@@ -199,8 +199,9 @@ data/states
 data/external_data
 data/1000Genomes_phase3
 data/raw
-
-# Scripts
+data/loo
+data/per_chr
+data/multi_chr
 
 # Logs
 logs/

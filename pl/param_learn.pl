@@ -16,9 +16,9 @@
 
 :- set_lift(verbosity, 3).
 :- set_lift(iter, -1).
-:- set_lift(random_restarts_number , 3).
+:- set_lift(random_restarts_number , 5).
 :- set_lift(neg_ex, given).
-:- set_lift(eps, 0.001).
+%:- set_lift(eps, 0.001).
 :- set_lift(threads, 20).
 % :- set_lift(parameter_learning, gd).
 % :- set_lift(gamma, 0.01).
@@ -39,7 +39,7 @@ relevant_gene(G, S): 0.25 :- eqtl_association(S, G).
 relevant_gene(G, S): 0.25 :- activity_by_contact(S, G).
 
 % relevant_gene(G, S): 0.25 :- eqtl_association(S, G), activity_by_contact(S, G).
-% relevant_gene(G, S): 0.25 :- pgboost(S, G).
+relevant_gene(G, S): 0.25 :- pgboost(S, G).
 
 :- end_in.
 
@@ -137,7 +137,8 @@ run_param(Dir, Program, [Fold|RestFold], [LPH|LPT],
    ROCT, PRT, RRest).
 
 run_param_learning(Dir, NumFolds, AUCROC, AUCPR, M_AUCROC, S_AUCROC, M_AUCPR, S_AUCPR, Threshold, Results) :-
-  numlist(0, NumFolds, Folds),
+  NFolds is NumFolds - 1,
+  numlist(0, NFolds, Folds),
   format('Loading Program~n'),
   in(Program),
   format('Running parameter learning~n'),

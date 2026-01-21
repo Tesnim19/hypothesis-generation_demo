@@ -108,10 +108,10 @@ load_with_time(Files, FileName) :-
     format("Loaded ~w!~n", [FileName]).
 
 
-user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
-user:file_search_path(prolog_out_v3,'/mnt/hdd_2/abdu/prolog_out_v3').
-%user:file_search_path(prolog_out,'/mnt/hdd_2/abdu/prolog_out_v4').
-% user:file_search_path(prolog_out,'/mnt/hdd_2/abdu/prolog_out').
+% user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
+% user:file_search_path(prolog_out_v3,'/mnt/hdd_2/abdu/prolog_out_v3').
+user:file_search_path(prolog_out,'/mnt/hdd_1/abdu/prolog_out_v3').
+user:file_search_path(prolog_out_v3,'/mnt/hdd_1/abdu/prolog_out_v3').
 user:file_search_path(gene, prolog_out('gencode/gene')).
 user:file_search_path(exon, prolog_out('gencode/exon')).
 user:file_search_path(transcript, prolog_out('gencode/transcript')).
@@ -141,7 +141,7 @@ user:file_search_path(peregrine, prolog_out_v3('peregrine')).
 % user:file_search_path(top_ld_eur, prolog_out('top_ld/EUR')).
 user:file_search_path(tfbs, prolog_out_v3('tfbs')).
 user:file_search_path(tf_snp, prolog_out('tf_snp')).
-user:file_search_path(pgboost, prolog_out('pgboost')).
+user:file_search_path(pgboost, prolog_out_v3('pgboost')).
 user:file_search_path(enhancer_ccre, prolog_out('ccre/enhancer_ccre')).
 user:file_search_path(promoter_ccre, prolog_out('ccre/promoter_ccre')).
 
@@ -167,17 +167,17 @@ load_atomspace :-
     load_with_time([dbsuper(nodes), dbsuper(edges)], "dbsuper"),
     load_with_time([enhancer_ccre(nodes), enhancer_ccre(edges)], "enhancer ccre"),
     load_with_time([promoter_ccre(nodes), promoter_ccre(edges)], "promoter ccre"),
-    % load_with_time([enhancer_atlas(nodes), enhancer_atlas(edges)], "enhancer atlas"),
+    load_with_time([enhancer_atlas(nodes), enhancer_atlas(edges)], "enhancer atlas"),
     %load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
     %load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
     %load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
-    % load_with_time([epd(nodes), epd(edges)], "epd"),
-    % load_with_time([tflink(edges)], "tflink"),
-    % load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
+    load_with_time([epd(nodes), epd(edges)], "epd"),
+    load_with_time([tflink(edges)], "tflink"),
+    load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
     %load_with_time([fabian(edges)], "fabian"),
     %load_with_time([top_ld_eur(edges)], "top_ld"),
-    % load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
-    % load_with_time([tf_snp(edges)], "tf_snp"),
+    load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
+    load_with_time([tf_snp(edges)], "tf_snp"),
     load_with_time([pgboost(edges)], "pgboost").
 
 % bgc declarations for parameter learning with cplint
