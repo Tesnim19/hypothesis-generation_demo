@@ -25,18 +25,14 @@ hideme([Goal|Goals]) :-
 %     overlaps_with(Tfbs, Enh), !.
 %     % format('Regulatory effect: S: ~w, G: ~w~n', [S, G]).
 
-regulatory_effect(S, G, CT) :- 
-    % format('Checking regulatory effect: S: ~w, G: ~w~n', [S, G]),
+regulatory_effect(S, G) :- 
     in_regulatory_region(S, Enh),
-    associated_with(Enh, G, CT).
-    % % format('Associated with enhancer: S: ~w, G: ~w, Enh: ~w~n', [S, G, Enh]),
-    % tf_snp(Tf, S),
-    % regulates(Tf, G),
-    % binds_to(Tf, Tfbs),
-    % format('Regulatory effect: S: ~w, G: ~w, Enh: ~w, Tfbs: ~w~n', [S, G, Enh, Tfbs]),
-    % overlaps_with(Tfbs, Enh), 
-    % format('Overlaps with TFBS: S: ~w, G: ~w, Enh: ~w, Tfbs: ~w~n', [S, G, Enh, Tfbs]),
-    % !.
+    associated_with(Enh, G),
+    tf_snp(Tf, S),
+    regulates(Tf, G),
+    binds_to(Tf, Tfbs),
+    overlaps_with(Tfbs, Enh), 
+    !.
 
 % overlaps_with_tf_enh(Enh, Tf) :-
 %   format('Checking overlaps with TFBS: Enh: ~w, Tf: ~w~n', [Enh, Tf]),

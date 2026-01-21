@@ -236,6 +236,9 @@ data/chr16
 data/per_chr
 diagrams
 docs
+data/loo
+data/per_chr
+data/multi_chr
 
 # Logs
 logs/

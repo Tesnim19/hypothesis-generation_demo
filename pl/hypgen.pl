@@ -23,8 +23,8 @@
 :- include('load_kbs.pl').
 :- include('queries.pl').
 :- include('rules.pl').
-:- include('pl_rules.pl').
-% :- include('param_learn.pl').
+% :- include('pl_rules.pl').
+:- include('param_learn.pl').
 :- include('server.pl').
 :- include('meta_interpreter.pl').
 :- include('json_util.pl').
