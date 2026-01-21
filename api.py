@@ -1271,11 +1271,11 @@ class CredibleSetsAPI(Resource):
 
 class GWASFilesAPI(Resource):
     """
-    API endpoint for automatically discovering GWAS files and extracting their metadata
+    API endpoint for serving GWAS files from the library collection
     """
-    def __init__(self, config, phenotypes):
+    def __init__(self, config, gwas_library):
         self.config = config
-        self.phenotypes = phenotypes
+        self.gwas_library = gwas_library
 
     def _extract_file_metadata(self, file_path):
         """Extract metadata from a GWAS file by examining its content"""
@@ -1411,83 +1411,69 @@ class GWASFilesAPI(Resource):
             return f"{phenotype_name} variants on chromosome {chr_num}"
 
     def get(self):
-        """Automatically discover GWAS files and extract their metadata"""
+        """Get GWAS files from the library collection"""
         try:
-            import glob
-            import re
+            # Get query parameters
+            search_term = request.args.get('search')
+            sex_filter = request.args.get('sex')
+            limit = request.args.get('limit', type=int)
+            skip = request.args.get('skip', 0, type=int)
             
-            # Get data directory
-            data_dir = getattr(self.config, 'data_dir', 'data')
-            raw_data_path = os.path.join(data_dir, 'raw')
+            # Set default limit
+            if limit is None:
+                limit = 100
             
-            if not os.path.exists(raw_data_path):
-                return {"gwas_files": [], "total_files": 0}, 200
+            # Get entries from collection
+            entries = self.gwas_library.get_all_gwas_entries(
+                search_term=search_term,
+                sex_filter=sex_filter,
+                limit=limit,
+                skip=skip
+            )
             
-            # Scan for all potential GWAS files
-            patterns = [
-                os.path.join(raw_data_path, '*.tsv'),
-                os.path.join(raw_data_path, '*.tsv.gz'),
-                os.path.join(raw_data_path, '*.tsv.bgz'),
-                os.path.join(raw_data_path, '*.txt'),
-                os.path.join(raw_data_path, '*.txt.gz'),
-                os.path.join(raw_data_path, '*.csv'),
-                os.path.join(raw_data_path, '*.csv.gz')
-            ]
-            
-            all_files = []
-            for pattern in patterns:
-                all_files.extend(glob.glob(pattern))
-            
-            # Remove duplicates and sort
-            all_files = sorted(list(set(all_files)))
-            
+            # Transform entries to match expected API format
             gwas_files = []
-            
-            for file_path in all_files:
-                filename = os.path.basename(file_path)
-                
-                # Skip obviously non-GWAS files
-                if any(skip in filename.lower() for skip in ['readme', 'log', 'tmp', 'temp']):
-                    continue
-                
-                # Extract metadata from the file
-                metadata = self._extract_file_metadata(file_path)
-                
-                # Generate file ID
-                file_id = filename
-                for ext in ['.tsv.bgz', '.tsv.gz', '.txt.gz', '.csv.gz', '.tsv', '.txt', '.csv']:
-                    if file_id.endswith(ext):
-                        file_id = file_id[:-len(ext)]
-                        break
-                
-                # Create file entry
+            for entry in entries:
                 gwas_file_entry = {
-                    "id": file_id,
-                    "name": metadata['phenotype_name'],
-                    "filename": filename,
-                    "data_field": metadata['phenotype_id'],
-                    "phenotype": metadata['phenotype_name'],
-                    "population": metadata['population'],
-                    "sample_size": metadata['sample_size'],
-                    "genome_build": metadata['genome_build'],
-                    "file_path": file_path,
-                    "file_size_mb": round(metadata['file_size'] / (1024 * 1024), 2),
-                    "is_raw": metadata['is_raw'],
-                    "url": f"/gwas-files/download/{file_id}",
-                    "description": self._generate_file_description(filename, metadata)
+                    "id": entry.get('phenotype_code'),
+                    "display_name": entry.get('display_name'),
+                    "description": entry.get('description'),
+                    "phenotype_code": entry.get('phenotype_code'),
+                    "sex": entry.get('sex'),
+                    "source": entry.get('source'),
+                    "downloaded": entry.get('downloaded', False),
+                    "download_count": entry.get('download_count', 0),
+                    "url": f"/gwas-files/download/{entry.get('phenotype_code')}",
+                    "showcase_link": entry.get('showcase_link', ''),
                 }
+                
+                # Add file size if available
+                if entry.get('file_size'):
+                    gwas_file_entry['file_size_mb'] = round(entry['file_size'] / (1024 * 1024), 2)
+                
+                # Add local path if downloaded
+                if entry.get('local_path'):
+                    gwas_file_entry['local_path'] = entry.get('local_path')
                 
                 gwas_files.append(gwas_file_entry)
             
+            # Get total count for pagination
+            total_count = self.gwas_library.get_entry_count(
+                search_term=search_term,
+                sex_filter=sex_filter
+            )
             
             return {
                 "gwas_files": gwas_files,
-                "total_files": len(gwas_files)
+                "total_files": total_count,
+                "returned": len(gwas_files),
+                "skip": skip,
+                "limit": limit
             }, 200
             
         except Exception as e:
-            logger.error(f"Error discovering GWAS files: {str(e)}")
-            return {"error": f"Failed to discover GWAS files: {str(e)}"}, 500
+            logger.error(f"Error fetching GWAS files from library: {str(e)}")
+            return {"error": f"Failed to fetch GWAS files: {str(e)}"}, 500
 
 
 class PhenotypesAPI(Resource):
@@ -1611,46 +1597,145 @@ class PhenotypesAPI(Resource):
 
 class GWASFileDownloadAPI(Resource):
     """
-    API endpoint for downloading predefined GWAS files
+    API endpoint for downloading GWAS files (on-demand with caching)
     """
-    def __init__(self, config):
+    def __init__(self, config, gwas_library):
         self.config = config
+        self.gwas_library = gwas_library
+
+    def _download_file_from_url(self, url, local_path):
+        """
+        Download a file from URL to local path
+        
+        Args:
+            url (str): URL to download from
+            local_path (str): Local path to save file
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        import requests
+        import shutil
+        
+        try:
+            logger.info(f"Downloading file from {url} to {local_path}")
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
+            # Download file with streaming to handle large files
+            response = requests.get(url, stream=True, timeout=300)
+            response.raise_for_status()
+            
+            # Write to file
+            with open(local_path, 'wb') as f:
+                shutil.copyfileobj(response.raw, f)
+            
+            logger.info(f"Successfully downloaded file to {local_path}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error downloading file from {url}: {e}")
+            # Clean up partial download
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            return False
 
     def get(self, file_id):
-        """Download a predefined GWAS file by file_id"""
+        """Download a GWAS file by phenotype code (downloads on-demand if needed)"""
         try:
-            import glob
+            logger.info(f"[GWAS DOWNLOAD] Download request for phenotype: {file_id}")
             
-            logger.info(f"[GWAS DOWNLOAD] Download request for file {file_id}")
+            # Get entry from library
+            entry = self.gwas_library.get_gwas_entry(phenotype_code=file_id)
             
-            # Get data directory
+            if not entry:
+                logger.error(f"[GWAS DOWNLOAD] Entry not found for phenotype: {file_id}")
+                return {"error": "GWAS file not found in library"}, 404
+            
+            # Check if file is already downloaded
+            if entry.get('downloaded') and entry.get('local_path'):
+                local_path = entry['local_path']
+                
+                # Verify file still exists
+                if os.path.exists(local_path):
+                    logger.info(f"[GWAS DOWNLOAD] Serving cached file: {local_path}")
+                    
+                    # Increment download count
+                    self.gwas_library.increment_download_count(file_id)
+                    
+                    # Generate download name
+                    filename = entry.get('filename') or f"{file_id}.tsv.gz"
+                    download_name = filename.replace('_munged.gwas.imputed_v3.both_sexes', '_GWAS')
+                    
+                    # Serve the file
+                    return send_file(
+                        local_path,
+                        as_attachment=True,
+                        download_name=download_name,
+                        mimetype='text/tab-separated-values'
+                    )
+                else:
+                    logger.warning(f"[GWAS DOWNLOAD] Cached file missing: {local_path}")
+                    # Mark as not downloaded and continue to download
+                    self.gwas_library.update_gwas_entry(file_id, {
+                        'downloaded': False,
+                        'local_path': None
+                    })
+            
+            # File not downloaded yet - download it now
+            logger.info(f"[GWAS DOWNLOAD] File not cached, downloading on-demand")
+            
+            # Determine download URL (prefer AWS, then wget, then Dropbox)
+            download_url = None
+            if entry.get('aws_url'):
+                download_url = entry['aws_url']
+                logger.info(f"Using AWS URL: {download_url}")
+            elif entry.get('wget_command'):
+                # Extract URL from wget command
+                wget_cmd = entry['wget_command']
+                # Simple extraction - look for URL pattern
+                import re
+                url_match = re.search(r'(https?://[^\s]+)', wget_cmd)
+                if url_match:
+                    download_url = url_match.group(1)
+                    logger.info(f"Extracted URL from wget: {download_url}")
+            elif entry.get('dropbox_url'):
+                download_url = entry['dropbox_url']
+                logger.info(f"Using Dropbox URL: {download_url}")
+            
+            if not download_url:
+                logger.error(f"[GWAS DOWNLOAD] No download URL available for {file_id}")
+                return {"error": "No download URL available for this file"}, 404
+            
+            # Determine local cache path
             data_dir = getattr(self.config, 'data_dir', 'data')
-            raw_data_path = os.path.join(data_dir, 'raw')
+            cache_dir = os.path.join(data_dir, 'gwas_cache')
+            os.makedirs(cache_dir, exist_ok=True)
             
-            # Scan for matching files dynamically
-            possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz']
-            file_path = None
-            original_filename = None
+            # Use filename from entry or generate one
+            filename = entry.get('filename') or f"{file_id}.tsv.gz"
+            local_path = os.path.join(cache_dir, filename)
             
-            for ext in possible_extensions:
-                candidate_path = os.path.join(raw_data_path, f"{file_id}{ext}")
-                if os.path.exists(candidate_path):
-                    file_path = candidate_path
-                    original_filename = f"{file_id}{ext}"
-                    break
+            # Download the file
+            success = self._download_file_from_url(download_url, local_path)
             
-            if not file_path:
-                logger.error(f"[GWAS DOWNLOAD] File not found for ID: {file_id}")
-                return {"error": "File not found"}, 404
+            if not success:
+                return {"error": "Failed to download file"}, 500
             
-            # Generate a user-friendly download name
-            download_name = original_filename.replace('_munged.gwas.imputed_v3.both_sexes', '_GWAS')
+            # Get file size
+            file_size = os.path.getsize(local_path)
             
-            logger.info(f"[GWAS DOWNLOAD] Serving file: {download_name} (Path: {file_path})")
+            # Update database to mark as downloaded
+            self.gwas_library.mark_as_downloaded(file_id, local_path, file_size)
+            self.gwas_library.increment_download_count(file_id)
             
-            # Return file for download
+            logger.info(f"[GWAS DOWNLOAD] Successfully downloaded and cached: {local_path}")
+            
+            # Serve the file
+            download_name = filename.replace('_munged.gwas.imputed_v3.both_sexes', '_GWAS')
             return send_file(
-                file_path,
+                local_path,
                 as_attachment=True,
                 download_name=download_name,
                 mimetype='text/tab-separated-values'
@@ -1658,5 +1743,7 @@ class GWASFileDownloadAPI(Resource):
             
         except Exception as e:
             logger.error(f"[GWAS DOWNLOAD] Error downloading file {file_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {"error": f"Download failed: {str(e)}"}, 500
 

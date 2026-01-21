@@ -145,8 +145,8 @@ def setup_api(config):
     api.add_resource(FileDownloadAPI, "/download/<string:file_id>", resource_class_kwargs={"files": deps['files']})
     
     # GWAS files and phenotypes
-    api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config, "phenotypes": deps['phenotypes']})
-    api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={"config": config})
+    api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config, "gwas_library": deps['gwas_library']})
+    api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={"config": config, "gwas_library": deps['gwas_library']})
     api.add_resource(PhenotypesAPI, "/phenotypes", resource_class_kwargs={"phenotypes": deps['phenotypes']})
     # Deprecated: LDSC and tissue-selection endpoints are now folded into /projects and /enrich
 
