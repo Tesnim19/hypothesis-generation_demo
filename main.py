@@ -17,6 +17,7 @@ from api import (
     AnalysisPipelineAPI,
     GWASFilesAPI,
     GWASFileDownloadAPI,
+    UserFilesAPI,
 )
 from dotenv import load_dotenv
 import os
@@ -133,13 +134,28 @@ def setup_api(config):
         "analysis": deps['analysis'],
         "gene_expression": deps['gene_expression'],
         "config": config,
-        "storage": deps['storage']
+        "storage": deps['storage'],
+        "gwas_library": deps['gwas_library']
     })
     api.add_resource(CredibleSetsAPI, "/credible-sets", resource_class_kwargs={"analysis": deps['analysis']})
-    # GWAS files
-    api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={"config": config})
-    api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={"config": config})
-
+    
+    # GWAS files (from library with MinIO caching)
+    api.add_resource(GWASFilesAPI, "/gwas-files", resource_class_kwargs={
+        "config": config,
+        "gwas_library": deps['gwas_library'],
+        "storage": deps['storage']
+    })
+    api.add_resource(GWASFileDownloadAPI, "/gwas-files/download/<string:file_id>", resource_class_kwargs={
+        "config": config,
+        "gwas_library": deps['gwas_library'],
+        "storage": deps['storage']
+    })
+    
+    # User-uploaded files
+    api.add_resource(UserFilesAPI, "/user-files", resource_class_kwargs={
+        "files": deps['files'],
+        "storage": deps['storage']
+    })
 
     # Initialize socket handlers 
     socket_namespace = init_socket_handlers(deps['hypotheses'])
