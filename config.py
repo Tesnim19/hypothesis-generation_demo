@@ -5,7 +5,7 @@ from query_swipl import PrologQuery
 from db import (
     UserHandler, ProjectHandler, FileHandler, AnalysisHandler,
     EnrichmentHandler, HypothesisHandler, SummaryHandler, TaskHandler,
-    GeneExpressionHandler
+    GeneExpressionHandler, GWASLibraryHandler
 )
 from storage import create_minio_client_from_env
 
@@ -97,7 +97,7 @@ def create_dependencies(config):
     if not mongodb_uri or not db_name:
         raise ValueError("Missing required MongoDB configuration: MONGODB_URI and DB_NAME environment variables must be set")
     
-    # Initialize MinIO storag
+    # Initialize MinIO storage
     minio_storage = create_minio_client_from_env()
     
     return {
@@ -113,5 +113,6 @@ def create_dependencies(config):
         'summaries': SummaryHandler(mongodb_uri, db_name),
         'tasks': TaskHandler(mongodb_uri, db_name),
         'gene_expression': GeneExpressionHandler(mongodb_uri, db_name),
+        'gwas_library': GWASLibraryHandler(mongodb_uri, db_name),
         'storage': minio_storage
     }
