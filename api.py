@@ -1389,8 +1389,7 @@ class UserFilesAPI(Resource):
                     "file_size_mb": round(file_meta.get('file_size', 0) / (1024 * 1024), 2),
                     "record_count": file_meta.get('record_count'),
                     "upload_date": file_meta.get('upload_date'),
-                    "source": "user_upload",
-                    "storage_key": file_meta.get('storage_key')
+                    "source": "user_upload"
                 }
                 
                 user_files.append(file_entry)
