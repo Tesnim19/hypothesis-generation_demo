@@ -661,7 +661,6 @@ class AnalysisPipelineAPI(Resource):
             
             # Check the mode
             is_uploaded = request.form.get('is_uploaded', 'false').lower() == 'true'
-            file_source = request.form.get('file_source', 'library')  # 'library' or 'user'
             
             # Fine-mapping parameters with defaults
             maf_threshold = float(request.form.get('maf_threshold', 0.01))
@@ -732,15 +731,16 @@ class AnalysisPipelineAPI(Resource):
                 if not file_id_param:
                     return {"error": "gwas_file parameter is required when is_uploaded=false"}, 400
                 
-                # Check if it's a user file or library file
-                if file_source == 'user':
+                # Auto-detect file source: check user files first, then library
+                logger.info(f"[API] Auto-detecting source for file ID: {file_id_param}")
+                
+                # Try user files first
+                file_metadata = self.files.get_file_metadata(current_user_id, file_id_param)
+                
+                if file_metadata:
                     # CASE 1: User's uploaded file
-                    logger.info(f"[API] Reusing user file: {file_id_param}")
-                    
-                    # Get file metadata from user's files
-                    file_metadata = self.files.get_file_metadata(current_user_id, file_id_param)
-                    if not file_metadata:
-                        return {"error": f"User file not found: {file_id_param}"}, 404
+                    file_source = 'user'
+                    logger.info(f"[API] File found in user library: {file_id_param}")
                     
                     storage_key = file_metadata.get('storage_key')
                     filename = file_metadata.get('filename')
@@ -770,19 +770,19 @@ class AnalysisPipelineAPI(Resource):
                     logger.info(f"[API] Reusing user file: {filename} from MinIO: {storage_key}")
                     
                 else:
+                    # Not in user files, check system library
+                    gwas_entry = self.gwas_library.get_gwas_entry(file_id=file_id_param)
+                    
+                    if not gwas_entry:
+                        return {"error": f"File not found in user library or system library: {file_id_param}"}, 404
+                    
                     # CASE 2: Library file
-                    logger.info(f"[API] Using GWAS library file ID: {file_id_param}")
+                    file_source = 'library'
+                    logger.info(f"[API] File found in system library: {file_id_param}")
                     
                     gwas_file_path = None
-                    filename = None
+                    filename = gwas_entry.get('filename', file_id_param)
                     file_size = 0
-                    
-                    # Check GWAS library
-                    gwas_entry = self.gwas_library.get_gwas_entry(file_id=file_id_param)
-                
-                if gwas_entry:
-                    logger.info(f"[API] Found file in GWAS library")
-                    filename = gwas_entry.get('filename', predefined_file_id)
                     
                     # Check if file is cached in MinIO
                     if self.storage and gwas_entry.get('downloaded') and gwas_entry.get('minio_path'):
@@ -816,7 +816,7 @@ class AnalysisPipelineAPI(Resource):
                                 download_url = url_match.group(1)
                         
                         if not download_url:
-                            return {"error": f"No download URL available for {predefined_file_id}"}, 404
+                            return {"error": f"No download URL available for {file_id_param}"}, 404
                         
                         # Download to temp location
                         import tempfile
@@ -841,36 +841,36 @@ class AnalysisPipelineAPI(Resource):
                             if self.storage:
                                 minio_path = f"gwas_cache/{filename}"
                                 if self.storage.upload_file(gwas_file_path, minio_path):
-                                    self.gwas_library.mark_as_downloaded(predefined_file_id, minio_path, file_size)
+                                    self.gwas_library.mark_as_downloaded(file_id_param, minio_path, file_size)
                                     logger.info(f"[API] Uploaded to MinIO: s3://{minio_path}")
                             
                         except Exception as e:
                             logger.error(f"[API] Download failed: {e}")
                             return {"error": f"Failed to download file: {str(e)}"}, 500
-                
-                # Fallback to data/raw/ for legacy files
-                if not gwas_file_path:
-                    logger.info(f"[API] File not in library, checking data/raw/")
-                    raw_data_path = os.path.join(self.config.data_dir, 'raw')
                     
-                    possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
+                    # Fallback to data/raw/ for legacy files
+                    if not gwas_file_path:
+                        logger.info(f"[API] File not in library, checking data/raw/")
+                        raw_data_path = os.path.join(self.config.data_dir, 'raw')
+                        
+                        possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
+                        
+                        for ext in possible_extensions:
+                            candidate_path = os.path.join(raw_data_path, f"{file_id_param}{ext}")
+                            if os.path.exists(candidate_path):
+                                gwas_file_path = candidate_path
+                                filename = f"{file_id_param}{ext}"
+                                file_size = os.path.getsize(gwas_file_path)
+                                logger.info(f"[API] Found in data/raw: {gwas_file_path}")
+                                break
                     
-                    for ext in possible_extensions:
-                        candidate_path = os.path.join(raw_data_path, f"{predefined_file_id}{ext}")
-                        if os.path.exists(candidate_path):
-                            gwas_file_path = candidate_path
-                            filename = f"{predefined_file_id}{ext}"
-                            file_size = os.path.getsize(gwas_file_path)
-                            logger.info(f"[API] Found in data/raw: {gwas_file_path}")
-                            break
-                
-                if not gwas_file_path:
-                    return {"error": f"GWAS file not found: {predefined_file_id}"}, 404
-                
-                file_path = gwas_file_path
-                gwas_records_count = count_gwas_records(file_path)
-                file_id = str(uuid.uuid4())
-                file_metadata_id = None 
+                    if not gwas_file_path:
+                        return {"error": f"GWAS file not found: {file_id_param}"}, 404
+                    
+                    file_path = gwas_file_path
+                    gwas_records_count = count_gwas_records(file_path)
+                    file_id = str(uuid.uuid4())
+                    file_metadata_id = None 
                 
             # CASE 3: New file upload with MD5 deduplication
             else:
