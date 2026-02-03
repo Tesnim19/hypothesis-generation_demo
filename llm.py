@@ -10,6 +10,7 @@ from llama_index.llms.anthropic import Anthropic
 import openai
 import scipy
 import os
+from loguru import logger
 
 def split_text(text: str, n=100, character=" ") -> List[str]:
     """Split the text every ``n``-th occurrence of ``character``"""
@@ -146,10 +147,20 @@ class LLM:
         :param k: Number of documents to retrieve
         :return:
         """
+        # Check if dataframe is empty
+        if data is None or len(data) == 0:
+            logger.error("Enrichment table is empty - no GO terms to process")
+            raise ValueError("No enrichment results available. Enricher returned 0 GO terms.")
+        
         texts = []
         for _, row in data.iterrows():
             term, desc = row["Term"].strip(), row["Desc"].strip()
             texts.append(f"{term} [SEP] {desc}")
+        
+        if len(texts) == 0:
+            logger.error("No valid GO terms after processing")
+            raise ValueError("No valid GO terms found in enrichment results")
+        
         client = openai.Client()
         embeddings =  client.embeddings.create(input = texts, model="text-embedding-3-small").data
         data["embeddings"] = [emb.embedding for emb in embeddings]

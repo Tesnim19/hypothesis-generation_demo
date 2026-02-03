@@ -13,7 +13,7 @@ from flows import hypothesis_flow, analysis_pipeline_flow
 from run_deployment import invoke_enrichment_deployment
 from status_tracker import status_tracker, TaskState
 from prefect import flow
-from utils import allowed_file, convert_variants_to_object_array
+from utils import allowed_file, convert_variants_to_object_array, parse_float, parse_int
 from loguru import logger
 from werkzeug.utils import secure_filename
 from utils import serialize_datetime_fields
@@ -912,19 +912,20 @@ class AnalysisPipelineAPI(Resource):
             phenotype = request.form.get('phenotype')
             ref_genome = request.form.get('ref_genome', 'GRCh37')
             population = request.form.get('population', 'EUR')
-            max_workers = int(request.form.get('max_workers', 3))
+            
+            max_workers = parse_int(request.form.get('max_workers'), 3, 'max_workers')
             
             # Check the mode: uploaded file or predefined file
             is_uploaded = request.form.get('is_uploaded', 'false').lower() == 'true'
             
             # Fine-mapping parameters with defaults
-            maf_threshold = float(request.form.get('maf_threshold', 0.01))
-            seed = int(request.form.get('seed', 42))
-            window = int(request.form.get('window', 2000))
-            L = int(request.form.get('L', -1))
-            coverage = float(request.form.get('coverage', 0.95))
-            min_abs_corr = float(request.form.get('min_abs_corr', 0.5))
-            batch_size = int(request.form.get('batch_size', 5))
+            maf_threshold = parse_float(request.form.get('maf_threshold'), 0.01, 'maf_threshold')
+            seed = parse_int(request.form.get('seed'), 42, 'seed')
+            window = parse_int(request.form.get('window'), 2000, 'window')
+            L = parse_int(request.form.get('L'), -1, 'L')
+            coverage = parse_float(request.form.get('coverage'), 0.95, 'coverage')
+            min_abs_corr = parse_float(request.form.get('min_abs_corr'), 0.5, 'min_abs_corr')
+            batch_size = parse_int(request.form.get('batch_size'), 5, 'batch_size')
             
             # Validate required fields
             if not project_name:

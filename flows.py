@@ -94,7 +94,7 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         
         # If still no graphs after retry, fail the enrichment
         if not graphs_list or len(graphs_list) == 0:
-            error_msg = f"No causal graphs found for variant {variant}. Prolog server returned 0 graphs."
+            error_msg = f"No causal graphs found for variant {variant}."
             logger.error(error_msg)
             raise ValueError(error_msg)
 
@@ -551,7 +551,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
             "status": "Running",
             "stage": "Preprocessing",
             "progress": 10,
-            "message": "Starting MungeSumstats preprocessing",
+            "message": "Starting preprocessing",
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
         save_analysis_state_task.submit(projects_handler, user_id, project_id, initial_state).result()

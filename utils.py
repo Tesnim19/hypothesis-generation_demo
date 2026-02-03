@@ -5,11 +5,30 @@ from loguru import logger
 from socketio_instance import socketio
 from status_tracker import status_tracker, TaskState
 import socketio as sio
-import os
 import pandas as pd
 import numpy as np
 import threading
 import time
+
+
+def parse_float(value, default, name='parameter'):
+    if value is None or value == '':
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.error(f"Invalid float value for {name}: '{value}'")
+        raise ValueError(f"Invalid value for {name}: must be a number")
+
+
+def parse_int(value, default, name='parameter'):
+    if value is None or value == '':
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.error(f"Invalid integer value for {name}: '{value}'")
+        raise ValueError(f"Invalid value for {name}: must be an integer")
 
 # Global persistent client for Prefect connections
 _prefect_client = None
