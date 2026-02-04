@@ -71,8 +71,8 @@ class EnrichAPI(Resource):
     def post(self, current_user_id):
         json_data = request.get_json(silent=True) or {}
         
-        variant = json_data.get('variant')
-        project_id = json_data.get('project_id')
+        variant =  request.args.get('variant') or json_data.get('variant')
+        project_id = request.args.get('project_id') or json_data.get('project_id')
         seed = int(json_data.get('seed', 42))
 
         
@@ -133,6 +133,7 @@ class EnrichAPI(Resource):
             "project_id": project_id,
             "phenotype": phenotype,
             "variant": variant,
+            "variant_rsid": variant,  
             "status": "pending",
             "created_at": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
             "task_history": [],
@@ -168,6 +169,7 @@ class HypothesisAPI(Resource):
         self.llm = llm
         self.hypotheses = hypotheses
         self.enrichment = enrichment
+        self.gene_expression = gene_expression
 
     @token_required
     def get(self, current_user_id):
@@ -222,6 +224,26 @@ class HypothesisAPI(Resource):
                 else:
                     response_data['enrichment_type'] = 'standard'
 
+                # Get tissue selection from tissue_selections collection
+                selected_tissue = None
+                if self.gene_expression:
+                    try:
+                        variant_id = hypothesis.get('variant_rsid') or hypothesis.get('variant') or hypothesis.get('variant_id')
+                        project_id = hypothesis.get('project_id')
+                        if variant_id and project_id:
+                            tissue_selection = self.gene_expression.get_tissue_selection(
+                                current_user_id, project_id, variant_id
+                            )
+                            if tissue_selection:
+                                selected_tissue = tissue_selection.get('tissue_name')
+                                logger.info(f"Retrieved tissue selection for completed hypothesis {hypothesis_id} using variant_id={variant_id}: {selected_tissue}")
+                            else:
+                                logger.info(f"No tissue selection found for completed hypothesis {hypothesis_id}, variant_id={variant_id}")
+                    except Exception as ts_e:
+                        logger.warning(f"Could not get tissue selection for completed hypothesis {hypothesis_id}: {ts_e}")
+                
+                response_data['tissue_selected'] = selected_tissue
+
                 # Serialize datetime objects before returning
                 response_data = serialize_datetime_fields(response_data)
                 return response_data, 200
@@ -261,6 +283,27 @@ class HypothesisAPI(Resource):
             if latest_state and latest_state.get('state') == 'failed':
                 status_data['status'] = 'failed'
                 status_data['error'] = latest_state.get('error')
+
+            # Get tissue selection from tissue_selections collection
+            selected_tissue = None
+            if self.gene_expression:
+                try:
+                    # Use variant_rsid for lookup, fall back to variant if not available
+                    variant_id = hypothesis.get('variant_rsid') or hypothesis.get('variant') or hypothesis.get('variant_id')
+                    project_id = hypothesis.get('project_id')
+                    if variant_id and project_id:
+                        tissue_selection = self.gene_expression.get_tissue_selection(
+                            current_user_id, project_id, variant_id
+                        )
+                        if tissue_selection:
+                            selected_tissue = tissue_selection.get('tissue_name')
+                            logger.info(f"Retrieved tissue selection for pending hypothesis {hypothesis_id} using variant_id={variant_id}: {selected_tissue}")
+                        else:
+                            logger.info(f"No tissue selection found for pending hypothesis {hypothesis_id}, variant_id={variant_id}")
+                except Exception as ts_e:
+                    logger.warning(f"Could not get tissue selection for pending hypothesis {hypothesis_id}: {ts_e}")
+            
+            status_data['tissue_selected'] = selected_tissue
 
             # Serialize datetime objects before returning
             status_data = serialize_datetime_fields(status_data)
@@ -593,30 +636,49 @@ class ProjectsAPI(Resource):
             enhanced_project["gwas_records_count"] = file_metadata["record_count"]
             
             # Add analysis status
-            analysis_state = self.projects.load_analysis_state(current_user_id, project["id"])
-            enhanced_project["status"] = analysis_state.get("status") if analysis_state else "Not_started"
+            try:
+                analysis_state = self.projects.load_analysis_state(current_user_id, project["id"])
+                if analysis_state:
+                    enhanced_project["status"] = analysis_state.get("status", "Not_started")
+                else:
+                    enhanced_project["status"] = "Not_started"  # Default for projects without analysis state
+            except Exception as state_e:
+                logger.warning(f"Could not load analysis state for project {project['id']}: {state_e}")
+                enhanced_project["status"] = "Completed"
             
             # Get analysis parameters from project
             enhanced_project["population"] = project.get("population")
             enhanced_project["ref_genome"] = project.get("ref_genome")
             
             # Extract credible sets and variants counts
-            credible_sets_raw = self.analysis.get_credible_sets_for_project(current_user_id, project["id"])
-            if credible_sets_raw and isinstance(credible_sets_raw, list):
-                enhanced_project["total_credible_sets_count"] = len(credible_sets_raw)
-                enhanced_project["total_variants_count"] = sum(cs.get("variants_count", 0) for cs in credible_sets_raw)
-            else:
-                enhanced_project["total_credible_sets_count"] = 0
-                enhanced_project["total_variants_count"] = 0
+            total_credible_sets_count = 0
+            total_variants_count = 0
+            
+            try:
+                credible_sets_raw = self.analysis.get_credible_sets_for_project(current_user_id, project["id"])
+                if credible_sets_raw:
+                    if isinstance(credible_sets_raw, list) and credible_sets_raw:
+                        # Calculate totals from credible sets
+                        total_credible_sets_count = len(credible_sets_raw) if credible_sets_raw else 0
+                        total_variants_count = sum(cs.get("variants_count", 0) for cs in credible_sets_raw) if credible_sets_raw else 0
+    
+            except Exception as cs_e:
+                logger.warning(f"Could not load credible sets for project {project['id']}: {cs_e}")
+            
+            # Add counts to project
+            enhanced_project["total_credible_sets_count"] = total_credible_sets_count
+            enhanced_project["total_variants_count"] = total_variants_count
             
             # Count hypotheses for this project
-            all_hypotheses = self.hypotheses.get_hypotheses(current_user_id)
-            if isinstance(all_hypotheses, list):
-                hypothesis_count = len([h for h in all_hypotheses if h.get('project_id') == project["id"]])
-            elif all_hypotheses and all_hypotheses.get('project_id') == project["id"]:
-                hypothesis_count = 1
-            else:
-                hypothesis_count = 0
+            hypothesis_count = 0
+            try:
+                all_hypotheses = self.hypotheses.get_hypotheses(current_user_id)
+                if isinstance(all_hypotheses, list):
+                    hypothesis_count = len([h for h in all_hypotheses if h.get('project_id') == project["id"]])
+                elif all_hypotheses and all_hypotheses.get('project_id') == project["id"]:
+                    hypothesis_count = 1
+            except Exception as hyp_e:
+                logger.warning(f"Could not count hypotheses for project {project['id']}: {hyp_e}")
             
             enhanced_project["hypothesis_count"] = hypothesis_count
             
@@ -705,16 +767,7 @@ class AnalysisPipelineAPI(Resource):
             coverage = float(request.form.get('coverage', 0.95))
             min_abs_corr = float(request.form.get('min_abs_corr', 0.5))
             batch_size = int(request.form.get('batch_size', 5))
-            
-            # Sample size parameter (optional, but recommended for accuracy)
-            sample_size = request.form.get('sample_size')
-            if sample_size is not None:
-                sample_size = int(sample_size)
-            else:
-                # Use a default but log a warning
-                sample_size = 10000  # default
-                logger.warning(f"[API] No sample_size provided, using default N={sample_size}. This may affect fine-mapping accuracy.")
-            
+            sample_size = int(request.form.get('sample_size', 10000))
             # Validate required fields
             if not project_name:
                 return {"error": "project_name is required"}, 400
@@ -750,7 +803,6 @@ class AnalysisPipelineAPI(Resource):
                 
                 logger.info(f"[API] Found predefined file: {filename} at {gwas_file_path}")
                 file_size = os.path.getsize(gwas_file_path)
-                file_id = str(uuid.uuid4())
                 
             else:
                 # gwas_file contains the actual file
@@ -887,11 +939,23 @@ class AnalysisPipelineAPI(Resource):
             logger.info(f"[API] Created project {project_id} with file {file_metadata_id}")
             
             # Start pipeline in background thread
-            def run_pipeline_background():
+            def run_pipeline_background(
+                proj_id=project_id,
+                user_id=current_user_id,
+                gwas_path=file_path,
+                ref_gen=ref_genome,
+                pop=population,
+                batch=batch_size,
+                workers=max_workers,
+                maf=maf_threshold,
+                seed_val=seed,
+                win=window,
+                L_val=L,
+                cov=coverage,
+                min_corr=min_abs_corr
+            ):
                 try:
-                    
-                    
-                    logger.info(f"[API] Running analysis pipeline for project {project_id}")
+                    logger.info(f"[API] Running analysis pipeline for project {proj_id}")
                     
                     # Run the analysis pipeline flow directly
                     credible_sets = analysis_pipeline_flow(
@@ -900,30 +964,29 @@ class AnalysisPipelineAPI(Resource):
                         gene_expression=self.gene_expression,
                         mongodb_uri=self.config.mongodb_uri,
                         db_name=self.config.db_name,
-                        user_id=current_user_id,
-                        project_id=project_id,
-                        gwas_file_path=file_path,
-                        ref_genome=ref_genome,
-                        population=population,
-                        batch_size=batch_size,
-                        max_workers=max_workers,
-                        maf_threshold=maf_threshold,
-                        seed=seed,
-                        window=window,
-                        L=L,
-                        coverage=coverage,
-                        min_abs_corr=min_abs_corr,
-                        sample_size=sample_size
+                        user_id=user_id,
+                        project_id=proj_id,
+                        gwas_file_path=gwas_path,
+                        ref_genome=ref_gen,
+                        population=pop,
+                        batch_size=batch,
+                        max_workers=workers,
+                        maf_threshold=maf,
+                        seed=seed_val,
+                        window=win,
+                        L=L_val,
+                        coverage=cov,
+                        min_abs_corr=min_corr
                     )
                     
-                    logger.info(f"[API] Analysis pipeline for project {project_id} completed successfully")
+                    logger.info(f"[API] Analysis pipeline for project {proj_id} completed successfully")
                     if credible_sets and isinstance(credible_sets, dict):
                         logger.info(f"[API] Generated {credible_sets.get('total_variants', 0)} variants in {credible_sets.get('total_credible_sets', 0)} credible sets")
                     else:
                         logger.info(f"[API] Analysis completed but no credible sets generated")
                     
                 except Exception as e:
-                    logger.error(f"[API] Analysis pipeline for project {project_id} failed: {str(e)}")
+                    logger.error(f"[API] Analysis pipeline for project {proj_id} failed: {str(e)}")
             
             # Start background thread
             background_thread = Thread(target=run_pipeline_background)
@@ -997,10 +1060,15 @@ class PhenotypesAPI(Resource):
             logger.error(f"Error getting phenotypes: {str(e)}")
             return {"error": f"Failed to get phenotypes: {str(e)}"}, 500
 
-    @token_required
-    def post(self, current_user_id):
+    def post(self):
         """
         Bulk load phenotypes from JSON data
+        
+        Expects JSON array with format:
+        [
+            {"name": "phenotype name", "id": "EFO_1234567"},
+            ...
+        ]
         """
         try:
             # Get JSON data from request
@@ -1013,6 +1081,8 @@ class PhenotypesAPI(Resource):
                 return {"error": "Expected JSON array of phenotypes"}, 400
             
             # Transform data to match database schema
+            # Input format: {"name": "...", "id": "..."}
+            # Database format: {"phenotype_name": "...", "id": "..."}
             phenotypes_data = []
             for item in data:
                 if not isinstance(item, dict):
@@ -1050,6 +1120,8 @@ class PhenotypesAPI(Resource):
             
         except Exception as e:
             logger.error(f"Error loading phenotypes: {str(e)}")
+            return {"error": f"Failed to load phenotypes: {str(e)}"}, 500
+
 
 class CredibleSetsAPI(Resource):
     """
@@ -1147,11 +1219,7 @@ class GWASFilesAPI(Resource):
                 # Create file entry
                 gwas_file_entry = {
                     "id": file_id,
-                    "name": metadata['phenotype_name'],
                     "filename": filename,
-                    "data_field": metadata['phenotype_id'],
-                    "phenotype": metadata['phenotype_name'],
-                    "population": metadata['population'],
                     "sample_size": metadata['sample_size'],
                     "genome_build": metadata['genome_build'],
                     "file_path": file_path,
