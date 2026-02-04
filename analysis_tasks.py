@@ -420,11 +420,6 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
         cojo_df.to_csv(cojo_input_path, sep=' ', index=False)
         logger.info(f"[COJO] COJO input prepared: {len(cojo_df)} variants")
         
-        # Debug: Show first few rows
-        logger.info(f"[COJO] Sample input (first 3 rows):")
-        for i, row in cojo_df.head(3).iterrows():
-            logger.info(f"  {row['SNP']} | A1={row['A1']} A2={row['A2']} | N={row['N']}")
-        
         def run_cojo_for_chromosome(chrom):
             """Run COJO analysis for a single chromosome"""
             try:
@@ -460,8 +455,6 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
                 
                 if result.returncode != 0:
                     logger.warning(f"[COJO] GCTA failed for chromosome {chrom}")
-                    logger.warning(f"[COJO] STDOUT (full): {result.stdout}")  # Full output
-                    logger.warning(f"[COJO] STDERR (full): {result.stderr}")  # Full output
                     return None
                 
                 # Read COJO results for this chromosome  

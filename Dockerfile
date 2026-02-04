@@ -171,11 +171,8 @@ COPY pyproject.toml .
 # Set up Python environment with uv
 ENV UV_PROJECT_ENVIRONMENT=/opt/flask-venv
 ENV PATH="/opt/flask-venv/bin:$PATH"
-RUN uv sync
-RUN uv pip install '.[r-integration]'
 
-# Install pyarrow for harmonizer workflow (need version compatible with NumPy 2.0)
-RUN uv pip install 'pyarrow>=17.0.0'
+RUN uv sync --no-cache --extra r-integration
 
 # Copy application
 COPY . .
