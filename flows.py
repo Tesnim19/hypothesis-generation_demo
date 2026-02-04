@@ -1,3 +1,4 @@
+import os
 from loguru import logger
 from prefect import flow
 from status_tracker import TaskState
@@ -28,16 +29,19 @@ run_combined_ldsc_tissue_analysis
 
 import pandas as pd
 from datetime import datetime, timezone
-from prefect.task_runners import ThreadPoolTaskRunner
+from prefect_dask import DaskTaskRunner
 
 from utils import emit_task_update
 from config import Config, create_dependencies
 from threading import Thread
 import traceback
 
-
 ### Enrichment Flow
-@flow(log_prints=True, persist_result=False, task_runner=ThreadPoolTaskRunner(max_workers=4))
+@flow(
+    log_prints=True, 
+    persist_result=False, 
+    task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
+)
 def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_id, seed):
     """
     Fully project-based enrichment flow that initializes dependencies from centralized config
@@ -58,17 +62,17 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         logger.info(f"Running project-based enrichment for project {project_id}, variant {variant}")
         
         # Check for existing enrichment data
-        enrich = check_enrich.submit(enrichment, current_user_id, variant, phenotype, hypothesis_id).result()
+        enrich = check_enrich.submit(current_user_id, variant, phenotype, hypothesis_id).result()
         
         if enrich:
             logger.info("Retrieved enrich data from saved db")
             return {"id": enrich['id']}, 200
 
-        candidate_genes = get_candidate_genes.submit(prolog_query, variant, hypothesis_id).result()
-        graphs_list = get_relevant_gene_proof.submit(prolog_query, variant, hypothesis_id, seed).result()
+        candidate_genes = get_candidate_genes.submit(variant, hypothesis_id).result()
+        graphs_list = get_relevant_gene_proof.submit(variant, hypothesis_id, seed).result()
 
         if not graphs_list or len(graphs_list) == 0:
-            graphs_list = retry_get_relevant_gene_proof.submit(prolog_query, variant, hypothesis_id, seed).result()
+            graphs_list = retry_get_relevant_gene_proof.submit(variant, hypothesis_id, seed).result()
             logger.info(f"Retried graphs: {len(graphs_list) if graphs_list else 0} graphs received")
         
         # If still no graphs after retry, fail the enrichment
@@ -172,7 +176,7 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
             
             # Create enrichment for this graph
             enrich_id = create_enrich_data.submit(
-                enrichment, hypotheses, current_user_id, project_id, variant, 
+                current_user_id, project_id, variant, 
                 phenotype, this_causal_gene, relevant_gos, {
                     "graph": graph,
                     "graph_index": original_i,
@@ -339,8 +343,11 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
     return {"summary": summary, "graph": final_causal_graph}, 201
 
 
-@flow(log_prints=True)
-def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh38", 
+@flow(log_prints=True, 
+    persist_result=False, 
+    task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
+)
+def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh37", 
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1, 
                            coverage=0.95, min_abs_corr=0.5, sample_size=None):
@@ -358,7 +365,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
     
     try:
         # Get project-specific output directory (using Prefect task)
-        output_dir = get_project_analysis_path_task.submit(projects_handler, user_id, project_id).result()
+        output_dir = get_project_analysis_path_task.submit(user_id, project_id).result()
         logger.info(f"[PIPELINE] Using output directory: {output_dir}")
         
         # Save initial analysis state
@@ -369,7 +376,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
             "message": "Starting Nextflow harmonization",
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
-        save_analysis_state_task.submit(projects_handler, user_id, project_id, initial_state).result()
+        save_analysis_state_task.submit(user_id, project_id, initial_state).result()
         
         logger.info(f"[PIPELINE] Stage 1: Nextflow harmonization")
         harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
@@ -385,7 +392,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
 
         # Start LDSC + tissue analysis immediately after harmonization (runs in parallel)
         logger.info(f"[PIPELINE] Starting LDSC + tissue analysis in parallel after harmonization")
-        ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(gene_expression, projects_handler,
+        ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(gene_expression,
             harmonized_file, output_dir, project_id, user_id
         )
         logger.info(f"[PIPELINE] LDSC + tissue analysis started in background")
@@ -398,7 +405,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
             "message": "Harmonization completed, filtering significant variants",
             "started_at": initial_state["started_at"]
         }
-        save_analysis_state_task.submit(projects_handler, user_id, project_id, harmonization_state).result()
+        save_analysis_state_task.submit(user_id, project_id, harmonization_state).result()
         
         logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
         significant_df_result = filter_significant_variants.submit(harmonized_df, output_dir).result()
@@ -416,7 +423,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
             "progress": 50,
             "message": "Filtering completed, running COJO analysis"
         }
-        save_analysis_state_task.submit(projects_handler, user_id, project_id, filtering_state).result()
+        save_analysis_state_task.submit(user_id, project_id, filtering_state).result()
         
         logger.info(f"[PIPELINE] Stage 3: COJO analysis")
        
@@ -439,7 +446,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
                 "progress": 50,
                 "message": "COJO analysis failed - no independent signals found",
             }
-            save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_state).result()
+            save_analysis_state_task.submit(user_id, project_id, failed_state).result()
             return None
         
         # Update analysis state after COJO
@@ -449,7 +456,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
             "progress": 70,
             "message": "COJO analysis completed, starting fine-mapping"
         }
-        save_analysis_state_task.submit(projects_handler, user_id, project_id, cojo_state).result()
+        save_analysis_state_task.submit(user_id, project_id, cojo_state).result()
         
         logger.info(f"[PIPELINE] Stage 4: Multiprocessing fine-mapping)")
         logger.info(f"[PIPELINE] Processing {len(cojo_results)} regions with {batch_size} regions per batch")
@@ -530,7 +537,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
             combined_results = pd.concat(all_results, ignore_index=True)
             
             # Save results using Prefect tasks
-            results_file = create_analysis_result_task.submit(analysis_handler, user_id, project_id, combined_results, output_dir).result()
+            results_file = create_analysis_result_task.submit(user_id, project_id, combined_results, output_dir).result()
             
             # Summary statistics
             total_variants = len(combined_results)
@@ -547,7 +554,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
                 "progress": 85,
                 "message": "Fine-mapping completed, waiting for LDSC and tissue analysis"
             }
-            save_analysis_state_task.submit(projects_handler, user_id, project_id, ldsc_tissue_state).result()
+            save_analysis_state_task.submit(user_id, project_id, ldsc_tissue_state).result()
             
             try:
                 # Wait for the parallel LDSC + tissue analysis task to complete
@@ -566,7 +573,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
                     "progress": 90,
                     "message": f"LDSC tissue analysis failed: {str(ldsc_e)}. Tissue-specific enrichment will not be available.",
                 }
-                save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_ldsc_state).result()
+                save_analysis_state_task.submit(user_id, project_id, failed_ldsc_state).result()
                 raise RuntimeError(f"LDSC tissue analysis failed - required for enrichment: {str(ldsc_e)}")
             
             # Save completed analysis state
@@ -576,7 +583,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
                 "message": "Analysis completed successfully",
                 "ldsc_status": ldsc_status
             }
-            save_analysis_state_task.submit(projects_handler, user_id, project_id, completed_state).result()
+            save_analysis_state_task.submit(user_id, project_id, completed_state).result()
             
             logger.info(f"[PIPELINE] Analysis completed successfully!")
             logger.info(f"[PIPELINE] - Total variants: {total_variants}")
@@ -600,7 +607,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
                 "progress": 70,
                 "message": "Fine-mapping failed - no results generated",
             }
-            save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_finemap_state).result()
+            save_analysis_state_task.submit(user_id, project_id, failed_finemap_state).result()
             raise RuntimeError("All fine-mapping batches failed")
             
     except Exception as e:
@@ -613,7 +620,7 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
                 "progress": 0,
                 "message": f"Analysis pipeline failed: {str(e)}",
             }
-            save_analysis_state_task.submit(projects_handler, user_id, project_id, failed_state).result()
+            save_analysis_state_task.submit(user_id, project_id, failed_state).result()
         except Exception as state_e:
             logger.error(f"[PIPELINE] Failed to save error state: {str(state_e)}")
         raise

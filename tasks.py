@@ -8,6 +8,7 @@ from cyvcf2 import VCF, Writer
 from prefect import task, flow
 import json
 from datetime import datetime, timezone
+from utils import get_deps
 
 
 logging.basicConfig(level=logging.INFO)
@@ -245,7 +246,7 @@ def process_child_enrichments_simple(current_user_id, child_enrich_ids, parent_h
 
 ### Enrich Tasks
 @task(retries=2, cache_policy=None)
-def check_enrich(enrichment, current_user_id, variant, phenotype, hypothesis_id):
+def check_enrich(current_user_id, variant, phenotype, hypothesis_id):
     """Check if enrichment exists for variant and phenotype"""
     try: 
         emit_task_update(
@@ -254,6 +255,9 @@ def check_enrich(enrichment, current_user_id, variant, phenotype, hypothesis_id)
             state=TaskState.STARTED,
             progress=0  
         )
+
+        deps = get_deps()
+        enrichment = deps["enrichment"]
         
         if enrichment.check_enrich(current_user_id, phenotype, variant):
             enrich = enrichment.get_enrich_by_phenotype_and_variant(phenotype, variant, current_user_id)
@@ -286,7 +290,7 @@ def check_enrich(enrichment, current_user_id, variant, phenotype, hypothesis_id)
         raise
 
 @task(retries=2)
-def get_candidate_genes(prolog_query, variant, hypothesis_id):
+def get_candidate_genes(variant, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -294,7 +298,8 @@ def get_candidate_genes(prolog_query, variant, hypothesis_id):
             state=TaskState.STARTED,
             next_task="Predicting causal gene",
         )
-
+        deps = get_deps()
+        prolog_query = deps["prolog_query"]
         result = prolog_query.get_candidate_genes(variant)
 
         emit_task_update(
@@ -315,7 +320,7 @@ def get_candidate_genes(prolog_query, variant, hypothesis_id):
         raise
 
 @task(retries=2)
-def predict_causal_gene(llm, phenotype, candidate_genes, hypothesis_id):
+def predict_causal_gene(phenotype, candidate_genes, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -325,6 +330,8 @@ def predict_causal_gene(llm, phenotype, candidate_genes, hypothesis_id):
         )
 
         logger.info("Executing: predict causal gene")
+        deps = get_deps()
+        llm = deps["llm"]
         result = llm.predict_casual_gene(phenotype, candidate_genes)["causal_gene"]
 
         emit_task_update(
@@ -344,7 +351,7 @@ def predict_causal_gene(llm, phenotype, candidate_genes, hypothesis_id):
         raise
 
 @task(retries=2)
-def get_relevant_gene_proof(prolog_query, variant, hypothesis_id, seed):
+def get_relevant_gene_proof(variant, hypothesis_id, seed):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -354,6 +361,8 @@ def get_relevant_gene_proof(prolog_query, variant, hypothesis_id, seed):
         )
 
         logger.info("Executing: get relevant gene proof")
+        deps = get_deps()
+        prolog_query = deps["prolog_query"]
         raw_response = prolog_query.get_relevant_gene_proof(variant, seed, samples=10)
         graphs_list = parse_prolog_graphs(raw_response)
 
@@ -375,7 +384,7 @@ def get_relevant_gene_proof(prolog_query, variant, hypothesis_id, seed):
         raise
 
 @task(retries=2)
-def retry_predict_causal_gene(llm, phenotype, candidate_genes, proof, causal_gene, hypothesis_id):
+def retry_predict_causal_gene(phenotype, candidate_genes, proof, causal_gene, hypothesis_id):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -385,6 +394,8 @@ def retry_predict_causal_gene(llm, phenotype, candidate_genes, proof, causal_gen
         )
 
         logger.info(f"Retrying predict causal gene with proof: {proof}")
+        deps = get_deps()
+        llm = deps["llm"]
         result = llm.predict_casual_gene(phenotype, candidate_genes, rule=proof, prev_gene=causal_gene)["causal_gene"]
 
         emit_task_update(
@@ -404,7 +415,7 @@ def retry_predict_causal_gene(llm, phenotype, candidate_genes, proof, causal_gen
         raise
 
 @task(retries=2)
-def retry_get_relevant_gene_proof(prolog_query, variant, hypothesis_id, seed):
+def retry_get_relevant_gene_proof(variant, hypothesis_id, seed):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -414,6 +425,8 @@ def retry_get_relevant_gene_proof(prolog_query, variant, hypothesis_id, seed):
         )
 
         logger.info("Retrying get relevant gene proof")
+        deps = get_deps()
+        prolog_query = deps["prolog_query"]
         raw_response = prolog_query.get_relevant_gene_proof(variant, seed, samples=10)
         graphs_list = parse_prolog_graphs(raw_response)
        
@@ -434,7 +447,7 @@ def retry_get_relevant_gene_proof(prolog_query, variant, hypothesis_id, seed):
         raise
         
 @task(cache_policy=None)
-def create_enrich_data(enrichment, hypotheses, user_id, project_id, variant, phenotype, causal_gene, relevant_gos, causal_graph, hypothesis_id):
+def create_enrich_data(user_id, project_id, variant, phenotype, causal_gene, relevant_gos, causal_graph, hypothesis_id):
     """Create enrichment data with project references"""
     try:
         emit_task_update(
@@ -444,6 +457,8 @@ def create_enrich_data(enrichment, hypotheses, user_id, project_id, variant, phe
         )
 
         logger.info("Creating enrich data in the database with project context")
+        deps = get_deps()
+        enrichment = deps["enrichment"]
         enrich_id = enrichment.create_enrich(
             user_id, project_id, variant,
             phenotype, causal_gene, relevant_gos, causal_graph
@@ -461,6 +476,7 @@ def create_enrich_data(enrichment, hypotheses, user_id, project_id, variant, phe
         hypothesis_data = {
                 "task_history": hypothesis_history,
             }
+        hypotheses = deps["hypotheses"]
         hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
 
         return enrich_id

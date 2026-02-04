@@ -1218,4 +1218,3 @@ class GWASFileDownloadAPI(Resource):
         except Exception as e:
             logger.error(f"[GWAS DOWNLOAD] Error downloading file {file_id}: {str(e)}")
             return {"error": f"Download failed: {str(e)}"}, 500
-
