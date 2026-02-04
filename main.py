@@ -111,7 +111,8 @@ def setup_api(config):
             "prolog_query": deps['prolog_query'], 
             "llm": deps['llm'], 
             "hypotheses": deps['hypotheses'],
-            "enrichment": deps['enrichment']
+            "enrichment": deps['enrichment'],
+            "gene_expression": deps['gene_expression']
         }
     )
     api.add_resource(ChatAPI, "/chat", resource_class_kwargs={

@@ -191,11 +191,15 @@ class ProjectHandler(BaseHandler):
                     # Delete physical file if it exists
                     file_path = file_meta.get('file_path')
                     if file_path and os.path.exists(file_path):
-                        try:
-                            os.remove(file_path)
-                            logger.info(f"Deleted physical file: {file_path}")
-                        except Exception as file_e:
-                            logger.warning(f"Could not delete physical file {file_path}: {file_e}")
+                        # Only delete files from uploads directory
+                        if 'uploads' in file_path:
+                            try:
+                                os.remove(file_path)
+                                logger.info(f"Deleted uploaded file: {file_path}")
+                            except Exception as file_e:
+                                logger.warning(f"Could not delete uploaded file {file_path}: {file_e}")
+                        else:
+                            logger.info(f"Skipping deletion of predefined file: {file_path}")
                     
                     # Delete file metadata
                     self.file_metadata_collection.delete_one({
