@@ -6,6 +6,7 @@ from config import Config
 from config import create_dependencies
 from gene_expression_tasks import get_coexpression_matrix_for_tissue
 import pandas as pd
+from loguru import logger
 
 
 class Enrich:
@@ -69,7 +70,7 @@ class Enrich:
             if ensembl_id is not None:
                 ensembl_ids.append(ensembl_id.lower())
             else:
-                print(f"Couldn't find ensembl id for {g.upper()}")
+                logger.warning(f"Couldn't find ensembl id for {g.upper()}")
 
         return ensembl_ids
 
@@ -81,7 +82,7 @@ class Enrich:
             return self._load_fallback_coexpression_data()
         
         if not user_id or not project_id:
-            print(f"Warning: user_id and project_id required for tissue-specific analysis, falling back to hardcoded data")
+            logger.warning(f"user_id and project_id required for tissue-specific analysis, falling back to hardcoded data")
             return self._load_fallback_coexpression_data()
         
         try:
@@ -89,10 +90,10 @@ class Enrich:
             tissue_uberon_id = self._get_tissue_uberon_id(user_id, project_id, tissue_name)
             
             if not tissue_uberon_id:
-                print(f"Warning: No UBERON ID found for tissue '{tissue_name}', falling back to hardcoded data")
+                logger.warning(f"No UBERON ID found for tissue '{tissue_name}', falling back to hardcoded data")
                 return self._load_fallback_coexpression_data()
             
-            print(f"Using tissue mapping from database: {tissue_name} -> {tissue_uberon_id}")
+            logger.info(f"Using tissue mapping from database: {tissue_name} -> {tissue_uberon_id}")
             
             # Run tissue-specific coexpression analysis using UBERON ID
             top_positive_tuples, top_negative_tuples, all_genes = get_coexpression_matrix_for_tissue(
@@ -101,54 +102,28 @@ class Enrich:
             
             # Extract gene symbols from tuples
             if top_positive_tuples and isinstance(top_positive_tuples[0], tuple):
-                return [gene_data[0] for gene_data in top_positive_tuples]
+                top_positive_genes = [gene_data[0] for gene_data in top_positive_tuples]
             else:
-                return top_positive_tuples
+                top_positive_genes = top_positive_tuples
+            
+            # Return both top genes and all genes for background
+            return top_positive_genes, all_genes
             
         except Exception as e:
-            print(f"Error running CellxGene coexpression analysis: {e}")
+            logger.error(f"Error running CellxGene coexpression analysis: {e}")
             return self._load_fallback_coexpression_data()
 
 
-    def _get_tissue_specific_background(self, relevant_gene: str, user_id: str, 
-                                        project_id: str, tissue_name: str) -> Optional[List[str]]:
-        """
-        Get tissue-specific background genes for enrichment analysis.
-        :return: List of background genes or None if failed
-        """
-        try:
-            tissue_uberon_id = self._get_tissue_uberon_id(user_id, project_id, tissue_name)
-            
-            if not tissue_uberon_id:
-                raise ValueError(f"No UBERON ID found for tissue '{tissue_name}'")
-            
-            print(f"Using tissue mapping from database: {tissue_name} -> {tissue_uberon_id}")
-            
-            # Get all genes from the tissue analysis (this is our background)
-            _, _, all_tissue_genes = get_coexpression_matrix_for_tissue(
-                relevant_gene, tissue_uberon_id, None, k=500
-            )
-            
-            # Convert Ensembl IDs to HGNC symbols for background
-            background_genes = self.get_hgnc_syms(all_tissue_genes)
-            print(f"Running tissue-specific enrichment for {relevant_gene} in {tissue_name} ({tissue_uberon_id})")
-            print(f"Using tissue-specific background: {len(background_genes)} genes from CellxGene analysis")
-            
-            return background_genes
-            
-        except Exception as e:
-            print(f"Failed to get tissue-specific background genes: {e}")
-            print("Falling back to enrichr default background")
-            return None 
     def _process_enrichment_results(self, res: pd.DataFrame) -> pd.DataFrame:
         """
         Process and filter enrichment results from gseapy.
         """
+        res = res.copy()  # Avoid SettingWithCopyWarning
         res.drop("Gene_set", axis=1, inplace=True)
         res.insert(1, "ID", res["Term"].apply(
             lambda x: x.split("(")[1].split(")")[0]))
         res["Term"] = res["Term"].apply(lambda x: x.split("(")[0])
-        res = res[res["Adjusted P-value"] < 0.05]
+        res = res[res["Adjusted P-value"] < 0.05].copy()
         desc = []
         for _, row in res.iterrows():
             go_id = row["ID"]
@@ -157,12 +132,10 @@ class Enrich:
                 go_desc = self.go_map[go_id]["desc"]
                 desc.append(go_desc)
             except KeyError:
-                print(f"Couldn't find term {go_id}, {go_name}")
+                logger.warning(f"Couldn't find term {go_id}, {go_name} in go_map")
                 desc.append("NA")
         res["Desc"] = desc
-        res.drop(res.columns.difference(["ID", "Term", "Desc", "Adjusted P-value", "Genes"]), 
-                inplace=True, axis=1)
-        
+        res = res[["ID", "Term", "Desc", "Adjusted P-value", "Genes"]].copy()        
         return res
 
     def run(self, relevant_gene, tissue_name=None, user_id=None, project_id=None):
@@ -173,26 +146,40 @@ class Enrich:
         organism = "Human"
         
         # Get coexpressed genes
-        gene_list = self.get_coexpression_net(relevant_gene, tissue_name, user_id=user_id, project_id=project_id)
+        coexpression_result = self.get_coexpression_net(relevant_gene, tissue_name, user_id=user_id, project_id=project_id)
         
-        # Determine background genes
-        if tissue_name and gene_list and user_id and project_id:
-            background_genes = self._get_tissue_specific_background(
-                relevant_gene, user_id, project_id, tissue_name
-            )
+        # Handle different return types (tuple for tissue-specific, list for fallback)
+        if isinstance(coexpression_result, tuple):
+            gene_list_ensembl, all_tissue_genes = coexpression_result
+            # Convert Ensembl IDs to HGNC symbols for both gene list and background
+            gene_list = self.get_hgnc_syms(gene_list_ensembl)
+            
+            # Using background size (5000 genes) instead of all tissue genes
+            max_background_size = 5000
+            if len(all_tissue_genes) > max_background_size:
+                logger.info(f"Limiting background from {len(all_tissue_genes)} to {max_background_size} genes for better enrichment signal")
+                background_genes_ensembl = all_tissue_genes[:max_background_size]
+            else:
+                background_genes_ensembl = all_tissue_genes
+            
+            background_genes = self.get_hgnc_syms(background_genes_ensembl)
+            logger.info(f"Running tissue-specific enrichment for {relevant_gene} in {tissue_name}")
+            logger.info(f"Using tissue-specific background: {len(background_genes)} genes from CellxGene analysis")
+            logger.info(f"Converted {len(gene_list_ensembl)} Ensembl IDs to {len(gene_list)} HGNC symbols")
         else:
+            # Fallback case - no tissue specified or fallback data used (already HGNC symbols)
+            gene_list = coexpression_result
             background_genes = self._load_fallback_background_data()
-            print(f"Running standard enrichment for {relevant_gene}")
+            logger.info(f"Running standard enrichment for {relevant_gene}")
         
-        print(f"Relevant Gene: {relevant_gene}")
-        print(f"Gene list: {gene_list[:5] if gene_list else []}")
-        print(f"Total coexpressed genes: {len(gene_list) if gene_list else 0}")
+        logger.info(f"Relevant Gene: {relevant_gene}")
+        logger.info(f"Gene list sample: {gene_list[:5] if gene_list else []}")
+        logger.info(f"Total coexpressed genes: {len(gene_list) if gene_list else 0}")
         
         if not gene_list:
-            print("No coexpressed genes found, returning empty results")
+            logger.warning("No coexpressed genes found, returning empty results")
             return pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes"])
         
-        # Run enrichment
         res = gp.enrichr(gene_list=gene_list,
                          gene_sets=library,
                          background=background_genes,
