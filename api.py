@@ -163,7 +163,7 @@ class EnrichAPI(Resource):
 
 
 class HypothesisAPI(Resource):
-    def __init__(self, enrichr, prolog_query, llm, hypotheses, enrichment):
+    def __init__(self, enrichr, prolog_query, llm, hypotheses, enrichment, gene_expression):
         self.enrichr = enrichr
         self.prolog_query = prolog_query
         self.llm = llm
@@ -952,7 +952,8 @@ class AnalysisPipelineAPI(Resource):
                 win=window,
                 L_val=L,
                 cov=coverage,
-                min_corr=min_abs_corr
+                min_corr=min_abs_corr,
+                sample_size=sample_size
             ):
                 try:
                     logger.info(f"[API] Running analysis pipeline for project {proj_id}")
@@ -976,7 +977,8 @@ class AnalysisPipelineAPI(Resource):
                         window=win,
                         L=L_val,
                         coverage=cov,
-                        min_abs_corr=min_corr
+                        min_abs_corr=min_corr,
+                        sample_size=sample_size
                     )
                     
                     logger.info(f"[API] Analysis pipeline for project {proj_id} completed successfully")

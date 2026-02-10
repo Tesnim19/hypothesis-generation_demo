@@ -46,6 +46,11 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
     config = Config.from_env()
     deps = create_dependencies(config)
     
+    # Initialize StatusTracker for Prefect context
+    from status_tracker import StatusTracker
+    status_tracker = StatusTracker()
+    status_tracker.initialize(deps['tasks'])
+    
     enrichr = deps['enrichr']
     llm = deps['llm']
     prolog_query = deps['prolog_query']
@@ -154,7 +159,12 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 else:
                     enrich_tbl = enrichr.run(this_causal_gene)
                 
-                relevant_gos = llm.get_relevant_go(phenotype, enrich_tbl)
+                # Check if enrichment table is empty
+                if enrich_tbl is None or len(enrich_tbl) == 0:
+                    logger.warning(f"No enrichment results found for gene {this_causal_gene}. Skipping LLM relevance scoring.")
+                    relevant_gos = []
+                else:
+                    relevant_gos = llm.get_relevant_go(phenotype, enrich_tbl)
                 
                 # Cache if shared
                 if use_shared_enrichment:
@@ -265,6 +275,10 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
         return {"message": "Invalid enrich_id or access denied."}, 404
 
     go_term = [go for go in enrich_data["GO_terms"] if go["id"] == go_id]
+    if not go_term:
+        logger.error(f"GO term {go_id} not found in enrichment {enrich_id}")
+        return {"message": f"GO term {go_id} not found in this enrichment."}, 404
+    
     go_name = go_term[0]["name"]
     causal_gene = enrich_data['causal_gene']
     variant_id = enrich_data['variant']

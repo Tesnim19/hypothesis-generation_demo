@@ -457,9 +457,17 @@ def create_enrich_data(enrichment, hypotheses, user_id, project_id, variant, phe
         )
         
         hypothesis_history = status_tracker.get_history(hypothesis_id)
+        clean_history = []
+        for task in hypothesis_history:
+            task_copy = task.copy()
+            task_copy.pop('details', None)  # Remove details to reduce size
+            clean_history.append(task_copy)
+        
+        limited_history = clean_history[-50:] if len(clean_history) > 50 else clean_history
+        
         logger.info("Updating hypothesis in the database...")
         hypothesis_data = {
-                "task_history": hypothesis_history,
+                "task_history": limited_history,
             }
         hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
 
