@@ -33,6 +33,8 @@ services:
     environment:
       - FLASK_ENV=development
       - PREFECT_API_URL=http://prefect-service:4200/api
+      - DASK_SCHEDULER_ADDRESS=tcp://dask-scheduler:8786
+      - PYTHONPATH=/app
       - OPENAI_API_KEY=${OpenAI}
     env_file:
       - .env
@@ -44,6 +46,7 @@ services:
       - mongo
       - prolog-service
       - prefect-service
+      - dask-scheduler
     command: >
       sh -c "
       uv run python main.py --ensembl-hgnc-map data/ensembl_to_hgnc.pkl --hgnc-ensembl-map data/hgnc_to_ensembl.pkl \
@@ -63,6 +66,8 @@ services:
       - prefect-data:/root/.prefect 
     environment:
       - PREFECT_API_URL=http://localhost:4200/api
+      - DASK_SCHEDULER_ADDRESS=tcp://dask-scheduler:8786
+      - PYTHONPATH=/app
       - UV_PROJECT_ENVIRONMENT=/opt/prefect-venv
       - OPENAI_API_KEY=${OpenAI}
     env_file:
@@ -101,8 +106,77 @@ services:
     depends_on:
       prefect-service:
         condition: service_healthy
+      dask-scheduler:
+        condition: service_started
     networks:
       - app_network
+
+  # Dask Scheduler - single instance
+  dask-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: []  # Override entrypoint - Dask doesn't need MongoDB/seeding
+    command: dask-scheduler
+    ports:
+      - "8786:8786"  # Scheduler port
+      - "8781:8787"  # Dashboard port
+    environment:
+      - DASK_DISTRIBUTED__SCHEDULER__IDLE_TIMEOUT=0
+      - DASK_DISTRIBUTED__SCHEDULER__WORKER_TTL=null
+      - PYTHONPATH=/app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost',8786)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Dask Workers - 5 replicas (2 workers per container = 10 total workers)
+  dask-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: []  # Override entrypoint - Dask doesn't need MongoDB/seeding
+    command: >
+      dask-worker tcp://dask-scheduler:8786 
+      --nworkers 2
+      --nthreads 2
+      --memory-limit 2.5GB
+      --nanny
+      --death-timeout 60
+    environment:
+      - PYTHONPATH=/app
+      - DASK_DISTRIBUTED__WORKER__DAEMON=False
+      - OPENAI_API_KEY=${OpenAI}
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - /mnt/hdd_1/tesnim/version1/prolog_out_v2:/mnt/prolog_out_v2
+      - /mnt/hdd_1/tesnim/version1/prolog_out_v3:/mnt/prolog_out_v3
+      - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
+    depends_on:
+      dask-scheduler:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      prolog-service:
+        condition: service_started
+    networks:
+      - app_network
+    deploy:
+      replicas: 5
+      resources:
+        limits:
+          memory: 6G  # Container limit (2 workers × 2.5GB = 5GB, leaving 1GB buffer)
+    restart: unless-stopped
 
 volumes:
   mongo-data:

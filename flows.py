@@ -28,17 +28,16 @@ run_combined_ldsc_tissue_analysis
 
 import pandas as pd
 from datetime import datetime, timezone
-from prefect.task_runners import ThreadPoolTaskRunner
 import os
 
 from utils import emit_task_update
-from config import Config, create_dependencies
+from config import Config, create_dependencies, get_task_runner
 from threading import Thread
 import traceback
 
 
 ### Enrichment Flow
-@flow(log_prints=True, persist_result=False, task_runner=ThreadPoolTaskRunner(max_workers=4))
+@flow(log_prints=True, persist_result=False, task_runner=get_task_runner())
 def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_id, seed):
     """
     Fully project-based enrichment flow that initializes dependencies from centralized config
@@ -236,7 +235,7 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         raise
 
 ### Hypothesis Flow
-@flow(log_prints=True)
+@flow(log_prints=True, task_runner=get_task_runner())
 def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses, prolog_query, llm, enrichment):
     
     hypothesis = check_hypothesis(hypotheses, current_user_id, enrich_id, go_id, hypothesis_id)
@@ -354,7 +353,7 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
     return {"summary": summary, "graph": final_causal_graph}, 201
 
 
-@flow(log_prints=True)
+@flow(log_prints=True, task_runner=get_task_runner())
 def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh38", 
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1, 

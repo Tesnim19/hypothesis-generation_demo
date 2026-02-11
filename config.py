@@ -33,6 +33,8 @@ class Config:
         self.harmonizer_ref_dir_38 = "/app/data/harmonizer_ref/b38"
         self.harmonizer_code_repo = "./gwas-sumstats-harmoniser"  # Nextflow workflow
         self.harmonizer_script_dir = "./scripts/1000Genomes_phase3"  # Shell scripts
+        # Dask configuration (required for concurrent user support)
+        self.dask_scheduler_address = "tcp://dask-scheduler:8786"
 
     @classmethod
     def from_args(cls, args):
@@ -50,6 +52,8 @@ class Config:
         # Also load MongoDB config from environment
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        # Dask config from environment
+        config.dask_scheduler_address = os.getenv("DASK_SCHEDULER_ADDRESS", config.dask_scheduler_address)
         return config
 
     @classmethod
@@ -73,6 +77,8 @@ class Config:
         config.harmonizer_ref_dir_38 = os.getenv("HARMONIZER_REF_DIR_38", "/app/data/harmonizer_ref/b38")
         config.harmonizer_code_repo = os.getenv("HARMONIZER_CODE_REPO", "./gwas-sumstats-harmoniser")  # Nextflow workflow
         config.harmonizer_script_dir = os.getenv("HARMONIZER_SCRIPT_DIR", "./scripts/1000Genomes_phase3")  # Shell scripts
+        # Dask configuration (required for concurrent user support)
+        config.dask_scheduler_address = os.getenv("DASK_SCHEDULER_ADDRESS", "tcp://dask-scheduler:8786")
         return config
 
     def get_plink_dir(self, ref_genome):
@@ -152,3 +158,20 @@ def create_dependencies(config):
         'gwas_library': GWASLibraryHandler(mongodb_uri, db_name),
         'storage': minio_storage
     }
+
+
+def get_task_runner(config=None):
+    """
+    Factory function to get DaskTaskRunner for distributed task execution.
+    All flows use Dask for concurrent user support.
+    """
+    if config is None:
+        config = Config.from_env()
+    
+    from prefect_dask import DaskTaskRunner
+    from loguru import logger
+    
+    logger.info(f"Using DaskTaskRunner with scheduler: {config.dask_scheduler_address}")
+    
+    # Only specify address
+    return DaskTaskRunner(address=config.dask_scheduler_address)
