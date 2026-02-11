@@ -177,6 +177,9 @@ RUN uv sync --no-cache --extra r-integration
 # Copy application
 COPY . .
 
+# Make entrypoint script executable
+RUN chmod +x /app/entrypoint.sh
+
 # Create separate Python environment for harmonizer
 RUN python3 -m venv /opt/harmonizer-venv
 
@@ -186,5 +189,8 @@ RUN uv pip install --python=/opt/harmonizer-venv/bin/python -r gwas-sumstats-har
 
 # Also install minimal harmonizer deps in main venv (without gwas-sumstats-tools to avoid pydantic conflict)
 RUN uv pip install 'duckdb>=0.9.2' 'pyliftover>=0.4'
+
+# Set entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
 
 EXPOSE 5000
