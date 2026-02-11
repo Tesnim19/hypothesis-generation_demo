@@ -119,7 +119,7 @@ def run_command(cmd: str) -> subprocess.CompletedProcess:
 def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRCh38", 
                                      ref_dir=None, code_repo=None, script_dir=None,
                                      threshold=0.99, sample_size=None, timeout_seconds=14400, 
-                                     cleanup_upload=True):
+                                     cleanup_upload=True, storage=None, user_id=None, project_id=None):
     """
     Harmonize GWAS summary statistics using Nextflow-based harmonization pipeline.
     """
@@ -358,6 +358,17 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
         # Calculate processing time
         elapsed_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[HARMONIZE] Processing completed in {elapsed_time:.2f} seconds")
+        
+        # Upload to MinIO
+        if storage and user_id and project_id:
+            harmonized_filename = os.path.basename(harmonized_file_path)
+            object_key = f"harmonized/{user_id}/{project_id}/{harmonized_filename}"
+            
+            upload_success = storage.upload_file(harmonized_file_path, object_key)
+            if upload_success:
+                logger.info(f"[HARMONIZE] Uploaded to MinIO: s3://hypothesis/{object_key}")
+            else:
+                logger.warning(f"[HARMONIZE] Failed to upload to MinIO, file remains local only")
 
         return harmonized_df, harmonized_file_path
         
@@ -413,12 +424,20 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
     Run GCTA COJO analysis per chromosome and combine results.
     """
     logger.info(f"[COJO] Starting per-chromosome COJO analysis for population {population}")
-
+    
+    # Get configuration
     config = Config.from_env()
     
-    # Create temporary directory for COJO processing
-    with tempfile.TemporaryDirectory(prefix="cojo_analysis_") as temp_dir:
-        logger.info(f"[COJO] Using temporary directory: {temp_dir}")
+    # Create user-isolated temporary directory for COJO processing
+    # Extract user/project info from output_dir path (format: data/projects/{user_id}/{project_id}/analysis)
+    import uuid
+    unique_id = str(uuid.uuid4())[:8]
+    temp_base = os.path.join(tempfile.gettempdir(), 'cojo_analysis', unique_id)
+    os.makedirs(temp_base, exist_ok=True)
+    
+    try:
+        temp_dir = temp_base
+        logger.info(f"[COJO] Using isolated temporary directory: {temp_dir}")
         
         # Support both old and new column names
         a1_col = 'effect_allele' if 'effect_allele' in significant_df.columns else 'A1'
@@ -557,6 +576,15 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
         else:
             logger.error("[COJO] No COJO results generated for any chromosome")
             raise RuntimeError("COJO analysis failed for all chromosomes")
+    finally:
+        # Cleanup isolated temp directory
+        try:
+            import shutil
+            if os.path.exists(temp_base):
+                shutil.rmtree(temp_base)
+                logger.info(f"[COJO] Cleaned up temp directory: {temp_base}")
+        except Exception as cleanup_e:
+            logger.warning(f"[COJO] Could not cleanup temp directory: {cleanup_e}")
 
 @task
 def check_ld_dimensions(ld_matrix, snp_df, bim_file_path):
@@ -1302,14 +1330,15 @@ def finemap_region_batch_worker(batch_data):
 def save_sumstats_for_workers(sumstats_df, temp_dir=None):
     """Save sumstats to a temporary file for memory-efficient worker access"""
     if temp_dir is None:
-        temp_dir = tempfile.gettempdir()
+        # Create isolated temp directory for sumstats sharing between workers
+        import uuid
+        unique_id = str(uuid.uuid4())[:8]
+        temp_dir = os.path.join(tempfile.gettempdir(), 'sumstats_shared', unique_id)
+        os.makedirs(temp_dir, exist_ok=True)
     
-    # Create a unique temporary file
-    temp_file = tempfile.NamedTemporaryFile(
-        mode='w', suffix='.tsv', dir=temp_dir, delete=False
-    )
-    temp_path = temp_file.name
-    temp_file.close()
+    # Create temporary file with better naming
+    import uuid as uuid_module
+    temp_path = os.path.join(temp_dir, f'sumstats_{uuid_module.uuid4().hex[:8]}.tsv')
     
     # Save the DataFrame
     sumstats_df.to_csv(temp_path, sep='\t', index=True)

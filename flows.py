@@ -29,6 +29,7 @@ run_combined_ldsc_tissue_analysis
 import pandas as pd
 from datetime import datetime, timezone
 from prefect.task_runners import ThreadPoolTaskRunner
+import os
 
 from utils import emit_task_update
 from config import Config, create_dependencies
@@ -357,7 +358,7 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id, hypotheses
 def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, mongodb_uri, db_name, user_id, project_id, gwas_file_path, ref_genome="GRCh38", 
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1, 
-                           coverage=0.95, min_abs_corr=0.5, sample_size=None):
+                           coverage=0.95, min_abs_corr=0.5, sample_size=None, storage=None):
     """
     Complete analysis pipeline flow using Prefect for orchestration
     but multiprocessing for fine-mapping batches (R safety)
@@ -387,7 +388,8 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         
         logger.info(f"[PIPELINE] Stage 1: Nextflow harmonization")
         harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
-            gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size
+            gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
+            storage=storage, user_id=user_id, project_id=project_id
         ).result()
         
         # Extract the actual file path from the result
@@ -419,9 +421,10 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         
         # Extract the actual DataFrame
         if isinstance(significant_df_result, tuple):
-            significant_df, _ = significant_df_result
+            significant_df, sig_output_path = significant_df_result
         else:
             significant_df = significant_df_result
+            sig_output_path = None
         
         # Update analysis state after filtering
         filtering_state = {
@@ -440,9 +443,18 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         
         # Extract the actual DataFrame
         if isinstance(cojo_result, tuple):
-            cojo_results, _ = cojo_result
+            cojo_results, cojo_output_path = cojo_result
         else:
             cojo_results = cojo_result
+            cojo_output_path = None
+        
+        # Cleanup
+        if sig_output_path and os.path.exists(sig_output_path):
+            try:
+                os.remove(sig_output_path)
+                logger.info(f"[PIPELINE] Cleaned up temporary file: {sig_output_path}")
+            except Exception as cleanup_e:
+                logger.warning(f"[PIPELINE] Could not cleanup {sig_output_path}: {cleanup_e}")
         
         if cojo_results is None or len(cojo_results) == 0:
             logger.error("[PIPELINE] No COJO results to process")
@@ -542,6 +554,14 @@ def analysis_pipeline_flow(projects_handler, analysis_handler,gene_expression, m
         if all_results:
             logger.info(f"[PIPELINE] Combining results from {successful_batches} successful batches")
             combined_results = pd.concat(all_results, ignore_index=True)
+            
+            # Cleanup
+            if cojo_output_path and os.path.exists(cojo_output_path):
+                try:
+                    os.remove(cojo_output_path)
+                    logger.info(f"[PIPELINE] Cleaned up temporary file: {cojo_output_path}")
+                except Exception as cleanup_e:
+                    logger.warning(f"[PIPELINE] Could not cleanup {cojo_output_path}: {cleanup_e}")
             
             # Save results using Prefect tasks
             results_file = create_analysis_result_task.submit(analysis_handler, user_id, project_id, combined_results, output_dir).result()

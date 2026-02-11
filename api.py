@@ -13,7 +13,7 @@ from flows import hypothesis_flow, analysis_pipeline_flow
 from run_deployment import invoke_enrichment_deployment
 from status_tracker import status_tracker, TaskState
 from prefect import flow
-from utils import allowed_file, convert_variants_to_object_array, serialize_datetime_fields
+from utils import allowed_file, convert_variants_to_object_array, serialize_datetime_fields, compute_file_md5
 from loguru import logger
 from werkzeug.utils import secure_filename
 from tasks import extract_probability, get_related_hypotheses
@@ -739,12 +739,14 @@ class BulkProjectDeleteAPI(Resource):
             return {"error": "Failed to delete projects"}, 500
 
 class AnalysisPipelineAPI(Resource):
-    def __init__(self, projects, files, analysis, gene_expression, config):
+    def __init__(self, projects, files, analysis, gene_expression, config, storage, gwas_library):
         self.projects = projects
         self.files = files
         self.analysis = analysis
         self.gene_expression = gene_expression
         self.config = config
+        self.storage = storage
+        self.gwas_library = gwas_library
 
     @token_required
     def post(self, current_user_id):
@@ -774,44 +776,6 @@ class AnalysisPipelineAPI(Resource):
             
             if not phenotype:
                 return {"error": "phenotype is required"}, 400
-            
-            # Handle based on the upload flag
-            if not is_uploaded:
-                predefined_file_id = request.form.get('gwas_file')  
-                
-                if not predefined_file_id:
-                    return {"error": "gwas_file is required (file ID for predefined files)"}, 400
-                
-                logger.info(f"[API] Using predefined GWAS file ID: {predefined_file_id}")
-                
-                # Find the predefined file
-                raw_data_path = os.path.join(self.config.data_dir, 'raw')
-                
-                possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
-                gwas_file_path = None
-                filename = None
-                
-                for ext in possible_extensions:
-                    candidate_path = os.path.join(raw_data_path, f"{predefined_file_id}{ext}")
-                    if os.path.exists(candidate_path):
-                        gwas_file_path = candidate_path
-                        filename = f"{predefined_file_id}{ext}"
-                        break
-                
-                if not gwas_file_path:
-                    return {"error": f"Predefined GWAS file not found for ID: {predefined_file_id}"}, 404
-                
-                logger.info(f"[API] Found predefined file: {filename} at {gwas_file_path}")
-                file_size = os.path.getsize(gwas_file_path)
-                
-            else:
-                # gwas_file contains the actual file
-                if 'gwas_file' not in request.files:
-                    return {"error": "No GWAS file uploaded"}, 400
-                
-                gwas_file = request.files['gwas_file']
-                if gwas_file.filename == '':
-                    return {"error": "No file selected"}, 400
             
             logger.info(f"[API] Starting analysis pipeline")
             if is_uploaded and not allowed_file(gwas_file.filename):
@@ -853,43 +817,283 @@ class AnalysisPipelineAPI(Resource):
             start_time = datetime.now()
             
             if not is_uploaded:
-                # Use predefined file
-                logger.info(f"Using predefined GWAS file: {filename} (Path: {gwas_file_path})")
-                file_path = gwas_file_path
-                gwas_records_count = count_gwas_records(file_path)
+                file_id_param = request.form.get('gwas_file')  
+                
+                if not file_id_param:
+                    return {"error": "gwas_file parameter is required when is_uploaded=false"}, 400
+                
+                # Auto-detect file source: check user files first, then library
+                logger.info(f"[API] Auto-detecting source for file ID: {file_id_param}")
+                
+                # Try user files first (catches ObjectId validation errors)
+                file_metadata = None
+                try:
+                    file_metadata = self.files.get_file_metadata(current_user_id, file_id_param)
+                except Exception as e:
+                    logger.info(f"[API] Not a valid user file ID, checking library: {e}")
+                
+                if file_metadata:
+                    # CASE 1: User's uploaded file
+                    file_source = 'user'
+                    logger.info(f"[API] File found in user library: {file_id_param}")
+                    
+                    storage_key = file_metadata.get('storage_key')
+                    filename = file_metadata.get('filename')
+                    file_size = file_metadata.get('file_size', 0)
+                    gwas_records_count = file_metadata.get('record_count', 0)
+                    
+                    if not storage_key:
+                        return {"error": "File does not have storage information. It may be an old entry that needs re-upload."}, 400
+                    
+                    if not self.storage:
+                        return {"error": "Storage service not available"}, 500
+                    
+                    # Download from MinIO to temp location for processing
+                    import tempfile
+                    user_temp_dir = os.path.join(tempfile.gettempdir(), 'uploads', str(current_user_id), file_id_param)
+                    os.makedirs(user_temp_dir, exist_ok=True)
+                    
+                    temp_file_path = os.path.join(user_temp_dir, filename)
+                    
+                    if not self.storage.download_file(storage_key, temp_file_path):
+                        return {"error": "Failed to retrieve file from storage"}, 500
+                    
+                    file_path = temp_file_path
+                    gwas_file_path = file_path
+                    file_metadata_id = file_id_param
+                    
+                    logger.info(f"[API] Reusing user file: {filename} from MinIO: {storage_key}")
+                    
+                else:
+                    # Not in user files, check system library
+                    gwas_entry = self.gwas_library.get_gwas_entry(file_id=file_id_param)
+                    
+                    if not gwas_entry:
+                        return {"error": f"File not found in user library or system library: {file_id_param}"}, 404
+                    
+                    # CASE 2: Library file
+                    file_source = 'library'
+                    logger.info(f"[API] File found in system library: {file_id_param}")
+                    
+                    gwas_file_path = None
+                    filename = gwas_entry.get('filename', file_id_param)
+                    file_size = 0
+                    
+                    # Check if file is cached in MinIO
+                    if self.storage and gwas_entry.get('downloaded') and gwas_entry.get('minio_path'):
+                        minio_path = gwas_entry['minio_path']
+                        
+                        if self.storage.exists(minio_path):
+                            # Download from MinIO to temp location for analysis
+                            import tempfile
+                            temp_dir = tempfile.mkdtemp(prefix=f"gwas_analysis_{current_user_id}_")
+                            gwas_file_path = os.path.join(temp_dir, filename)
+                            
+                            logger.info(f"[API] Downloading from MinIO: {minio_path}")
+                            if self.storage.download_file(minio_path, gwas_file_path):
+                                file_size = os.path.getsize(gwas_file_path)
+                                logger.info(f"[API] Downloaded from MinIO cache: {gwas_file_path}")
+                            else:
+                                gwas_file_path = None
+                        else:
+                            logger.warning(f"[API] MinIO cache missing: {minio_path}")
+                    
+                    # If not in MinIO, download from source
+                    if not gwas_file_path:
+                        logger.info(f"[API] File not in MinIO, downloading from source")
+                        
+                        # Get download URL
+                        download_url = gwas_entry.get('aws_url') or gwas_entry.get('dropbox_url')
+                        if not download_url and gwas_entry.get('wget_command'):
+                            import re
+                            url_match = re.search(r'(https?://[^\s]+)', gwas_entry['wget_command'])
+                            if url_match:
+                                download_url = url_match.group(1)
+                        
+                        if not download_url:
+                            return {"error": f"No download URL available for {file_id_param}"}, 404
+                        
+                        # Download to temp location
+                        import tempfile
+                        import requests
+                        
+                        temp_dir = tempfile.mkdtemp(prefix=f"gwas_analysis_{current_user_id}_")
+                        gwas_file_path = os.path.join(temp_dir, filename)
+                        
+                        logger.info(f"[API] Downloading from {download_url}")
+                        try:
+                            response = requests.get(download_url, stream=True, timeout=600)
+                            response.raise_for_status()
+                            
+                            with open(gwas_file_path, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                            
+                            file_size = os.path.getsize(gwas_file_path)
+                            logger.info(f"[API] Downloaded {file_size / (1024*1024):.2f} MB")
+                            
+                            # Upload to MinIO for future use
+                            if self.storage:
+                                minio_path = f"gwas_cache/{filename}"
+                                if self.storage.upload_file(gwas_file_path, minio_path):
+                                    self.gwas_library.mark_as_downloaded(file_id_param, minio_path, file_size)
+                                    logger.info(f"[API] Uploaded to MinIO: s3://{minio_path}")
+                            
+                        except Exception as e:
+                            logger.error(f"[API] Download failed: {e}")
+                            return {"error": f"Failed to download file: {str(e)}"}, 500
+                    
+                    # Fallback to data/raw/ for legacy files
+                    if not gwas_file_path:
+                        logger.info(f"[API] File not in library, checking data/raw/")
+                        raw_data_path = os.path.join(self.config.data_dir, 'raw')
+                        
+                        possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz', '.txt', '.txt.gz', '.csv', '.csv.gz']
+                        
+                        for ext in possible_extensions:
+                            candidate_path = os.path.join(raw_data_path, f"{file_id_param}{ext}")
+                            if os.path.exists(candidate_path):
+                                gwas_file_path = candidate_path
+                                filename = f"{file_id_param}{ext}"
+                                file_size = os.path.getsize(gwas_file_path)
+                                logger.info(f"[API] Found in data/raw: {gwas_file_path}")
+                                break
+                    
+                    if not gwas_file_path:
+                        return {"error": f"GWAS file not found: {file_id_param}"}, 404
+                    
+                    file_path = gwas_file_path
+                    gwas_records_count = count_gwas_records(file_path)
+                    file_id = str(uuid.uuid4())
+                    file_metadata_id = None 
+                
+            # CASE 3: New file upload with MD5 deduplication
             else:
+                # Validate file upload
+                if 'gwas_file' not in request.files:
+                    return {"error": "No GWAS file uploaded"}, 400
+                
+                gwas_file = request.files['gwas_file']
+                if gwas_file.filename == '':
+                    return {"error": "No file selected"}, 400
+                
+                if not allowed_file(gwas_file.filename):
+                    return {"error": "Invalid file format. Supported: .tsv, .txt, .csv, .gz, .bgz"}, 400
+                
                 # Generate secure filename and file ID
                 filename = secure_filename(gwas_file.filename)
                 file_id = str(uuid.uuid4())
                 
-                # Create user upload directory
-                user_upload_dir = os.path.join('data', 'uploads', str(current_user_id))
-                os.makedirs(user_upload_dir, exist_ok=True)
+                logger.info(f"[API] Starting upload for file {filename} (ID: {file_id})")
                 
-                # File path for saving
-                file_path = os.path.join(user_upload_dir, f"{file_id}_{filename}")
+                # Create user-isolated temp directory
+                import tempfile
+                user_temp_dir = os.path.join(tempfile.gettempdir(), 'uploads', str(current_user_id), file_id)
+                os.makedirs(user_temp_dir, exist_ok=True)
                 
-                logger.info(f"Starting upload for file {filename} (ID: {file_id})")
+                # Save to isolated temp location
+                temp_file_path = os.path.join(user_temp_dir, filename)
+                gwas_file.save(temp_file_path)
+                file_size = os.path.getsize(temp_file_path)
                 
-                # Save file
-                gwas_file.save(file_path)
-                file_size = os.path.getsize(file_path)
-                gwas_file_path = file_path
+                # Compute MD5 hash for deduplication
+                md5_hash = compute_file_md5(temp_file_path)
+                logger.info(f"[API] Computed MD5: {md5_hash}")
                 
-                gwas_records_count = count_gwas_records(file_path)
+                # Check if user already uploaded this file
+                existing_file = None
+                if md5_hash and self.storage:
+                    existing_file = self.files.find_file_by_md5(current_user_id, md5_hash)
+                
+                if existing_file:
+                    logger.info(f"[API] File already uploaded (MD5 match): {existing_file.get('_id')}")
+                    logger.info(f"[API] Reusing existing MinIO object: {existing_file.get('storage_key')}")
+                    
+                    # Cleanup temp file - we'll reuse the existing one
+                    try:
+                        os.remove(temp_file_path)
+                    except:
+                        pass
+                    
+                    # Download existing file for processing
+                    storage_key = existing_file.get('storage_key')
+                    if storage_key and self.storage.exists(storage_key):
+                        self.storage.download_file(storage_key, temp_file_path)
+                        file_path = temp_file_path
+                        gwas_file_path = file_path
+                        file_metadata_id = existing_file.get('_id')
+                        gwas_records_count = existing_file.get('record_count', count_gwas_records(file_path))
+                    else:
+                        return {"error": "Failed to retrieve existing file from storage"}, 500
+                else:
+                    # New file - upload to MinIO
+                    gwas_records_count = count_gwas_records(temp_file_path)
+                    
+                    if self.storage:
+                        # MinIO path: uploads/{user_id}/{file_id}/{filename}
+                        object_key = f"uploads/{current_user_id}/{file_id}/{filename}"
+                        
+                        # Upload to MinIO for persistence
+                        upload_success = self.storage.upload_file(temp_file_path, object_key)
+                        
+                        if not upload_success:
+                            logger.error(f"[API] Failed to upload file to MinIO")
+                            # Cleanup temp file on failure
+                            try:
+                                os.remove(temp_file_path)
+                                os.rmdir(user_temp_dir)
+                            except:
+                                pass
+                            return {"error": "File upload failed"}, 500
+                        
+                        # Use temp file for immediate processing
+                        file_path = temp_file_path
+                        gwas_file_path = file_path
+                        
+                        logger.info(f"[API] Uploaded to MinIO: s3://hypothesis/{object_key}")
+                        logger.info(f"[API] Using temp file for processing: {file_path}")
+                        
+                        file_metadata_id = None  # Will create below
+                    else:
+                        # Fallback: Save to local disk
+                        logger.warning("[API] MinIO not configured, falling back to local storage")
+                        user_upload_dir = os.path.join('data', 'uploads', str(current_user_id))
+                        os.makedirs(user_upload_dir, exist_ok=True)
+                        file_path = os.path.join(user_upload_dir, f"{file_id}_{filename}")
+                        gwas_file.save(file_path)
+                        file_size = os.path.getsize(file_path)
+                        gwas_file_path = file_path
+                        gwas_records_count = count_gwas_records(file_path)
+                        
+                        file_metadata_id = None  # Will create below
             
-            # Create file metadata in database with record count 
-            original_filename = gwas_file.filename if is_uploaded else filename
-            file_metadata_id = self.files.create_file_metadata(
-                user_id=current_user_id,
-                filename=filename,
-                original_filename=original_filename,
-                file_path=file_path,
-                file_type='gwas',
-                file_size=file_size,
-                record_count=gwas_records_count,
-                download_url=f"/download/{str(uuid.uuid4())}"
-            )
+            # Create file metadata in database (if not reusing existing)
+            if not file_metadata_id:
+                original_filename = gwas_file.filename if is_uploaded else filename
+                
+                # Determine source
+                if not is_uploaded:
+                    source = 'gwas_library'
+                else:
+                    source = 'user_upload'
+                
+                # Get storage_key and md5_hash if applicable
+                storage_key = object_key if is_uploaded and self.storage else None
+                md5_hash_param = md5_hash if is_uploaded and md5_hash else None
+                
+                file_metadata_id = self.files.create_file_metadata(
+                    user_id=current_user_id,
+                    filename=filename,
+                    original_filename=original_filename,
+                    file_path=file_path,
+                    file_type='gwas',
+                    file_size=file_size,
+                    record_count=gwas_records_count,
+                    download_url=f"/download/{str(uuid.uuid4())}",
+                    md5_hash=md5_hash_param,
+                    storage_key=storage_key,
+                    source=source
+                )
             
             # Prepare analysis parameters
             analysis_parameters = {
@@ -978,17 +1182,19 @@ class AnalysisPipelineAPI(Resource):
                         L=L_val,
                         coverage=cov,
                         min_abs_corr=min_corr,
-                        sample_size=sample_size
+                        sample_size=sample_size,
+                        storage=self.storage
                     )
                     
-                    logger.info(f"[API] Analysis pipeline for project {proj_id} completed successfully")
+                    logger.info(f"[API] Analysis pipeline for project {project_id} completed successfully")
                     if credible_sets and isinstance(credible_sets, dict):
                         logger.info(f"[API] Generated {credible_sets.get('total_variants', 0)} variants in {credible_sets.get('total_credible_sets', 0)} credible sets")
                     else:
                         logger.info(f"[API] Analysis completed but no credible sets generated")
                     
                 except Exception as e:
-                    logger.error(f"[API] Analysis pipeline for project {proj_id} failed: {str(e)}")
+                    logger.error(f"[API] Analysis pipeline for project {project_id} failed: {str(e)}")
+                    raise e
             
             # Start background thread
             background_thread = Thread(target=run_pipeline_background)
@@ -1171,121 +1377,262 @@ class CredibleSetsAPI(Resource):
 
 class GWASFilesAPI(Resource):
     """
-    API endpoint for automatically discovering GWAS files and extracting their metadata
+    API endpoint for serving GWAS files from the library collection
     """
-    def __init__(self, config):
+    def __init__(self, config, gwas_library, storage):
         self.config = config
+        self.gwas_library = gwas_library
+        self.storage = storage
 
     def get(self):
-        """Automatically discover GWAS files and extract their metadata"""
+        """Get list of available GWAS files from MongoDB"""
         try:
-            # Get data directory
-            raw_data_path = os.path.join(self.config.data_dir, 'raw')
+            # Get query parameters
+            search_term = request.args.get('search')
+            sex_filter = request.args.get('sex')
+            limit = request.args.get('limit', type=int)
+            skip = request.args.get('skip', 0, type=int)
             
-            if not os.path.exists(raw_data_path):
-                return {"gwas_files": [], "total_files": 0}, 200
+            # Set default limit
+            if limit is None:
+                limit = 100
             
-            # Scan for all potential GWAS files
-            patterns = [
-                os.path.join(raw_data_path, '*.tsv'),
-                os.path.join(raw_data_path, '*.tsv.gz'),
-                os.path.join(raw_data_path, '*.tsv.bgz'),
-                os.path.join(raw_data_path, '*.txt'),
-                os.path.join(raw_data_path, '*.txt.gz'),
-                os.path.join(raw_data_path, '*.csv'),
-                os.path.join(raw_data_path, '*.csv.gz')
-            ]
+            # Get entries from collection
+            entries = self.gwas_library.get_all_gwas_entries(
+                search_term=search_term,
+                sex_filter=sex_filter,
+                limit=limit,
+                skip=skip
+            )
             
-            all_files = []
-            for pattern in patterns:
-                all_files.extend(glob.glob(pattern))
-            
-            # Remove duplicates and sort
-            all_files = sorted(list(set(all_files)))
-            
+            # Transform entries to match API format
             gwas_files = []
-            
-            for file_path in all_files:
-                filename = os.path.basename(file_path)
-                
-                # Extract metadata from the file
-                metadata = extract_gwas_file_metadata(file_path)
-                
-                # Generate file ID
-                file_id = filename
-                for ext in ['.tsv.bgz', '.tsv.gz', '.txt.gz', '.csv.gz', '.tsv', '.txt', '.csv']:
-                    if file_id.endswith(ext):
-                        file_id = file_id[:-len(ext)]
-                        break
-                
-                # Create file entry
+            for entry in entries:
+                file_id = entry.get('file_id') or entry.get('filename')
                 gwas_file_entry = {
-                    "id": file_id,
-                    "filename": filename,
-                    "sample_size": metadata['sample_size'],
-                    "genome_build": metadata['genome_build'],
-                    "file_path": file_path,
-                    "file_size_mb": round(metadata['file_size'] / (1024 * 1024), 2),
-                    "url": f"/gwas-files/download/{file_id}"
+                    "id": file_id,  # Use filename as ID
+                    "display_name": entry.get('display_name'),
+                    "description": entry.get('description'),
+                    "phenotype_code": entry.get('phenotype_code'),
+                    "filename": entry.get('filename'),
+                    "sex": entry.get('sex'),
+                    "source": entry.get('source'),
+                    "downloaded": entry.get('downloaded', False),  # Cached in MinIO
+                    "download_count": entry.get('download_count', 0),
+                    "url": f"/gwas-files/download/{file_id}",
+                    "showcase_link": entry.get('showcase_link', ''),
                 }
+                
+                # Add file size if available
+                if entry.get('file_size'):
+                    gwas_file_entry['file_size_mb'] = round(entry['file_size'] / (1024 * 1024), 2)
                 
                 gwas_files.append(gwas_file_entry)
             
+            # Get total count for pagination
+            total_count = self.gwas_library.get_entry_count(
+                search_term=search_term,
+                sex_filter=sex_filter
+            )
             
             return {
                 "gwas_files": gwas_files,
-                "total_files": len(gwas_files)
+                "total_files": total_count,
+                "returned": len(gwas_files),
+                "skip": skip,
+                "limit": limit
             }, 200
             
         except Exception as e:
-            logger.error(f"Error discovering GWAS files: {str(e)}")
-            return {"error": f"Failed to discover GWAS files: {str(e)}"}, 500
+            logger.error(f"Error fetching GWAS files from library: {str(e)}")
+            return {"error": f"Failed to fetch GWAS files: {str(e)}"}, 500
 
 class GWASFileDownloadAPI(Resource):
     """
-    API endpoint for downloading predefined GWAS files
+    API endpoint for downloading GWAS files with MinIO caching
     """
-    def __init__(self, config):
+    def __init__(self, config, gwas_library, storage):
         self.config = config
+        self.gwas_library = gwas_library
+        self.storage = storage
 
     def get(self, file_id):
-        """Download a predefined GWAS file by file_id"""
+        """Download a GWAS file by file_id (downloads on-demand to MinIO if needed)"""
         try:
-            logger.info(f"[GWAS DOWNLOAD] Download request for file {file_id}")
+            logger.info(f"[GWAS DOWNLOAD] Download request for file: {file_id}")
             
-            # Get data directory
-            raw_data_path = os.path.join(self.config.data_dir, 'raw')
+            # Get entry from library
+            entry = self.gwas_library.get_gwas_entry(file_id=file_id)
             
-            # Scan for matching files dynamically
-            possible_extensions = ['.tsv', '.tsv.gz', '.tsv.bgz']
-            file_path = None
-            original_filename = None
+            if not entry:
+                logger.error(f"[GWAS DOWNLOAD] Entry not found for file: {file_id}")
+                return {"error": "GWAS file not found in library"}, 404
             
-            for ext in possible_extensions:
-                candidate_path = os.path.join(raw_data_path, f"{file_id}{ext}")
-                if os.path.exists(candidate_path):
-                    file_path = candidate_path
-                    original_filename = f"{file_id}{ext}"
-                    break
+            filename = entry.get('filename', file_id)
+            minio_path = f"gwas_cache/{filename}"
             
-            if not file_path:
-                logger.error(f"[GWAS DOWNLOAD] File not found for ID: {file_id}")
-                return {"error": "File not found"}, 404
+            # Check if file is already cached in MinIO
+            if self.storage and entry.get('downloaded') and entry.get('minio_path'):
+                cached_path = entry['minio_path']
+                
+                # Verify file still exists in MinIO
+                if self.storage.exists(cached_path):
+                    logger.info(f"[GWAS DOWNLOAD] Serving from MinIO cache: {cached_path}")
+                    
+                    # Increment download count
+                    self.gwas_library.increment_download_count(file_id)
+                    
+                    # Generate presigned URL for download
+                    download_url = self.storage.generate_presigned_url(cached_path, expiration=3600)
+                    
+                    if download_url:
+                        return {"download_url": download_url, "cached": True}, 200
+                    else:
+                        # Fallback: download to temp and serve
+                        import tempfile
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp:
+                            if self.storage.download_file(cached_path, tmp.name):
+                                return send_file(
+                                    tmp.name,
+                                    as_attachment=True,
+                                    download_name=filename,
+                                    mimetype='text/tab-separated-values'
+                                )
+                else:
+                    logger.warning(f"[GWAS DOWNLOAD] Cached file missing from MinIO: {cached_path}")
+                    # Mark as not downloaded and continue to download
+                    self.gwas_library.update_gwas_entry(file_id, {
+                        'downloaded': False,
+                        'minio_path': None
+                    })
             
-            # Generate a user-friendly download name
-            download_name = original_filename.replace('_raw.gwas.imputed_v3.both_sexes', '_GWAS')
+            # File not cached - download on-demand
+            logger.info(f"[GWAS DOWNLOAD] File not cached, downloading on-demand")
             
-            logger.info(f"[GWAS DOWNLOAD] Serving file: {download_name} (Path: {file_path})")
+            # Determine download URL (prefer AWS, then wget, then Dropbox)
+            download_url = None
+            if entry.get('aws_url'):
+                download_url = entry['aws_url']
+                logger.info(f"Using AWS URL: {download_url}")
+            elif entry.get('wget_command'):
+                # Extract URL from wget command
+                import re
+                url_match = re.search(r'(https?://[^\s]+)', entry['wget_command'])
+                if url_match:
+                    download_url = url_match.group(1)
+                    logger.info(f"Extracted URL from wget: {download_url}")
+            elif entry.get('dropbox_url'):
+                download_url = entry['dropbox_url']
+                logger.info(f"Using Dropbox URL: {download_url}")
             
-            # Return file for download
-            return send_file(
-                file_path,
-                as_attachment=True,
-                download_name=download_name,
-                mimetype='text/tab-separated-values'
-            )
+            if not download_url:
+                logger.error(f"[GWAS DOWNLOAD] No download URL available for {file_id}")
+                return {"error": "No download URL available for this file"}, 404
+            
+            # Download file to temp location
+            import tempfile
+            import requests
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp:
+                temp_path = tmp.name
+                
+                logger.info(f"[GWAS DOWNLOAD] Downloading from {download_url}")
+                try:
+                    response = requests.get(download_url, stream=True, timeout=600)
+                    response.raise_for_status()
+                    
+                    # Write to temp file
+                    for chunk in response.iter_content(chunk_size=8192):
+                        tmp.write(chunk)
+                    
+                    file_size = os.path.getsize(temp_path)
+                    logger.info(f"[GWAS DOWNLOAD] Downloaded {file_size / (1024*1024):.2f} MB")
+                    
+                    # Upload to MinIO if available
+                    if self.storage:
+                        if self.storage.upload_file(temp_path, minio_path):
+                            # Update database
+                            self.gwas_library.mark_as_downloaded(file_id, minio_path, file_size)
+                            self.gwas_library.increment_download_count(file_id)
+                            logger.info(f"[GWAS DOWNLOAD] Uploaded to MinIO: s3://{minio_path}")
+                        else:
+                            logger.warning(f"[GWAS DOWNLOAD] Failed to upload to MinIO")
+                    
+                    # Serve the file
+                    return send_file(
+                        temp_path,
+                        as_attachment=True,
+                        download_name=filename,
+                        mimetype='text/tab-separated-values'
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"[GWAS DOWNLOAD] Download failed: {e}")
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                    return {"error": f"Failed to download file: {str(e)}"}, 500
             
         except Exception as e:
             logger.error(f"[GWAS DOWNLOAD] Error downloading file {file_id}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {"error": f"Download failed: {str(e)}"}, 500
+
+
+class UserFilesAPI(Resource):
+    """
+    API endpoint for managing user-uploaded files
+    """
+    def __init__(self, files, storage):
+        self.files = files
+        self.storage = storage
+    
+    @token_required
+    def get(self, current_user_id):
+        """Get all user-uploaded GWAS files"""
+        try:
+            # Get all files for this user
+            all_files = self.files.get_file_metadata(current_user_id)
+            
+            if not all_files:
+                return {"files": []}, 200
+            
+            # Ensure it's a list
+            if not isinstance(all_files, list):
+                all_files = [all_files]
+            
+            # Filter to only user uploads and format for API
+            user_files = []
+            for file_meta in all_files:
+                # Only include user uploads (exclude library files if marked)
+                if file_meta.get('source') not in [None, 'user_upload']:
+                    continue
+                
+                file_entry = {
+                    "id": file_meta.get('_id'),
+                    "display_name": file_meta.get('original_filename', file_meta.get('filename')),
+                    "filename": file_meta.get('filename'),
+                    "file_size": file_meta.get('file_size', 0),
+                    "file_size_mb": round(file_meta.get('file_size', 0) / (1024 * 1024), 2),
+                    "record_count": file_meta.get('record_count'),
+                    "upload_date": file_meta.get('upload_date'),
+                    "source": "user_upload"
+                }
+                
+                user_files.append(file_entry)
+            
+            # Sort by upload date (most recent first)
+            user_files = sorted(user_files, key=lambda x: x.get('upload_date', ''), reverse=True)
+            
+            # Serialize datetime fields
+            user_files = serialize_datetime_fields(user_files)
+            
+            return {
+                "files": user_files,
+                "total_files": len(user_files)
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Error fetching user files: {str(e)}")
+            return {"error": f"Failed to fetch user files: {str(e)}"}, 500
 

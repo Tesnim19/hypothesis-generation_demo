@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 import threading
 import time
+import hashlib
 
 # Global persistent client for Prefect connections
 _prefect_client = None
@@ -158,6 +159,21 @@ def allowed_file(filename):
     """Check if the file extension is allowed"""
     ALLOWED_EXTENSIONS = {'tsv', 'csv', 'txt', 'bgz', 'gz'}
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def compute_file_md5(file_path, chunk_size=8192):
+    """
+    Compute MD5 hash of a file
+    """
+    md5_hash = hashlib.md5()
+    
+    try:
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(chunk_size), b''):
+                md5_hash.update(chunk)
+        return md5_hash.hexdigest()
+    except Exception as e:
+        logger.error(f"Error computing MD5 for {file_path}: {e}")
+        return None
 
 def get_user_file_path(files_handler, file_id, user_id):
     """Get file path from file ID using database metadata"""
