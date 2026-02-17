@@ -5,6 +5,7 @@ Manages the GWAS library collection in MongoDB, storing metadata for GWAS files
 that can be downloaded on-demand and cached in MinIO.
 """
 
+from pymongo import UpdateOne
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from loguru import logger
@@ -289,54 +290,47 @@ class GWASLibraryHandler(BaseHandler):
     
     def bulk_create_gwas_entries(self, entries: List[Dict]) -> Dict:
         """
-        Bulk insert GWAS entries into the collection
-        
-        Args:
-            entries (List[Dict]): List of GWAS entries to insert
-            
-        Returns:
-            dict: Result with inserted_count and skipped_count
+        bulk insertion (Idempotent)
         """
+        if not entries:
+            return {'inserted_count': 0, 'skipped_count': 0}
+
+
+        now = datetime.now(timezone.utc)
+        operations = []
+
+        for entry in entries:
+            file_id = entry.get('file_id') or entry.get('filename')
+            if not file_id:
+                continue
+                
+            # don't  reset these if the entry already exists
+            entry.update({
+                'created_at': now,
+                'updated_at': now,
+                'downloaded': False,
+                'download_count': 0
+            })
+
+            # Use UpdateOne with $setOnInsert
+            operations.append(
+                UpdateOne(
+                    {'file_id': file_id},
+                    {'$setOnInsert': entry},
+                    upsert=True
+                )
+            )
+
         try:
-            from datetime import datetime, timezone
-            
-            inserted_count = 0
-            skipped_count = 0
-            
-            for entry in entries:
-                # Add timestamps
-                entry['created_at'] = datetime.now(timezone.utc)
-                entry['updated_at'] = datetime.now(timezone.utc)
-                
-                # Add default fields if not present
-                entry.setdefault('downloaded', False)
-                entry.setdefault('download_count', 0)
-                entry.setdefault('minio_path', None)
-                entry.setdefault('file_size', None)
-                entry.setdefault('last_accessed', None)
-                
-                try:
-                    # Insert with unique constraint on file_id
-                    self.collection.insert_one(entry)
-                    inserted_count += 1
-                except Exception as e:
-                    # Skip duplicates
-                    if 'duplicate key error' in str(e).lower():
-                        logger.debug(f"Skipping duplicate entry: {entry.get('file_id')}")
-                        skipped_count += 1
-                    else:
-                        logger.warning(f"Error inserting entry {entry.get('file_id')}: {e}")
-                        skipped_count += 1
-            
-            logger.info(f"Bulk insert complete: {inserted_count} inserted, {skipped_count} skipped")
+            # ordered=False allows Mongo to process inserts in parallel
+            result = self.collection.bulk_write(operations, ordered=False)
             
             return {
-                'inserted_count': inserted_count,
-                'skipped_count': skipped_count
+                'inserted_count': result.upserted_count,
+                'skipped_count': result.matched_count
             }
-            
         except Exception as e:
-            logger.error(f"Error during bulk insert: {e}")
+            logger.error(f"Production bulk seed failed: {e}")
             raise
     
     def clear_collection(self) -> int:
