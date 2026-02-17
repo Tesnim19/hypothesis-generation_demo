@@ -28,6 +28,8 @@ class Config:
         self.ontology_cache_dir = "./data/ontology"
         self.host = "0.0.0.0"
         self.port = 5000
+        self.gwas_manifest_path = "./data/Manifest_201807.csv"
+        self.phenotypes_catalog_path = "./data/gwas_catalog_phenotypes.json"
         # Harmonization workflow configuration
         self.harmonizer_ref_dir_37 = "/app/data/harmonizer_ref/b37"
         self.harmonizer_ref_dir_38 = "/app/data/harmonizer_ref/b38"
@@ -73,6 +75,8 @@ class Config:
         config.harmonizer_ref_dir_38 = os.getenv("HARMONIZER_REF_DIR_38", "/app/data/harmonizer_ref/b38")
         config.harmonizer_code_repo = os.getenv("HARMONIZER_CODE_REPO", "./gwas-sumstats-harmoniser")  # Nextflow workflow
         config.harmonizer_script_dir = os.getenv("HARMONIZER_SCRIPT_DIR", "./scripts/1000Genomes_phase3")  # Shell scripts
+        config.gwas_manifest_path = os.getenv("GWAS_MANIFEST_PATH", "./data/Manifest_201807.csv")
+        config.phenotypes_catalog_path = os.getenv("PHENOTYPES_CATALOG_PATH", "./data/gwas_catalog_phenotypes.json")
         return config
 
     def get_plink_dir(self, ref_genome):
