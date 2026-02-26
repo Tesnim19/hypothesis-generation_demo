@@ -13,7 +13,7 @@ from flows import hypothesis_flow, analysis_pipeline_flow
 from run_deployment import invoke_enrichment_deployment
 from status_tracker import status_tracker, TaskState
 from prefect import flow
-from utils import allowed_file, convert_variants_to_object_array, serialize_datetime_fields
+from utils import allowed_file, convert_variants_to_object_array, serialize_datetime_fields, parse_float, parse_int
 from loguru import logger
 from werkzeug.utils import secure_filename
 from tasks import extract_probability, get_related_hypotheses
@@ -401,19 +401,30 @@ class ChatAPI(Resource):
 
     @token_required
     def post(self, current_user_id):
-        query = request.form.get('query')
-        hypothesis_id = request.form.get('hypothesis_id')
+        json_data = request.get_json(silent=True) or {}
+        query = json_data.get('query') or request.form.get('query')
+        hypothesis_id = json_data.get('hypothesis_id') or request.form.get('hypothesis_id')
+
+        if not query:
+            return {"error": "query is required"}, 400
+        if not hypothesis_id:
+            return {"error": "hypothesis_id is required"}, 400
 
         hypothesis = self.hypotheses.get_hypotheses(current_user_id, hypothesis_id)
-        print(f"Hypothesis: {hypothesis}")
         
         if not hypothesis:
             return {"error": "Hypothesis not found or access denied"}, 404
         
         graph = hypothesis.get('graph')
-        response = self.llm.chat(query, graph)
-        response = {"response": response}
-        return response
+        if not graph:
+            return {"error": "Hypothesis has no graph data"}, 400
+
+        try:
+            response = self.llm.chat(query, graph)
+            return {"response": response}
+        except Exception as e:
+            logger.error(f"[ChatAPI] LLM chat failed for hypothesis {hypothesis_id}: {e}")
+            return {"error": "Failed to generate response"}, 500
 
 def init_socket_handlers(hypotheses_handler):
     logger.info("Initializing socket handlers...")
@@ -752,7 +763,7 @@ class AnalysisPipelineAPI(Resource):
             # Get form data and file
             project_name = request.form.get('project_name')
             phenotype = request.form.get('phenotype')
-            ref_genome = request.form.get('ref_genome', 'GRCh38')
+            ref_genome = request.form.get('ref_genome', 'GRCh37')
             population = request.form.get('population', 'EUR')
             max_workers = int(request.form.get('max_workers', 3))
             
@@ -760,14 +771,14 @@ class AnalysisPipelineAPI(Resource):
             is_uploaded = request.form.get('is_uploaded', 'false').lower() == 'true'
             
             # Fine-mapping parameters with defaults
-            maf_threshold = float(request.form.get('maf_threshold', 0.01))
-            seed = int(request.form.get('seed', 42))
-            window = int(request.form.get('window', 2000))
-            L = int(request.form.get('L', -1))
-            coverage = float(request.form.get('coverage', 0.95))
-            min_abs_corr = float(request.form.get('min_abs_corr', 0.5))
-            batch_size = int(request.form.get('batch_size', 5))
-            sample_size = int(request.form.get('sample_size', 10000))
+            maf_threshold = parse_float(request.form.get('maf_threshold'), 0.01, 'maf_threshold')
+            seed = parse_int(request.form.get('seed'), 42, 'seed')
+            window = parse_int(request.form.get('window'), 2000, 'window')
+            L = parse_int(request.form.get('L'), -1, 'L')
+            coverage = parse_float(request.form.get('coverage'), 0.95, 'coverage')
+            min_abs_corr = parse_float(request.form.get('min_abs_corr'), 0.5, 'min_abs_corr')
+            batch_size = parse_int(request.form.get('batch_size'), 5, 'batch_size')
+            sample_size = parse_int(request.form.get('sample_size'), 10000, 'sample_size')
             # Validate required fields
             if not project_name:
                 return {"error": "project_name is required"}, 400
@@ -1207,7 +1218,10 @@ class GWASFilesAPI(Resource):
             
             for file_path in all_files:
                 filename = os.path.basename(file_path)
-                
+
+                if file_path.endswith('.gz') and os.path.exists(f"{file_path}-meta.yaml"):
+                    continue
+
                 # Extract metadata from the file
                 metadata = extract_gwas_file_metadata(file_path)
                 

@@ -28,8 +28,8 @@ class Config:
         self.host = "0.0.0.0"
         self.port = 5000
         # Harmonization workflow configuration
-        self.harmonizer_ref_dir_37 = "/data/harmonizer_ref/b37"
-        self.harmonizer_ref_dir_38 = "/data/harmonizer_ref/b38"
+        self.harmonizer_ref_dir_37 = "./data/harmonizer_ref/b37"
+        self.harmonizer_ref_dir_38 = "./data/harmonizer_ref/b38"
         self.harmonizer_code_repo = "./gwas-sumstats-harmoniser"  # Nextflow workflow
         self.harmonizer_script_dir = "./scripts/1000Genomes_phase3"  # Shell scripts
 
@@ -68,8 +68,8 @@ class Config:
         config.data_dir = os.getenv("DATA_DIR", "./data")
         config.ontology_cache_dir = os.getenv("ONTOLOGY_CACHE_DIR", "./data/ontology")
         # Harmonization workflow configuration
-        config.harmonizer_ref_dir_37 = os.getenv("HARMONIZER_REF_DIR_37", "/data/harmonizer_ref/b37")
-        config.harmonizer_ref_dir_38 = os.getenv("HARMONIZER_REF_DIR_38", "/data/harmonizer_ref/b38")
+        config.harmonizer_ref_dir_37 = os.getenv("HARMONIZER_REF_DIR_37", "./data/harmonizer_ref/b37")
+        config.harmonizer_ref_dir_38 = os.getenv("HARMONIZER_REF_DIR_38", "./data/harmonizer_ref/b38")
         config.harmonizer_code_repo = os.getenv("HARMONIZER_CODE_REPO", "./gwas-sumstats-harmoniser")  # Nextflow workflow
         config.harmonizer_script_dir = os.getenv("HARMONIZER_SCRIPT_DIR", "./scripts/1000Genomes_phase3")  # Shell scripts
         return config
@@ -99,7 +99,8 @@ class Config:
         if ref_genome == "GRCh38":
             return f"{population}.chr{chrom}.1KG.GRCh38"
         elif ref_genome == "GRCh37":
-            return f"{population}.{chrom}.1000Gp3.20130502"
+            return f"{population}.chr{chrom}.1KG.GRCh38"
+            # return f"{population}.{chrom}.1000Gp3.20130502"
         else:
             raise ValueError(f"Unsupported reference genome: {ref_genome}. Must be 'GRCh37' or 'GRCh38'")
 
