@@ -740,8 +740,14 @@ def create_hypothesis(hypotheses, enrich_id, go_id, variant_id, phenotype, causa
         )
         hypothesis_history = status_tracker.get_history(hypothesis_id)
         logger.info("Updating hypothesis in the database...")
+        clean_final_history = []
+        for task in hypothesis_history:
+            task_copy = task.copy()
+            task_copy.pop('details', None)
+            clean_final_history.append(task_copy)
+        limited_final_history = clean_final_history[-50:] if len(clean_final_history) > 50 else clean_final_history
         hypothesis_data = {
-                "task_history": hypothesis_history,
+                "task_history": limited_final_history,
             }
         hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
         

@@ -114,6 +114,63 @@ def run_command(cmd: str) -> subprocess.CompletedProcess:
         raise Exception(f"Command failed with exit code {result.returncode}")
     return result
 
+# === HARMONIZATION HELPERS ===
+
+def _get_gwas_stem(file_path):
+    name = os.path.basename(file_path)
+    for ext in ('.tsv.gz', '.tsv.bgz', '.bgz', '.gz', '.tsv'):
+        if name.endswith(ext):
+            return name[:-len(ext)]
+    return os.path.splitext(name)[0]
+
+
+def _cleanup_nextflow_artifacts(cleanup_dir, gwas_stem, gwas_file_path, keep_logs=False):
+    if not os.path.exists(cleanup_dir):
+        return
+    try:
+        for pattern in [f"{gwas_stem}.tsv*", f"{gwas_stem}*-meta.yaml", f"{gwas_stem}*.tbi"]:
+            for f in glob.glob(os.path.join(cleanup_dir, pattern)):
+                if os.path.exists(f) and os.path.abspath(f) != os.path.abspath(gwas_file_path):
+                    os.remove(f)
+                    logger.info(f"[HARMONIZE] Cleaned up: {f}")
+
+        if not keep_logs:
+            logs_dir = os.path.join(cleanup_dir, "logs")
+            if os.path.exists(logs_dir):
+                shutil.rmtree(logs_dir)
+                logger.info(f"[HARMONIZE] Removed logs: {logs_dir}")
+
+        work_dir = os.path.join(cleanup_dir, "work")
+        if os.path.exists(work_dir):
+            shutil.rmtree(work_dir)
+            logger.info(f"[HARMONIZE] Removed work dir: {work_dir}")
+
+        for item in os.listdir(cleanup_dir):
+            item_path = os.path.join(cleanup_dir, item)
+            if os.path.isdir(item_path) and (
+                len(item.split('_')) >= 2 or
+                item.startswith('2') or
+                item == '.nextflow' or
+                item.startswith('results') or
+                item == gwas_stem
+            ):
+                try:
+                    shutil.rmtree(item_path)
+                    logger.info(f"[HARMONIZE] Removed directory: {item_path}")
+                except Exception as e:
+                    logger.warning(f"[HARMONIZE] Could not remove directory {item_path}: {e}")
+
+        for f in glob.glob(os.path.join(cleanup_dir, ".nextflow.log*")):
+            try:
+                os.remove(f)
+                logger.info(f"[HARMONIZE] Removed: {f}")
+            except Exception as e:
+                logger.warning(f"[HARMONIZE] Could not remove {f}: {e}")
+
+    except Exception as e:
+        logger.warning(f"[HARMONIZE] Error cleaning up {cleanup_dir}: {e}")
+
+
 # === NEXTFLOW HARMONIZATION ===
 @task(cache_policy=None)
 def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRCh38", 
@@ -129,7 +186,16 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
     # Convert gwas_file_path to absolute path
     gwas_file_path = os.path.abspath(gwas_file_path)
     logger.info(f"[HARMONIZE] Resolved absolute path: {gwas_file_path}")
-    
+
+    is_predefined_file = '/data/raw/' in gwas_file_path or '\\data\\raw\\' in gwas_file_path
+    if is_predefined_file and not gwas_file_path.endswith(('.gz', '.bgz')):
+        input_staging_dir = os.path.join(os.path.abspath(output_dir), '_harmonize_input')
+        os.makedirs(input_staging_dir, exist_ok=True)
+        staged_path = os.path.join(input_staging_dir, os.path.basename(gwas_file_path))
+        shutil.copy2(gwas_file_path, staged_path)
+        logger.info(f"[HARMONIZE] Copied predefined file to staging dir to protect original: {staged_path}")
+        gwas_file_path = staged_path
+
     # Get configuration
     config = Config.from_env()
     if ref_dir is None:
@@ -213,71 +279,14 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
             logger.info(f"[HARMONIZE] Moved harmonized file to: {harmonized_output_path}")
         
         try:
-            gwas_basename = os.path.splitext(os.path.basename(gwas_file_path))[0]
-            
-            # 1. Remove SSF intermediate files (including .tbi tabix index files)
-            for pattern in [f"{gwas_basename}.tsv*", f"{gwas_basename}*-meta.yaml", f"{gwas_basename}*.tbi"]:
-                for f in glob.glob(os.path.join(upload_dir, pattern)):
-                    if os.path.exists(f) and f != gwas_file_path:
-                        os.remove(f)
-                        logger.info(f"[HARMONIZE] Cleaned up: {f}")
-                # Also check parent directory
-                for f in glob.glob(os.path.join(parent_upload_dir, pattern)):
-                    if os.path.exists(f) and f != gwas_file_path:
-                        os.remove(f)
-                        logger.info(f"[HARMONIZE] Cleaned up: {f}")
-            
-            # Delete logs on success 
-            for logs_base_dir in [upload_dir, parent_upload_dir]:
-                upload_log_dir = os.path.join(logs_base_dir, "logs")
-                if os.path.exists(upload_log_dir):
-                    shutil.rmtree(upload_log_dir)
-                    logger.info(f"[HARMONIZE] Deleted logs (harmonization successful): {upload_log_dir}")
-            
-            # 3. Remove Nextflow work directories 
-            nextflow_work_dir = os.path.join(upload_dir, "work")
-            if os.path.exists(nextflow_work_dir):
-                shutil.rmtree(nextflow_work_dir)
-                logger.info(f"[HARMONIZE] Removed Nextflow work directory: {nextflow_work_dir}")
-            # Also check parent directory for work dir
-            parent_work_dir = os.path.join(parent_upload_dir, "work")
-            if os.path.exists(parent_work_dir):
-                shutil.rmtree(parent_work_dir)
-                logger.info(f"[HARMONIZE] Removed Nextflow work directory: {parent_work_dir}")
-            
-            # 4. Remove Nextflow timestamp directories 
-            for cleanup_dir in [upload_dir, parent_upload_dir]:
-                if not os.path.exists(cleanup_dir):
-                    continue
-                    
-                for item in os.listdir(cleanup_dir):
-                    item_path = os.path.join(cleanup_dir, item)
-                    if os.path.isdir(item_path) and (
-                        len(item.split('_')) >= 2 or  
-                        item.startswith('2') or  
-                        item == '.nextflow' or  
-                        item.startswith('results') or
-                        item == os.path.splitext(os.path.basename(gwas_file_path))[0]  # Remove {basename} directory
-                    ):
-                        try:
-                            shutil.rmtree(item_path)
-                            logger.info(f"[HARMONIZE] Removed directory: {item_path}")
-                        except Exception as e:
-                            logger.warning(f"[HARMONIZE] Could not remove directory {item_path}: {e}")
-            
-            # 5. Remove .nextflow.log files from both upload_dir and parent_upload_dir
-            for log_dir in [upload_dir, parent_upload_dir]:
-                for f in glob.glob(os.path.join(log_dir, ".nextflow.log*")):
-                    try:
-                        os.remove(f)
-                        logger.info(f"[HARMONIZE] Removed: {f}")
-                    except Exception as e:
-                        logger.warning(f"[HARMONIZE] Could not remove {f}: {e}")
-            
-            # 6.  remove original uploaded file
+            gwas_stem = _get_gwas_stem(gwas_file_path)
+
+            for d in [upload_dir, parent_upload_dir]:
+                _cleanup_nextflow_artifacts(d, gwas_stem, gwas_file_path, keep_logs=False)
+
+            # Remove original uploaded file
             if cleanup_upload and os.path.exists(gwas_file_path):
                 is_predefined = '/data/raw/' in gwas_file_path or '\\data\\raw\\' in gwas_file_path
-                
                 if is_predefined:
                     logger.info(f"[HARMONIZE] Keeping predefined file: {gwas_file_path}")
                 else:
@@ -285,9 +294,9 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                     logger.info(f"[HARMONIZE] Removed original uploaded file: {gwas_file_path}")
             elif not cleanup_upload:
                 logger.info(f"[HARMONIZE] Keeping original uploaded file: {gwas_file_path}")
-            
+
             logger.info(f"[HARMONIZE] Cleanup complete for upload directory: {upload_dir}")
-            
+
         except Exception as cleanup_error:
             logger.warning(f"[HARMONIZE] Error during cleanup: {cleanup_error}")
         
@@ -374,10 +383,10 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
         
     except subprocess.TimeoutExpired:
         logger.error(f"[HARMONIZE] Harmonization timeout after {timeout_seconds} seconds")
-        # Preserve logs on failure
+        parent_dir = os.path.dirname(gwas_file_path)
+        # Preserve logs before cleaning up
         try:
-            upload_dir = os.path.dirname(gwas_file_path)
-            upload_log_dir = os.path.join(upload_dir, "logs")
+            upload_log_dir = os.path.join(parent_dir, "logs")
             if os.path.exists(upload_log_dir):
                 output_log_dir = os.path.join(output_dir, "logs")
                 if not os.path.exists(output_log_dir):
@@ -385,13 +394,15 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                     logger.info(f"[HARMONIZE] Preserved logs on failure: {output_log_dir}")
         except Exception as log_e:
             logger.warning(f"[HARMONIZE] Could not preserve logs: {log_e}")
+        # Clean up Nextflow artifacts left in input directory
+        _cleanup_nextflow_artifacts(parent_dir, _get_gwas_stem(gwas_file_path), gwas_file_path, keep_logs=True)
         raise RuntimeError(f"Harmonization timeout after {timeout_seconds} seconds")
     except Exception as e:
         logger.error(f"[HARMONIZE] Error in harmonization: {str(e)}")
-        # Preserve logs on failure
+        parent_dir = os.path.dirname(gwas_file_path)
+        # Preserve logs before cleaning up
         try:
-            upload_dir = os.path.dirname(gwas_file_path)
-            upload_log_dir = os.path.join(upload_dir, "logs")
+            upload_log_dir = os.path.join(parent_dir, "logs")
             if os.path.exists(upload_log_dir):
                 output_log_dir = os.path.join(output_dir, "logs")
                 if not os.path.exists(output_log_dir):
@@ -399,6 +410,8 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                     logger.info(f"[HARMONIZE] Preserved logs on failure: {output_log_dir}")
         except Exception as log_e:
             logger.warning(f"[HARMONIZE] Could not preserve logs: {log_e}")
+        # Clean up Nextflow artifacts left in input directory
+        _cleanup_nextflow_artifacts(parent_dir, _get_gwas_stem(gwas_file_path), gwas_file_path, keep_logs=True)
         raise
 
 

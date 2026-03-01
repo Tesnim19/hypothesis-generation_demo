@@ -12,6 +12,26 @@ import threading
 import time
 import hashlib
 
+
+def parse_float(value, default, name='parameter'):
+    if value is None or value == '':
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.error(f"Invalid float value for {name}: '{value}'")
+        raise ValueError(f"Invalid value for {name}: must be a number")
+
+
+def parse_int(value, default, name='parameter'):
+    if value is None or value == '':
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.error(f"Invalid integer value for {name}: '{value}'")
+        raise ValueError(f"Invalid value for {name}: must be an integer")
+
 # Global persistent client for Prefect connections
 _prefect_client = None
 _client_lock = threading.Lock()

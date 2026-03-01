@@ -1,5 +1,8 @@
 import json
+import logging
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 import scipy.spatial
 
@@ -266,11 +269,13 @@ class LLM:
                         ChatMessage(role="user", content=query),
                     ]
         response = self.llm.chat(messages).message.content
-        print(f"LLM Response: {response}")
+        logger.info(f"[LLM] chat raw response: {response[:200]}...")
         try:
-            response = json.loads(response)
-            return response["response"]
-        except:
+            parsed = json.loads(response)
+            return parsed["response"]
+        except Exception as e:
+            logger.warning(f"[LLM] chat JSON parse failed ({e}), retrying once")
             response = self.llm.chat(messages).message.content
-            response = json.loads(response)
-            return response["response"]
+            logger.info(f"[LLM] chat retry raw response: {response[:200]}...")
+            parsed = json.loads(response)
+            return parsed["response"]
