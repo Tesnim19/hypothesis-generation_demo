@@ -1,0 +1,1360 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import tempfile
+import traceback
+import uuid
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+import requests as _http
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, JSONResponse
+from loguru import logger
+from werkzeug.utils import secure_filename
+
+from app.api.dependencies import get_current_user_id, get_deps, verify_service_token
+from app.core.socket import sio
+from app.core.status_tracker import TaskState, status_tracker
+from app.core.utils import (
+    allowed_file,
+    compute_file_md5,
+    convert_variants_to_object_array,
+    get_shared_temp_dir,
+    serialize_datetime_fields,
+)
+from app.workers.tasks.project import count_gwas_records, get_project_with_full_data
+from app.workers.tasks.enrichment import extract_probability, get_related_hypotheses
+from app.workers.workflows.run_deployment import (
+    invoke_analysis_pipeline_deployment,
+    invoke_enrichment_deployment,
+)
+from app.workers.workflows.flows import hypothesis_flow
+
+router = APIRouter()
+
+
+def _download_to_path_sync(url: str, path: str) -> int:
+    """Run in thread pool: stream download from url to path. Returns file size."""
+    with _http.get(url, stream=True, timeout=600) as r:
+        r.raise_for_status()
+        with open(path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    return os.path.getsize(path)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Internal bridge: Prefect workers → Socket.IO rooms (HTTP POST path)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/internal/task-update", status_code=200)
+async def internal_task_update(
+    payload: dict = Body(...),
+    _: None = Depends(verify_service_token),
+) -> dict:
+    """Receive a Prefect task-update POST and broadcast to Socket.IO room."""
+    target_room = payload.pop("target_room", None)
+    if not target_room:
+        raise HTTPException(status_code=400, detail="target_room is required")
+
+    await sio.emit("task_update", payload, room=target_room)
+    logger.info(f"[HTTP bridge] Broadcast task_update to room '{target_room}'")
+    return {"status": "broadcasted", "room": target_room}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /enrich
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/enrich")
+async def get_enrich(
+    id: str | None = Query(None),
+    project_id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    enrichment = get_deps()["enrichment"]
+
+    if id:
+        enrich = enrichment.get_enrich(current_user_id, id)
+        if not enrich:
+            raise HTTPException(status_code=404, detail="Enrich not found or access denied.")
+        return serialize_datetime_fields(enrich)
+
+    if project_id:
+        enrichments = enrichment.get_enrich(user_id=current_user_id)
+        if isinstance(enrichments, list):
+            project_enrichments = [
+                e for e in enrichments if e.get("project_id") == project_id
+            ]
+            return {"enrichments": serialize_datetime_fields(project_enrichments)}
+        else:
+            if enrichments and enrichments.get("project_id") == project_id:
+                return {"enrichments": [serialize_datetime_fields(enrichments)]}
+            return {"enrichments": []}
+
+    enrich = enrichment.get_enrich(user_id=current_user_id)
+    return serialize_datetime_fields(enrich)
+
+
+@router.post("/enrich", status_code=202)
+async def post_enrich(
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    body: dict = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    variant = request.query_params.get("variant") or body.get("variant")
+    project_id = request.query_params.get("project_id") or body.get("project_id")
+    seed = int(body.get("seed", 42))
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    if not variant:
+        raise HTTPException(status_code=400, detail="variant is required")
+
+    projects = get_deps()["projects"]
+    enrichment = get_deps()["enrichment"]
+    hypotheses = get_deps()["hypotheses"]
+    gene_expression = get_deps().get("gene_expression")
+
+    project = projects.get_projects(current_user_id, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
+
+    phenotype = project["phenotype"]
+
+    tissue_name = request.query_params.get("tissue_name") or body.get("tissue_name")
+    if not tissue_name:
+        raise HTTPException(status_code=400, detail="tissue_name is required")
+
+    try:
+        available_tissues = gene_expression.get_ldsc_results_for_project(
+            current_user_id, project_id, limit=20, format="selection"
+        )
+        tissue_names = [t.get("tissue_name") for t in (available_tissues or [])]
+        if tissue_name not in tissue_names:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid tissue selection. Available tissues: {tissue_names}",
+            )
+        gene_expression.save_tissue_selection(
+            current_user_id, project_id, variant, tissue_name
+        )
+        logger.info(f"Saved tissue selection in /enrich: {tissue_name} for variant {variant}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning(f"Failed to save/validate tissue selection: {exc}")
+
+    existing_hypothesis = hypotheses.get_hypothesis_by_phenotype_and_variant_in_project(
+        current_user_id, project_id, phenotype, variant
+    )
+
+    if existing_hypothesis:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: invoke_enrichment_deployment(
+                current_user_id=current_user_id,
+                phenotype=phenotype,
+                variant=variant,
+                hypothesis_id=existing_hypothesis["id"],
+                project_id=project_id,
+                seed=seed,
+            ),
+        )
+        return {"hypothesis_id": existing_hypothesis["id"], "project_id": project_id}
+
+    hypothesis_id = str(uuid4())
+    hypothesis_data = {
+        "id": hypothesis_id,
+        "project_id": project_id,
+        "phenotype": phenotype,
+        "variant": variant,
+        "variant_rsid": variant,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="milliseconds") + "Z",
+        "task_history": [],
+    }
+
+    hypotheses.create_hypothesis(current_user_id, hypothesis_data)
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: invoke_enrichment_deployment(
+            current_user_id=current_user_id,
+            phenotype=phenotype,
+            variant=variant,
+            hypothesis_id=hypothesis_id,
+            project_id=project_id,
+            seed=seed,
+        ),
+    )
+    return {"hypothesis_id": hypothesis_id, "project_id": project_id}
+
+
+@router.delete("/enrich")
+async def delete_enrich(
+    id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    enrichment = get_deps()["enrichment"]
+    if id:
+        result = enrichment.delete_enrich(current_user_id, id)
+        return result
+    raise HTTPException(status_code=400, detail="enrich id is required!")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /hypothesis
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/hypothesis")
+async def get_hypothesis(
+    id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    hypotheses = get_deps()["hypotheses"]
+    enrichment = get_deps()["enrichment"]
+    gene_expression = get_deps().get("gene_expression")
+
+    if id:
+        hypothesis = hypotheses.get_hypotheses(current_user_id, id)
+        if not hypothesis:
+            raise HTTPException(
+                status_code=404, detail="Hypothesis not found or access denied."
+            )
+
+        required_fields = ["enrich_id", "go_id", "summary", "graph"]
+        is_complete = all(field in hypothesis for field in required_fields)
+
+        task_history = status_tracker.get_history(id)
+        for task in task_history:
+            task.pop("details", None)
+
+        pending_tasks = [t for t in task_history if t.get("state") == TaskState.STARTED.value]
+        last_pending_task = [pending_tasks[-1]] if pending_tasks else []
+
+        confidence = extract_probability(hypothesis, enrichment, current_user_id)
+        related_hypotheses = get_related_hypotheses(
+            hypothesis, hypotheses, enrichment, current_user_id
+        )
+
+        if is_complete:
+            enrich_id = hypothesis.get("enrich_id")
+            enrich_data = enrichment.get_enrich(current_user_id, enrich_id)
+            if isinstance(enrich_data, dict):
+                enrich_data.pop("causal_graph", None)
+
+            response_data: dict = {
+                "id": id,
+                "variant": hypothesis.get("variant") or hypothesis.get("variant_id"),
+                "enrich_id": enrich_id,
+                "phenotype": hypothesis["phenotype"],
+                "status": "completed",
+                "created_at": hypothesis.get("created_at"),
+                "probability": confidence,
+                "hypotheses": related_hypotheses,
+                "result": enrich_data,
+                "summary": hypothesis.get("summary"),
+                "graph": hypothesis.get("graph"),
+            }
+
+            if "tissue_rankings" in hypothesis:
+                response_data["tissue_rankings"] = hypothesis["tissue_rankings"]
+                response_data["enrichment_type"] = hypothesis.get(
+                    "enrichment_type", "tissue_enhanced"
+                )
+            else:
+                response_data["enrichment_type"] = "standard"
+
+            selected_tissue = None
+            if gene_expression:
+                try:
+                    variant_id = (
+                        hypothesis.get("variant_rsid")
+                        or hypothesis.get("variant")
+                        or hypothesis.get("variant_id")
+                    )
+                    project_id = hypothesis.get("project_id")
+                    if variant_id and project_id:
+                        tissue_selection = gene_expression.get_tissue_selection(
+                            current_user_id, project_id, variant_id
+                        )
+                        if tissue_selection:
+                            selected_tissue = tissue_selection.get("tissue_name")
+                except Exception as ts_e:
+                    logger.warning(f"Could not get tissue selection: {ts_e}")
+
+            response_data["tissue_selected"] = selected_tissue
+            return serialize_datetime_fields(response_data)
+
+        latest_state = status_tracker.get_latest_state(id)
+
+        status_data: dict = {
+            "id": id,
+            "variant": hypothesis.get("variant") or hypothesis.get("variant_id"),
+            "phenotype": hypothesis["phenotype"],
+            "status": "pending",
+            "created_at": hypothesis.get("created_at"),
+            "task_history": last_pending_task,
+            "probability": confidence,
+            "hypotheses": related_hypotheses,
+        }
+
+        if "tissue_rankings" in hypothesis:
+            status_data["tissue_rankings"] = hypothesis["tissue_rankings"]
+            status_data["causal_gene"] = hypothesis.get("causal_gene")
+            status_data["enrichment_stage"] = hypothesis.get("enrichment_stage")
+            if hypothesis.get("enrichment_stage") == "tissue_analysis_complete":
+                status_data["tissue_results_ready"] = True
+
+        if "enrich_id" in hypothesis and hypothesis.get("enrich_id") is not None:
+            enrich_id = hypothesis.get("enrich_id")
+            status_data["enrich_id"] = enrich_id
+            enrich_data = enrichment.get_enrich(current_user_id, enrich_id)
+            if isinstance(enrich_data, dict):
+                enrich_data.pop("causal_graph", None)
+            status_data["result"] = enrich_data
+
+        if latest_state and latest_state.get("state") == "failed":
+            status_data["status"] = "failed"
+            status_data["error"] = latest_state.get("error")
+
+        selected_tissue = None
+        if gene_expression:
+            try:
+                variant_id = (
+                    hypothesis.get("variant_rsid")
+                    or hypothesis.get("variant")
+                    or hypothesis.get("variant_id")
+                )
+                project_id = hypothesis.get("project_id")
+                if variant_id and project_id:
+                    tissue_selection = gene_expression.get_tissue_selection(
+                        current_user_id, project_id, variant_id
+                    )
+                    if tissue_selection:
+                        selected_tissue = tissue_selection.get("tissue_name")
+            except Exception as ts_e:
+                logger.warning(f"Could not get tissue selection: {ts_e}")
+
+        status_data["tissue_selected"] = selected_tissue
+        return serialize_datetime_fields(status_data)
+
+    # List all hypotheses for the user
+    all_hypotheses = hypotheses.get_hypotheses(user_id=current_user_id)
+    formatted: list[dict] = []
+    for hypothesis in all_hypotheses:
+        pending_tasks = [
+            t
+            for t in status_tracker.get_history(hypothesis["id"])
+            if t.get("state") == TaskState.STARTED.value
+        ]
+        last_pending_task = [pending_tasks[-1]] if pending_tasks else []
+
+        entry: dict = {
+            "id": hypothesis["id"],
+            "phenotype": hypothesis.get("phenotype"),
+            "variant": hypothesis.get("variant") or hypothesis.get("variant_id"),
+            "created_at": hypothesis.get("created_at"),
+            "status": hypothesis.get("status"),
+            "task_history": last_pending_task,
+        }
+        for field in ("enrich_id", "biological_context", "causal_gene"):
+            if field in hypothesis and hypothesis.get(field) is not None:
+                entry[field] = hypothesis[field]
+
+        formatted.append(entry)
+
+    return serialize_datetime_fields(formatted)
+
+
+@router.post("/hypothesis", status_code=200)
+async def post_hypothesis(
+    id: str | None = Query(None, alias="id"),
+    go: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    """Generate hypothesis synchronously and return graph + summary immediately."""
+    hypotheses = get_deps()["hypotheses"]
+    enrich_id = id
+    go_id = go
+
+    if not go_id:
+        raise HTTPException(status_code=400, detail="go (GO term ID) is required")
+
+    hypothesis = hypotheses.get_hypothesis_by_enrich(current_user_id, enrich_id)
+    if not hypothesis:
+        raise HTTPException(
+            status_code=404, detail="No hypothesis found for this enrichment"
+        )
+
+    hypothesis_id = hypothesis["id"]
+
+    def run_hypothesis_flow():
+        return hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id)
+
+    loop = asyncio.get_running_loop()
+    result, status_code = await loop.run_in_executor(None, run_hypothesis_flow)
+
+    if status_code == 404:
+        raise HTTPException(status_code=404, detail=result.get("message", "Not found"))
+    return {"id": hypothesis_id, "summary": result.get("summary"), "graph": result.get("graph")}
+
+
+@router.delete("/hypothesis")
+async def delete_hypothesis(
+    hypothesis_id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    hypotheses = get_deps()["hypotheses"]
+    if hypothesis_id:
+        return hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
+    raise HTTPException(status_code=400, detail="Hypothesis ID is required")
+
+
+@router.post("/hypothesis/delete")
+async def bulk_delete_hypotheses(
+    data: dict = Body(...),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    hypotheses = get_deps()["hypotheses"]
+    hypothesis_ids = data.get("hypothesis_ids")
+
+    if not hypothesis_ids:
+        raise HTTPException(
+            status_code=400, detail="hypothesis_ids is required in request body"
+        )
+    if not isinstance(hypothesis_ids, list):
+        raise HTTPException(status_code=400, detail="hypothesis_ids must be a list")
+    if not hypothesis_ids:
+        raise HTTPException(
+            status_code=400, detail="hypothesis_ids list cannot be empty"
+        )
+
+    result, status_code = hypotheses.bulk_delete_hypotheses(current_user_id, hypothesis_ids)
+    return JSONResponse(content=result, status_code=status_code)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /chat
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/chat")
+async def chat(
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+):
+    form = await request.form()
+    query = form.get("query")
+    hypothesis_id = form.get("hypothesis_id")
+
+    hypotheses = get_deps()["hypotheses"]
+    llm = get_deps()["llm"]
+
+    hypothesis = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
+    if not hypothesis:
+        raise HTTPException(
+            status_code=404, detail="Hypothesis not found or access denied"
+        )
+
+    graph = hypothesis.get("graph")
+    response = llm.chat(query, graph)
+    return {"response": response}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /projects
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/projects")
+async def get_projects(
+    id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    projects = get_deps()["projects"]
+    analysis = get_deps()["analysis"]
+    hypotheses = get_deps()["hypotheses"]
+    enrichment = get_deps()["enrichment"]
+    gene_expression = get_deps().get("gene_expression")
+
+    if id:
+        response_data, status_code = get_project_with_full_data(
+            projects,
+            analysis,
+            hypotheses,
+            enrichment,
+            current_user_id,
+            id,
+            gene_expression_handler=gene_expression,
+        )
+        if status_code == 200:
+            response_data = serialize_datetime_fields(response_data)
+        return JSONResponse(content=response_data, status_code=status_code)
+
+    raw_projects = projects.get_projects(current_user_id)
+    files = get_deps()["files"]
+    enhanced_projects: list[dict] = []
+
+    for project in raw_projects:
+        enhanced: dict = {
+            "id": project["id"],
+            "name": project["name"],
+            "phenotype": project.get("phenotype", ""),
+            "created_at": project.get("created_at"),
+        }
+
+        file_metadata = files.get_file_metadata(current_user_id, project["gwas_file_id"])
+        enhanced["gwas_file"] = file_metadata["download_url"]
+        enhanced["gwas_records_count"] = file_metadata["record_count"]
+
+        try:
+            analysis_state = projects.load_analysis_state(current_user_id, project["id"])
+            enhanced["status"] = (
+                analysis_state.get("status", "Not_started")
+                if analysis_state
+                else "Not_started"
+            )
+        except Exception as state_e:
+            logger.warning(f"Could not load analysis state for project {project['id']}: {state_e}")
+            enhanced["status"] = "Completed"
+
+        enhanced["population"] = project.get("population")
+        enhanced["ref_genome"] = project.get("ref_genome")
+
+        total_credible_sets = 0
+        total_variants = 0
+        try:
+            credible_sets_raw = analysis.get_credible_sets_for_project(
+                current_user_id, project["id"]
+            )
+            if credible_sets_raw and isinstance(credible_sets_raw, list):
+                total_credible_sets = len(credible_sets_raw)
+                total_variants = sum(
+                    cs.get("variants_count", 0) for cs in credible_sets_raw
+                )
+        except Exception as cs_e:
+            logger.warning(f"Could not load credible sets for {project['id']}: {cs_e}")
+
+        enhanced["total_credible_sets_count"] = total_credible_sets
+        enhanced["total_variants_count"] = total_variants
+
+        hypothesis_count = 0
+        try:
+            all_hyp = hypotheses.get_hypotheses(current_user_id)
+            if isinstance(all_hyp, list):
+                hypothesis_count = sum(
+                    1 for h in all_hyp if h.get("project_id") == project["id"]
+                )
+            elif all_hyp and all_hyp.get("project_id") == project["id"]:
+                hypothesis_count = 1
+        except Exception as hyp_e:
+            logger.warning(f"Could not count hypotheses for {project['id']}: {hyp_e}")
+
+        enhanced["hypothesis_count"] = hypothesis_count
+        enhanced_projects.append(enhanced)
+
+    return {"projects": serialize_datetime_fields(enhanced_projects)}
+
+
+@router.delete("/projects")
+async def delete_project(
+    id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    if not id:
+        raise HTTPException(status_code=400, detail="Project ID is required")
+    projects = get_deps()["projects"]
+    success = projects.delete_project(current_user_id, id)
+    if success:
+        return {"message": "Project deleted successfully"}
+    raise HTTPException(status_code=404, detail="Project not found or access denied")
+
+
+@router.post("/projects/delete")
+async def bulk_delete_projects(
+    data: dict = Body(...),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    projects = get_deps()["projects"]
+    project_ids = data.get("project_ids")
+
+    if not project_ids:
+        raise HTTPException(
+            status_code=400, detail="project_ids is required in request body"
+        )
+    if not isinstance(project_ids, list):
+        raise HTTPException(status_code=400, detail="project_ids must be a list")
+    if not project_ids:
+        raise HTTPException(
+            status_code=400, detail="project_ids list cannot be empty"
+        )
+
+    result = projects.bulk_delete_projects(current_user_id, project_ids)
+
+    if result and isinstance(result, dict):
+        if result["success"]:
+            return {
+                "message": f"Successfully deleted {result['deleted_count']} project(s)",
+                "deleted_count": result["deleted_count"],
+                "total_requested": result["total_requested"],
+            }
+        return JSONResponse(
+            content={
+                "message": (
+                    f"Partially deleted {result['deleted_count']}/{result['total_requested']}"
+                    " project(s)"
+                ),
+                "deleted_count": result["deleted_count"],
+                "total_requested": result["total_requested"],
+                "errors": result.get("errors"),
+            },
+            status_code=207,
+        )
+    raise HTTPException(status_code=500, detail="Failed to delete projects")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /analysis-pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.post("/analysis-pipeline", status_code=202)
+async def post_analysis_pipeline(
+    request: Request,
+    current_user_id: str = Depends(get_current_user_id),
+    gwas_file: UploadFile | None = File(None),
+):
+    try:
+        form = await request.form()
+
+        project_name: str | None = form.get("project_name")
+        phenotype: str | None = form.get("phenotype")
+        ref_genome: str = form.get("ref_genome", "GRCh38")
+        population: str = form.get("population", "EUR")
+        max_workers: int = int(form.get("max_workers", 3))
+        is_uploaded: bool = form.get("is_uploaded", "false").lower() == "true"
+
+        maf_threshold: float = float(form.get("maf_threshold", 0.01))
+        seed: int = int(form.get("seed", 42))
+        window: int = int(form.get("window", 2000))
+        L: int = int(form.get("L", -1))
+        coverage: float = float(form.get("coverage", 0.95))
+        min_abs_corr: float = float(form.get("min_abs_corr", 0.5))
+        batch_size: int = int(form.get("batch_size", 5))
+        sample_size: int = int(form.get("sample_size", 10000))
+
+        projects = get_deps()["projects"]
+        files = get_deps()["files"]
+        analysis = get_deps()["analysis"]
+        gene_expression = get_deps().get("gene_expression")
+        config = get_deps()["config"]
+        storage = get_deps().get("storage")
+        gwas_library = get_deps().get("gwas_library")
+
+        if not project_name:
+            raise HTTPException(status_code=400, detail="project_name is required")
+        if not phenotype:
+            raise HTTPException(status_code=400, detail="phenotype is required")
+
+        if is_uploaded and gwas_file and not allowed_file(gwas_file.filename):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid file format. Supported: .tsv, .txt, .csv, .gz, .bgz",
+            )
+        if ref_genome not in ("GRCh37", "GRCh38"):
+            raise HTTPException(
+                status_code=400, detail="Reference genome must be GRCh37 or GRCh38"
+            )
+        if population not in ("EUR", "AFR", "AMR", "EAS", "SAS"):
+            raise HTTPException(
+                status_code=400,
+                detail="Population must be one of: EUR, AFR, AMR, EAS, SAS",
+            )
+        if not (1 <= max_workers <= 16):
+            raise HTTPException(
+                status_code=400, detail="Max workers must be between 1-16"
+            )
+        if not (0.001 <= maf_threshold <= 0.5):
+            raise HTTPException(
+                status_code=400, detail="MAF threshold must be between 0.001-0.5"
+            )
+        if not (1 <= seed <= 999999):
+            raise HTTPException(
+                status_code=400, detail="Seed must be between 1-999999"
+            )
+        if window > 10000:
+            raise HTTPException(
+                status_code=400,
+                detail="Fine-mapping window shouldn't be greater than 10000 kb",
+            )
+        if L != -1 and not (1 <= L <= 50):
+            raise HTTPException(
+                status_code=400, detail="L must be -1 (auto) or between 1-50"
+            )
+        if not (0.5 <= coverage <= 0.999):
+            raise HTTPException(
+                status_code=400, detail="Coverage must be between 0.5-0.999"
+            )
+        if not (0.5 <= min_abs_corr <= 1.0):
+            raise HTTPException(
+                status_code=400,
+                detail="Min absolute correlation must be between 0.5-1.0",
+            )
+        if not (1 <= batch_size <= 20):
+            raise HTTPException(
+                status_code=400, detail="Batch size must be between 1-20"
+            )
+
+        start_time = datetime.now()
+        file_metadata_id = None
+        file_path: str | None = None
+        filename: str | None = None
+        file_size: int = 0
+        gwas_records_count: int = 0
+        original_filename: str | None = None
+
+        if not is_uploaded:
+            file_id_param: str | None = form.get("gwas_file")
+            if not file_id_param:
+                raise HTTPException(
+                    status_code=400,
+                    detail="gwas_file parameter is required when is_uploaded=false",
+                )
+
+            logger.info(f"[API] Auto-detecting source for file ID: {file_id_param}")
+
+            file_meta = None
+            try:
+                file_meta = files.get_file_metadata(current_user_id, file_id_param)
+            except Exception as exc:
+                logger.info(f"[API] Not a valid user file ID, checking library: {exc}")
+
+            if file_meta:
+                storage_key = file_meta.get("storage_key")
+                filename = file_meta.get("filename")
+                file_size = file_meta.get("file_size", 0)
+                gwas_records_count = file_meta.get("record_count", 0)
+
+                if not storage_key:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="File does not have storage information.",
+                    )
+                if not storage:
+                    raise HTTPException(
+                        status_code=500, detail="Storage service not available"
+                    )
+
+                temp_dir = get_shared_temp_dir(
+                    user_id=current_user_id, prefix="user_file"
+                )
+                temp_file_path = os.path.join(temp_dir, filename)
+                if not storage.download_file(storage_key, temp_file_path):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to retrieve file from storage",
+                    )
+
+                file_path = temp_file_path
+                file_metadata_id = file_id_param
+                original_filename = filename
+            else:
+                gwas_entry = gwas_library.get_gwas_entry(file_id=file_id_param) if gwas_library else None
+                if not gwas_entry:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"File not found in user library or system library: {file_id_param}",
+                    )
+
+                filename = gwas_entry.get("filename", file_id_param)
+                original_filename = filename
+                minio_path_lib = f"gwas_cache/{filename}"
+
+                if storage and gwas_entry.get("downloaded") and gwas_entry.get("minio_path"):
+                    minio_path = gwas_entry["minio_path"]
+                    if storage.exists(minio_path):
+                        temp_dir = get_shared_temp_dir(
+                            user_id=current_user_id, prefix="gwas_cache"
+                        )
+                        candidate = os.path.join(temp_dir, filename)
+                        if storage.download_file(minio_path, candidate):
+                            file_path = candidate
+                            file_size = os.path.getsize(file_path)
+                    else:
+                        gwas_library.update_gwas_entry(
+                            file_id_param, {"downloaded": False, "minio_path": None}
+                        )
+
+                if not file_path:
+                    download_url = (
+                        gwas_entry.get("aws_url")
+                        or (
+                            re.search(r"(https?://[^\s]+)", gwas_entry["wget_command"]).group(1)
+                            if gwas_entry.get("wget_command")
+                            else None
+                        )
+                        or gwas_entry.get("dropbox_url")
+                    )
+
+                    if not download_url:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"No download URL available for {file_id_param}",
+                        )
+
+                    temp_dir = get_shared_temp_dir(
+                        user_id=current_user_id, prefix="gwas_download"
+                    )
+                    dl_path = os.path.join(temp_dir, filename)
+                    loop = asyncio.get_running_loop()
+                    file_size = await loop.run_in_executor(
+                        None, _download_to_path_sync, download_url, dl_path
+                    )
+                    file_path = dl_path
+
+                    if storage:
+                        if storage.upload_file(file_path, minio_path_lib):
+                            gwas_library.mark_as_downloaded(
+                                file_id_param, minio_path_lib, file_size
+                            )
+
+                if not file_path:
+                    raw_data_path = os.path.join(config.data_dir, "raw")
+                    for ext in (".tsv", ".tsv.gz", ".tsv.bgz", ".txt", ".txt.gz", ".csv", ".csv.gz"):
+                        candidate = os.path.join(raw_data_path, f"{file_id_param}{ext}")
+                        if os.path.exists(candidate):
+                            file_path = candidate
+                            filename = f"{file_id_param}{ext}"
+                            file_size = os.path.getsize(file_path)
+                            break
+
+                if not file_path:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"GWAS file not found: {file_id_param}",
+                    )
+
+                gwas_records_count = count_gwas_records(file_path)
+
+        else:
+            # Uploaded file
+            if not gwas_file or gwas_file.filename == "":
+                raise HTTPException(status_code=400, detail="No GWAS file uploaded")
+            if not allowed_file(gwas_file.filename):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid file format. Supported: .tsv, .txt, .csv, .gz, .bgz",
+                )
+
+            original_filename = gwas_file.filename
+            filename = secure_filename(gwas_file.filename)
+            file_id_new = str(uuid.uuid4())
+            temp_dir = get_shared_temp_dir(user_id=current_user_id, prefix="upload")
+            temp_file_path = os.path.join(temp_dir, filename)
+
+            with open(temp_file_path, "wb") as fh:
+                while chunk := await gwas_file.read(1024 * 1024):
+                    fh.write(chunk)
+
+            file_size = os.path.getsize(temp_file_path)
+            md5_hash = compute_file_md5(temp_file_path)
+
+            existing_file = None
+            if md5_hash and storage:
+                existing_file = files.find_file_by_md5(current_user_id, md5_hash)
+
+            if existing_file:
+                storage_key = existing_file.get("storage_key")
+                if storage_key and storage.exists(storage_key):
+                    storage.download_file(storage_key, temp_file_path)
+                    file_path = temp_file_path
+                    file_metadata_id = existing_file.get("_id")
+                    gwas_records_count = existing_file.get(
+                        "record_count", count_gwas_records(file_path)
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to retrieve existing file from storage",
+                    )
+            else:
+                gwas_records_count = count_gwas_records(temp_file_path)
+
+                if storage:
+                    object_key = f"uploads/{current_user_id}/{file_id_new}/{filename}"
+                    if not storage.upload_file(temp_file_path, object_key):
+                        raise HTTPException(
+                            status_code=500, detail="File upload failed"
+                        )
+                    file_path = temp_file_path
+                    md5_hash_param: str | None = md5_hash
+                else:
+                    user_upload_dir = os.path.join(
+                        "data", "uploads", str(current_user_id)
+                    )
+                    os.makedirs(user_upload_dir, exist_ok=True)
+                    file_path = os.path.join(
+                        user_upload_dir, f"{file_id_new}_{filename}"
+                    )
+                    with open(file_path, "wb") as fh:
+                        fh.write(content)
+                    file_size = os.path.getsize(file_path)
+                    gwas_records_count = count_gwas_records(file_path)
+                    object_key = None
+                    md5_hash_param = None
+
+        if not file_metadata_id:
+            source = "gwas_library" if not is_uploaded else "user_upload"
+            storage_key_arg = object_key if is_uploaded and storage else None
+            md5_arg = md5_hash_param if is_uploaded else None
+
+            file_metadata_id = files.create_file_metadata(
+                user_id=current_user_id,
+                filename=filename,
+                original_filename=original_filename,
+                file_path=file_path,
+                file_type="gwas",
+                file_size=file_size,
+                record_count=gwas_records_count,
+                download_url=f"/download/{str(uuid.uuid4())}",
+                md5_hash=md5_arg,
+                storage_key=storage_key_arg,
+                source=source,
+            )
+
+        analysis_parameters = {
+            "maf_threshold": maf_threshold,
+            "seed": seed,
+            "window": window,
+            "L": L,
+            "coverage": coverage,
+            "min_abs_corr": min_abs_corr,
+            "batch_size": batch_size,
+            "max_workers": max_workers,
+        }
+
+        project_id = projects.create_project(
+            user_id=current_user_id,
+            name=project_name,
+            gwas_file_id=file_metadata_id,
+            phenotype=phenotype,
+            population=population,
+            ref_genome=ref_genome,
+            analysis_parameters=analysis_parameters,
+        )
+
+        metadata_dir = os.path.join("data", "metadata", str(current_user_id))
+        os.makedirs(metadata_dir, exist_ok=True)
+        metadata = {
+            "file_id": file_metadata_id,
+            "user_id": current_user_id,
+            "filename": filename,
+            "original_filename": original_filename,
+            "file_path": file_path,
+            "file_type": "gwas",
+            "upload_date": str(datetime.now()),
+            "file_size": file_size,
+            "project_id": project_id,
+        }
+        with open(os.path.join(metadata_dir, f"{file_metadata_id}.json"), "w") as fh:
+            json.dump(metadata, fh)
+
+        total_time = (datetime.now() - start_time).total_seconds()
+        logger.info(f"[API] Completed: {filename} in {total_time:.1f}s")
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: invoke_analysis_pipeline_deployment(
+                user_id=current_user_id,
+                project_id=project_id,
+                gwas_file_path=file_path,
+                ref_genome=ref_genome,
+                population=population,
+                batch_size=batch_size,
+                max_workers=max_workers,
+                maf_threshold=maf_threshold,
+                seed=seed,
+                window=window,
+                L=L,
+                coverage=coverage,
+                min_abs_corr=min_abs_corr,
+                sample_size=sample_size,
+            ),
+        )
+
+        return {
+            "status": "started",
+            "project_id": project_id,
+            "file_id": file_metadata_id,
+            "message": "Analysis pipeline started successfully",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[API] Error starting analysis pipeline: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error starting analysis pipeline: {exc}",
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /phenotypes
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/phenotypes")
+async def get_phenotypes(
+    id: str | None = Query(None),
+    search: str | None = Query(None),
+    limit: int | None = Query(None),
+    skip: int = Query(0),
+):
+    phenotypes = get_deps()["phenotypes"]
+    try:
+        if id:
+            phenotype = phenotypes.get_phenotypes(phenotype_id=id)
+            if not phenotype:
+                raise HTTPException(status_code=404, detail="Phenotype not found")
+            return serialize_datetime_fields({"phenotype": phenotype})
+
+        if limit is None:
+            limit = 100
+
+        all_phenotypes = phenotypes.get_phenotypes(
+            limit=limit, skip=skip, search_term=search
+        )
+        total_count = phenotypes.count_phenotypes(search_term=search)
+
+        response: dict = {
+            "phenotypes": all_phenotypes,
+            "total_count": total_count,
+            "skip": skip,
+            "limit": limit,
+            "has_more": (skip + len(all_phenotypes)) < total_count,
+            "next_skip": (
+                skip + len(all_phenotypes)
+                if (skip + len(all_phenotypes)) < total_count
+                else None
+            ),
+        }
+        if search:
+            response["search_term"] = search
+
+        return serialize_datetime_fields(response)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error getting phenotypes: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get phenotypes: {exc}"
+        )
+
+
+@router.post("/phenotypes", status_code=201)
+async def post_phenotypes(data: list = Body(...)):
+    phenotypes = get_deps()["phenotypes"]
+    try:
+        if not isinstance(data, list):
+            raise HTTPException(
+                status_code=400, detail="Expected JSON array of phenotypes"
+            )
+
+        phenotypes_data = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            phenotype = {"id": item.get("id", ""), "phenotype_name": item.get("name", "")}
+            if phenotype["id"] and phenotype["phenotype_name"]:
+                phenotypes_data.append(phenotype)
+            else:
+                logger.warning(f"Skipping invalid phenotype entry: {item}")
+
+        if not phenotypes_data:
+            raise HTTPException(
+                status_code=400, detail="No valid phenotypes found in JSON data"
+            )
+
+        result = phenotypes.bulk_create_phenotypes(phenotypes_data)
+        return {
+            "message": "Phenotypes loaded successfully",
+            "inserted_count": result["inserted_count"],
+            "skipped_count": result["skipped_count"],
+            "total_provided": len(phenotypes_data),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error loading phenotypes: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load phenotypes: {exc}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /credible-sets
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/credible-sets")
+async def get_credible_sets(
+    project_id: str | None = Query(None),
+    credible_set_id: str | None = Query(None),
+    current_user_id: str = Depends(get_current_user_id),
+):
+    analysis = get_deps()["analysis"]
+
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    if not credible_set_id:
+        raise HTTPException(status_code=400, detail="Credible_set_id is required")
+
+    try:
+        credible_set = analysis.get_credible_set_by_id(
+            current_user_id, project_id, credible_set_id
+        )
+        if not credible_set:
+            raise HTTPException(
+                status_code=404, detail="No credible set found with this ID"
+            )
+
+        variants_data = credible_set.get("variants_data", {})
+        if not variants_data:
+            raise HTTPException(
+                status_code=404,
+                detail="No variants data found for this credible set",
+            )
+
+        variants = variants_data.get("data", {})
+        variants_array = convert_variants_to_object_array(variants)
+        variants_array = serialize_datetime_fields(variants_array)
+        return {"variants": variants_array}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error fetching credible set: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch credible set: {exc}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /gwas-files
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/gwas-files")
+async def get_gwas_files(
+    search: str | None = Query(None),
+    sex: str | None = Query(None),
+    limit: int | None = Query(None),
+    skip: int = Query(0),
+):
+    gwas_library = get_deps().get("gwas_library")
+    try:
+        if limit is None:
+            limit = 100
+
+        entries = gwas_library.get_all_gwas_entries(
+            search_term=search, sex_filter=sex, limit=limit, skip=skip
+        )
+
+        gwas_files: list[dict] = []
+        for entry in entries:
+            file_id = entry.get("file_id") or entry.get("filename")
+            desc = entry.get("description") or ""
+            if isinstance(desc, str) and desc.startswith("#"):
+                desc = desc.lstrip("#").strip()
+            gwas_file_entry: dict = {
+                "id": file_id,
+                "phenotype": desc,
+                "phenotype_code": entry.get("phenotype_code"),
+                "filename": entry.get("filename"),
+                "sex": entry.get("sex"),
+                "source": entry.get("source"),
+                "downloaded": entry.get("downloaded", False),
+                "download_count": entry.get("download_count", 0),
+                "url": f"/gwas-files/download/{file_id}",
+                "showcase_link": entry.get("showcase_link", ""),
+                "sample_size": entry.get("sample_size"),
+                "genome_build": entry.get("genome_build"),
+            }
+            if entry.get("file_size"):
+                gwas_file_entry["file_size_mb"] = round(
+                    entry["file_size"] / (1024 * 1024), 2
+                )
+            gwas_files.append(gwas_file_entry)
+
+        total_count = gwas_library.get_entry_count(search_term=search, sex_filter=sex)
+        return {
+            "gwas_files": gwas_files,
+            "total_files": total_count,
+            "returned": len(gwas_files),
+            "skip": skip,
+            "limit": limit,
+        }
+
+    except Exception as exc:
+        logger.error(f"Error fetching GWAS files: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch GWAS files: {exc}"
+        )
+
+
+@router.get("/gwas-files/download/{file_id}")
+async def download_gwas_file(file_id: str):
+    gwas_library = get_deps().get("gwas_library")
+    storage = get_deps().get("storage")
+
+    try:
+        entry = gwas_library.get_gwas_entry(file_id=file_id)
+        if not entry:
+            raise HTTPException(
+                status_code=404, detail="GWAS file not found in library"
+            )
+
+        filename = entry.get("filename", file_id)
+        minio_path = f"gwas_cache/{filename}"
+
+        if storage and entry.get("downloaded") and entry.get("minio_path"):
+            cached_path = entry["minio_path"]
+            if storage.exists(cached_path):
+                gwas_library.increment_download_count(file_id)
+                download_url = storage.generate_presigned_url(cached_path, expiration=3600)
+                if download_url:
+                    return {"download_url": download_url, "cached": True}
+
+                with tempfile.NamedTemporaryFile(
+                    delete=False, suffix=f"_{filename}"
+                ) as tmp:
+                    if storage.download_file(cached_path, tmp.name):
+                        return FileResponse(
+                            tmp.name,
+                            media_type="text/tab-separated-values",
+                            filename=filename,
+                        )
+            else:
+                gwas_library.update_gwas_entry(
+                    file_id, {"downloaded": False, "minio_path": None}
+                )
+
+        # Determine download URL
+        download_url = None
+        if entry.get("aws_url"):
+            download_url = entry["aws_url"]
+        elif entry.get("wget_command"):
+            m = re.search(r"(https?://[^\s]+)", entry["wget_command"])
+            if m:
+                download_url = m.group(1)
+        elif entry.get("dropbox_url"):
+            download_url = entry["dropbox_url"]
+
+        if not download_url:
+            raise HTTPException(
+                status_code=404, detail="No download URL available for this file"
+            )
+
+        with tempfile.NamedTemporaryFile(
+            delete=False, suffix=f"_{filename}"
+        ) as tmp:
+            temp_path = tmp.name
+            try:
+                loop = asyncio.get_running_loop()
+                file_size = await loop.run_in_executor(
+                    None, _download_to_path_sync, download_url, temp_path
+                )
+
+                if storage:
+                    if storage.upload_file(temp_path, minio_path):
+                        gwas_library.mark_as_downloaded(file_id, minio_path, file_size)
+                        gwas_library.increment_download_count(file_id)
+
+                return FileResponse(
+                    temp_path,
+                    media_type="text/tab-separated-values",
+                    filename=filename,
+                )
+            except Exception as exc:
+                logger.error(f"[GWAS DOWNLOAD] Download failed: {exc}")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to download file: {exc}"
+                )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"[GWAS DOWNLOAD] Error: {exc}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Download failed: {exc}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /user-files
+# ──────────────────────────────────────────────────────────────────────────────
+
+@router.get("/user-files")
+async def get_user_files(current_user_id: str = Depends(get_current_user_id)):
+    files = get_deps()["files"]
+    try:
+        all_files = files.get_file_metadata(current_user_id)
+        if not all_files:
+            return {"files": [], "total_files": 0}
+
+        if not isinstance(all_files, list):
+            all_files = [all_files]
+
+        user_files: list[dict] = []
+        for file_meta in all_files:
+            if file_meta.get("source") not in (None, "user_upload"):
+                continue
+            user_files.append(
+                {
+                    "id": file_meta.get("_id"),
+                    "display_name": file_meta.get(
+                        "original_filename", file_meta.get("filename")
+                    ),
+                    "filename": file_meta.get("filename"),
+                    "file_size": file_meta.get("file_size", 0),
+                    "file_size_mb": round(
+                        file_meta.get("file_size", 0) / (1024 * 1024), 2
+                    ),
+                    "record_count": file_meta.get("record_count"),
+                    "upload_date": file_meta.get("upload_date"),
+                    "source": "user_upload",
+                }
+            )
+
+        user_files.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
+        user_files = serialize_datetime_fields(user_files)
+        return {"files": user_files, "total_files": len(user_files)}
+
+    except Exception as exc:
+        logger.error(f"Error fetching user files: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch user files: {exc}"
+        )
