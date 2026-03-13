@@ -1,6 +1,6 @@
 """API routes and Socket.IO handlers."""
 from app.api.dependencies import set_deps
-from app.api.routes import router
+from app.api.routers import router
 
 # Register Socket.IO event handlers (import side-effect)
 from app.api import socket_handlers  # noqa: F401
