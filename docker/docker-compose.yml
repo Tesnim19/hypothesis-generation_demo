@@ -14,6 +14,16 @@ services:
     networks:
       - app_network
 
+  hypothesis-base:
+    # Builds the heavy base image once. This image is used by Dockerfile.app.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    image: hypothesis-base:latest
+    # This service is only used to build the base image; it does not need to stay running.
+    command: ["true"]
+    restart: "no"
+
   prolog-service:
     build:
       context: ..
@@ -32,7 +42,7 @@ services:
   dask-scheduler:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     hostname: dask-scheduler
     ports:
       - "8786:8786" 
@@ -57,7 +67,7 @@ services:
   dask-worker:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     environment:
       - DASK_ADDRESS=tcp://dask-scheduler:8786
       - PREFECT_API_URL=http://prefect-service:4200/api
@@ -78,6 +88,8 @@ services:
       - ../data:/app/data
       - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
     depends_on:
+      hypothesis-base:
+        condition: service_completed_successfully
       dask-scheduler:
         condition: service_healthy  
       mongo:
@@ -86,9 +98,9 @@ services:
         condition: service_started
     command: >
       uv run dask worker tcp://dask-scheduler:8786 
-      --nworkers 4
+      --nworkers 16
       --nthreads 1 
-      --memory-limit 40GB
+      --memory-limit 0 
       --preload dask_preload
     deploy:
       mode: replicated
@@ -104,7 +116,7 @@ services:
   api-service:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     ports:
       - "5008:5000"
     environment:
@@ -125,6 +137,8 @@ services:
       - ..:/app
       - ../data:/app/data
     depends_on:
+      hypothesis-base:
+        condition: service_completed_successfully
       mongo:
         condition: service_started
       prefect-service:
@@ -174,7 +188,7 @@ services:
   prefect-deployment:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     deploy:
       resources:
         limits:
@@ -192,7 +206,6 @@ services:
       uv run prefect work-pool update 'analysis-pool' --concurrency-limit 3 &&
       uv run prefect work-pool create 'interactive-pool' --type process --overwrite &&
       uv run prefect work-pool update 'interactive-pool' --concurrency-limit 10 &&
-      uv run prefect concurrency-limit create harmonize_tag 2 || true &&
 
       echo '--- 2. Registering Flows ---' &&
       uv run python deployments.py --ensembl-hgnc-map /app/data/ensembl_to_hgnc.pkl --hgnc-ensembl-map /app/data/hgnc_to_ensembl.pkl --go-map /app/data/go_map.pkl --swipl-host prolog-service --swipl-port 4242 &&
@@ -216,6 +229,8 @@ services:
       - API_PORT=5000
       - OPENAI_API_KEY=${OpenAI}
     depends_on:
+      hypothesis-base:
+          condition: service_completed_successfully
       prefect-service:
         condition: service_healthy
       dask-scheduler:

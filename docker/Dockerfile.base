@@ -1,5 +1,4 @@
-#  For susie 0.12.35
-#  Use an official Python runtime as a parent image
+# Heavy base image: OS dependencies, Rust, R, genomics tools, and LDSC/conda
 FROM python:3.10-bookworm
 
 # Install all system dependencies in one layer
@@ -13,11 +12,11 @@ RUN apt-get update && apt-get install -y \
     zlib1g-dev libmagick++-dev libudunits2-dev libgdal-dev libproj-dev \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Rust
+# Install Rust (needed by some R packages and tools)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install R 4.4.2 from source
+# Install R 4.4.2 from source so we can add packages later
 RUN cd /tmp && \
     wget https://cran.r-project.org/src/base/R-4/R-4.4.2.tar.gz && \
     tar -xzf R-4.4.2.tar.gz && \
@@ -28,7 +27,7 @@ RUN cd /tmp && \
 
 WORKDIR /app
 
-# Install genomics tools
+# Install genomics tools: plink, plink2, gcta
 RUN mkdir -p /opt/plink && \
     wget -q https://s3.amazonaws.com/plink1-assets/plink_linux_x86_64_20231211.zip -O /tmp/plink.zip && \
     unzip -q /tmp/plink.zip -d /opt/plink && \
@@ -66,7 +65,7 @@ RUN cd /tmp && \
 
 RUN pip install --upgrade pip setuptools wheel
 
-# Install BiocManager first
+# Install BiocManager and lock version
 RUN Rscript -e " \
     options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
     install.packages('remotes'); \
@@ -78,25 +77,10 @@ RUN Rscript -e " \
 
 # Install susieR 0.12.35 specifically
 RUN Rscript -e " \
-    options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
+    options(repos = c(CRAN = 'https://cloud.r-project.org/'), timeout = 600); \
     cat('=== INSTALLING susieR 0.12.35 ===\n'); \
-    \
-    # Download specific version from CRAN archive \
-    cat('Downloading susieR 0.12.35 from CRAN archive...\n'); \
-    download.file('https://cran.r-project.org/src/contrib/Archive/susieR/susieR_0.12.35.tar.gz', '/tmp/susieR_0.12.35.tar.gz'); \
-    \
-    # Install dependencies first \
-    cat('Installing dependencies...\n'); \
     install.packages(c('mixsqp', 'reshape', 'ggplot2', 'Matrix', 'crayon', 'matrixStats')); \
-    \
-    # Install susieR from source \
-    cat('Installing susieR from source...\n'); \
-    install.packages('/tmp/susieR_0.12.35.tar.gz', repos=NULL, type='source'); \
-    \
-    # Cleanup downloaded file \
-    unlink('/tmp/susieR_0.12.35.tar.gz'); \
-    \
-    # Verify installation \
+    remotes::install_version('susieR', version = '0.12.35', repos = 'https://cloud.r-project.org/', dependencies = TRUE); \
     susie_version <- packageVersion('susieR'); \
     cat('Final susieR version:', as.character(susie_version), '\n'); \
     if (as.character(susie_version) == '0.12.35') { \
@@ -107,8 +91,7 @@ RUN Rscript -e " \
     }; \
     "
 
-# Install other R packages WITHOUT updating susieR
-#  Nextflow harmonizer
+# Install other R packages required by harmonizer
 RUN Rscript -e " \
     options(repos = c(CRAN = 'https://cloud.r-project.org/')); \
     options(Ncpus = parallel::detectCores()); \
@@ -152,45 +135,11 @@ WORKDIR /opt/ldsc
 RUN /opt/conda/bin/conda install -n ldsc numpy scipy=1.2.1 pandas=0.24.2 bitarray -c conda-forge -y
 
 # Create wrapper scripts that activate the ldsc environment
-RUN echo '#!/bin/bash\nsource /opt/conda/bin/activate ldsc\npython /opt/ldsc/ldsc.py "$@"' > /usr/local/bin/ldsc && \
+RUN echo '#!/bin/bash\nsource /opt/conda/bin/activate ldsc\npython /opt/ldsc/ldsc.py "\$@"' > /usr/local/bin/ldsc && \
     chmod +x /usr/local/bin/ldsc
 
-RUN echo '#!/bin/bash\nsource /opt/conda/bin/activate ldsc\npython /opt/ldsc/munge_sumstats.py "$@"' > /usr/local/bin/munge_sumstats && \
+RUN echo '#!/bin/bash\nsource /opt/conda/bin/activate ldsc\npython /opt/ldsc/munge_sumstats.py "\$@"' > /usr/local/bin/munge_sumstats && \
     chmod +x /usr/local/bin/munge_sumstats
 
 # Reset workdir
 WORKDIR /app
-
-# Install uv (astral/uv) for Python dependency management
-RUN wget -qO- https://astral.sh/uv/install.sh | sh && \
-    mv /root/.local/bin/uv /usr/local/bin/uv
-
-# Copy project files needed for uv
-COPY pyproject.toml .
-
-# Set up Python environment with uv
-ENV UV_PROJECT_ENVIRONMENT=/opt/flask-venv
-ENV PATH="/opt/flask-venv/bin:$PATH"
-
-RUN uv sync --no-cache --extra r-integration
-
-# Copy application
-COPY . .
-
-# Make entrypoint script executable
-RUN chmod +x /app/entrypoint.sh
-
-# Create separate Python environment for harmonizer
-RUN python3 -m venv /opt/harmonizer-venv
-
-# Install harmonizer dependencies using uv for better performance
-ENV UV_HARMONIZER_VENV=/opt/harmonizer-venv
-RUN uv pip install --python=/opt/harmonizer-venv/bin/python -r gwas-sumstats-harmoniser/environments/requirements.txt
-
-# Also install minimal harmonizer deps in main venv (without gwas-sumstats-tools to avoid pydantic conflict)
-RUN uv pip install 'duckdb>=0.9.2' 'pyliftover>=0.4'
-
-# Set entrypoint
-ENTRYPOINT ["/app/entrypoint.sh"]
-
-EXPOSE 5000
