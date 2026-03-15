@@ -14,6 +14,16 @@ services:
     networks:
       - app_network
 
+  hypothesis-base:
+    # Builds the heavy base image once. This image is used by Dockerfile.app.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    image: hypothesis-base:latest
+    # This service is only used to build the base image; it does not need to stay running.
+    command: ["true"]
+    restart: "no"
+
   prolog-service:
     build:
       context: ..
@@ -78,6 +88,8 @@ services:
       - ../data:/app/data
       - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
     depends_on:
+      hypothesis-base:
+        condition: service_completed_successfully
       dask-scheduler:
         condition: service_healthy  
       mongo:
@@ -125,6 +137,8 @@ services:
       - ..:/app
       - ../data:/app/data
     depends_on:
+      hypothesis-base:
+        condition: service_completed_successfully
       mongo:
         condition: service_started
       prefect-service:
@@ -215,6 +229,8 @@ services:
       - API_PORT=5000
       - OPENAI_API_KEY=${OpenAI}
     depends_on:
+      hypothesis-base:
+          condition: service_completed_successfully
       prefect-service:
         condition: service_healthy
       dask-scheduler:
