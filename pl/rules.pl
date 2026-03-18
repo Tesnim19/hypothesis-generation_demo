@@ -10,38 +10,14 @@ hideme([Goal|Goals]) :-
   call(Goal),
   hideme(Goals).
 
-% relevant_gene(G, S) :- in_tad_with(S, G).
-% relevant_gene(G, S) :- eqtl_association(S, G).
-% relevant_gene(G, S) :- activity_by_contact(S, G).
-% relevant_gene(G, S) :- regulatory_effect(S, G).
-
-
-% regulatory_effect(S, G) :- 
-%     % format('Checking regulatory effect: S: ~w, G: ~w~n', [S, G]),
-%     in_regulatory_region(S, Enh),
-%     alters_tfbs(S, Tf, G),
-%     % format('Alters TFBS: S: ~w, G: ~w~n', [S, G]),
-%     binds_to(Tf, Tfbs),
-%     overlaps_with(Tfbs, Enh), !.
-%     % format('Regulatory effect: S: ~w, G: ~w~n', [S, G]).
-
 regulatory_effect(S, G) :- 
     in_regulatory_region(S, Enh),
-    associated_with(Enh, G),
-    tf_snp(Tf, S),
-    regulates(Tf, G),
-    binds_to(Tf, Tfbs),
-    overlaps_with(Tfbs, Enh), 
-    !.
-
-% overlaps_with_tf_enh(Enh, Tf) :-
-%   format('Checking overlaps with TFBS: Enh: ~w, Tf: ~w~n', [Enh, Tf]),
-%   chr(Enh, Chr),
-%   start(Enh, Start),
-%   end(Enh, End),
-%   format('Enh: ~w, Start: ~w, End: ~w, Tf: ~w~n', [Enh, Start, End, Tf]).
-%   % load_tfbs_data(Chr, Start, End, Tf),
-  % format('Overlaps with TFBS: Enh: ~w, Tf: ~w~n', [Enh, Tf]).
+    associated_with(Enh, G).
+    % tf_snp(Tf, S),
+    % regulates(Tf, G),
+    % binds_to(Tf, Tfbs),
+    % overlaps_with(Tfbs, Enh), 
+    % !.
 
 coding_effect(S, G) :- 
   hideme([

@@ -202,6 +202,7 @@ data/raw
 data/loo
 data/per_chr
 data/multi_chr
+data/chr*
 
 # Logs
 logs/

@@ -9,7 +9,7 @@ def compile_kb(config_dict, compile_script_path, hook_script_path, path_prefix):
         path = os.path.join(path_prefix, path)
         nodes = config_dict[kb]['nodes']
         edges = config_dict[kb]['edges']
-        command_list = ['/home/icog-bioai/swipl-9.3.20/bin/swipl', '-q', '-s', compile_script_path, '--', '-p', path, '-h', hook_script_path]
+        command_list = ['swipl', '-q', '-s', compile_script_path, '--', '-p', path, '-h', hook_script_path]
         if nodes: 
             # Make sure path/nodes.pl exists
             if not os.path.exists(os.path.join(path, 'nodes.pl')):
@@ -44,7 +44,7 @@ def main():
         config_dict = yaml.safe_load(f)
     
     if not args.path_prefix:
-        print(f'Error: path_prefix is required!')
+        print('Error: path_prefix is required!')
         return
     
     #make sure the compile script exists
@@ -53,7 +53,7 @@ def main():
         return
     
     if not args.hook_script:
-        print(f'Error: hook_path is required!')
+        print('Error: hook_path is required!')
         return
     
     compile_kb(config_dict, args.compile_script, args.hook_script ,args.path_prefix)
