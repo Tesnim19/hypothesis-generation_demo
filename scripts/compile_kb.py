@@ -44,7 +44,7 @@ def main():
         config_dict = yaml.safe_load(f)
     
     if not args.path_prefix:
-        print(f'Error: path_prefix is required!')
+        print('Error: path_prefix is required!')
         return
     
     #make sure the compile script exists
@@ -53,7 +53,7 @@ def main():
         return
     
     if not args.hook_script:
-        print(f'Error: hook_path is required!')
+        print('Error: hook_path is required!')
         return
     
     compile_kb(config_dict, args.compile_script, args.hook_script ,args.path_prefix)

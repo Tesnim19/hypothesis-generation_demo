@@ -22,6 +22,7 @@
 
 :- include('load_kbs.pl').
 :- include('queries.pl').
+:- include('utils.pl').
 :- include('rules.pl').
 % :- include('pl_rules.pl').
 :- include('param_learn.pl').
@@ -29,7 +30,6 @@
 :- include('meta_interpreter.pl').
 :- include('json_util.pl').
 
-add(X, Y, Z) :- Z is X + Y.
 
 init :- 
     format("Loading atomspace...~n", []),
@@ -44,3 +44,4 @@ init :-
     % length(Bg, L),
     % format("Num of background facts/rules: ~d~n", [L]),
     format("Done!~n", []).
+

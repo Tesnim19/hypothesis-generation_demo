@@ -174,10 +174,10 @@ refseq_closest_gene:
 #   nodes: True
 #   edges: True
 
-# tf_snp:
-#  path: tf_snp
-#  nodes: False
-#  edges: True
+tf_snp:
+  path: tf_snp
+  nodes: False
+  edges: True
 
 # experimental_factor_ontology:
 #   path: experimental_factor_ontology

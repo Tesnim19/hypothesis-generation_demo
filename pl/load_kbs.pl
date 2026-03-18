@@ -167,108 +167,13 @@ load_atomspace :-
     load_with_time([enhancer_ccre(nodes), enhancer_ccre(edges)], "enhancer ccre"),
     load_with_time([promoter_ccre(nodes), promoter_ccre(edges)], "promoter ccre"),
     load_with_time([enhancer_atlas(nodes), enhancer_atlas(edges)], "enhancer atlas"),
-    %load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
-    %load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
-    %load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
+    load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
     load_with_time([epd(nodes), epd(edges)], "epd"),
     load_with_time([tflink(edges)], "tflink"),
-    load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
-    %load_with_time([fabian(edges)], "fabian"),
-    %load_with_time([top_ld_eur(edges)], "top_ld"),
     load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
     load_with_time([tf_snp(edges)], "tf_snp"),
     load_with_time([pgboost(edges)], "pgboost").
-
-% bgc declarations for parameter learning with cplint
-% Node predicates
-bgc(gene(X)) :- gene(X), chr(gene(X), chr16).
-bgc(gene_name(X, Y)) :- gene_name(X, Y), chr(X, chr16).
-% bgc(protein(X)) :- protein(X).
-% bgc(transcript(X)) :- transcript(X).
-% bgc(exon(X)) :- exon(X).
-bgc(snp(X)) :- chr(snp(X), chr16).
-% bgc(structural_variant(X)) :- structural_variant(X).
-% bgc(sequence_variant(X)) :- sequence_variant(X).
-% bgc(enhancer(X)) :- enhancer(X).
-% bgc(promoter(X)) :- promoter(X).
-bgc(super_enhancer(X)) :- super_enhancer(X).
-% bgc(non_coding_rna(X)) :- non_coding_rna(X).
-% bgc(pathway(X)) :- pathway(X).
-bgc(regulatory_region(X)) :- regulatory_region(X).
-% bgc(transcription_binding_site(X)) :- transcription_binding_site(X).
-% bgc(go(X)) :- go(X).
-% bgc(uberon(X)) :- uberon(X).
-% bgc(clo(X)) :- clo(X).
-% bgc(cl(X)) :- cl(X).
-% bgc(efo(X)) :- efo(X).
-% bgc(bto(X)) :- bto(X).
-% bgc(motif(X)) :- motif(X).
-bgc(tad(X)) :- tad(X), chr(tad(X), chr16).
-
-% Edge predicates
-% bgc(transcribed_to(X, Y)) :- transcribed_to(X, Y).
-% bgc(transcribed_from(X, Y)) :- transcribed_from(X, Y).
-% bgc(translates_to(X, Y)) :- translates_to(X, Y).
-% bgc(translation_of(X, Y)) :- translation_of(X, Y).
-% bgc(coexpressed_with(X, Y)) :- coexpressed_with(X, Y).
-% bgc(interacts_with(X, Y)) :- interacts_with(X, Y).
-% bgc(expressed_in(X, Y)) :- expressed_in(X, Y).
-% bgc(has_part(X, Y)) :- has_part(X, Y).
-% bgc(part_of(X, Y)) :- part_of(X, Y).
-% bgc(subclass_of(X, Y)) :- subclass_of(X, Y).
-% bgc(capable_of(X, Y)) :- capable_of(X, Y).
-% bgc(genes_pathways(X, Y)) :- genes_pathways(X, Y).
-% bgc(parent_pathway_of(X, Y)) :- parent_pathway_of(X, Y).
-% bgc(child_pathway_of(X, Y)) :- child_pathway_of(X, Y).
-% bgc(go_gene_product(X, Y)) :- go_gene_product(X, Y).
-% bgc(belongs_to(X, Y)) :- belongs_to(X, Y).
-bgc(associated_with(X, Y)) :- associated_with(X, Y).
-bgc(regulates(X, Y)) :- regulates(X, Y).
-% bgc(eqtl_association(X, Y)) :- eqtl_association(X, Y).
-bgc(closest_gene(X, Y)) :- closest_gene(X, Y), chr(Y, chr16).
-% bgc(upstream_gene(X, Y)) :- upstream_gene(X, Y).
-% bgc(downstream_gene(X, Y)) :- downstream_gene(X, Y).
-% bgc(in_gene(X, Y)) :- in_gene(X, Y).
-% bgc(in_ld_with(X, Y)) :- in_ld_with(X, Y).
-% bgc(lower_resolution(X, Y)) :- lower_resolution(X, Y).
-% bgc(located_on_chain(X, Y)) :- located_on_chain(X, Y).
-bgc(tfbs(X)) :- tfbs(X), chr(X, chr16).
-bgc(tf_snp(X, Y)) :- tf_snp(X, Y).
-bgc(binds_to(X, Y)) :- binds_to(X, Y).
-bgc(in_tad_region(X, Y)) :- in_tad_region(X, Y), chr(Y, chr16).
-% bgc(activity_by_contact(X, Y)) :- activity_by_contact(X, Y).
-% bgc(chromatin_state(X, Y)) :- chromatin_state(X, Y).
-% bgc(in_dnase_I_hotspot(X, Y)) :- in_dnase_I_hotspot(X, Y).
-% bgc(histone_modification(X, Y)) :- histone_modification(X, Y).
-
-% Properties
-bgc(chr(X, Y)) :- chr(X, chr16).
-bgc(start(X, Y)) :- chr(X, chr16), start(X, Y).
-bgc(end(X, Y)) :- chr(X, chr16), end(X, Y).
-bgc(alt(X, Y)) :- chr(X, chr16), alt(X, Y).
-bgc(ref(X, Y)) :- chr(X, chr16), ref(X, Y).
-bgc(gene_name(X, Y)) :- gene_name(X, Y).
-%bgc(transcript_name(X, Y)) :- transcript_name(X, Y).
-%bgc(transcript_id(X, Y)) :- transcript_id(X, Y).
-%bgc(transcript_type(X, Y)) :- transcript_type(X, Y).
-bgc(score(X, Y)) :- chr(X, chr16), score(X, Y).
-%bgc(biological_context(X, Y)) :- biological_context(X, Y).
-%bgc(term_name(X, Y)) :- term_name(X, Y).
-%bgc(term_name(X, Y, Z)) :- term_name(X, Y, Z).
-%bgc(term_name(X, Y, Z, W)) :- term_name(X, Y, Z, W).
-%bgc(term_name(X, Y, Z, W, V)) :- term_name(X, Y, Z, W, V).
-%bgc(term_name(X, Y, Z, W, V, U)) :- term_name(X, Y, Z, W, V, U).
-%bgc(term_name(X, Y, Z, W, V, U, T)) :- term_name(X, Y, Z, W, V, U, T).
-%bgc(term_name(X, Y, Z, W, V, U, T, S)) :- term_name(X, Y, Z, W, V, U, T, S).
-%bgc(term_name(X, Y, Z, W, V, U, T, S, R)) :- term_name(X, Y, Z, W, V, U, T, S, R).
-%bgc(raw_cadd_score(X, Y)) :- raw_cadd_score(X, Y).
-%bgc(phred_score(X, Y)) :- phred_score(X, Y).
-%bgc(detection_method(X, Y)) :- detection_method(X, Y).
-%bgc(evidence_type(X, Y)) :- evidence_type(X, Y).
-bgc(effect(X, Y)) :- effect(X, Y).
-bgc(score(X)) :- score(X, Y).
-
-% Additional binary predicates
-%bgc(synonyms(X, Y)) :- synonyms(X, Y).
-%bgc(rel_type(X, Y)) :- rel_type(X, Y).
+    %load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
+    %load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
+    %load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
 

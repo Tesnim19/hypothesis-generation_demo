@@ -36,6 +36,18 @@ overlaps_with(A, B) :-
              EndA < EndB.
 
 
+% within_k_distance(G, S, K, Out) :-
+%     chr(S, Chr),
+%     chr(G, Chr),
+%     G \= S,
+%     start(S, Pos),
+%     start(G, StartG),
+%     end(G, EndG),
+%     (   (abs(Pos - StartG) =< K ; abs(Pos - EndG) =< K)
+%     ->  Out = 1
+%     ;   Out = 0
+%     ).
+
 within_k_distance(G, S, K) :-
     chr(S, Chr),
     chr(G, Chr),
@@ -43,9 +55,9 @@ within_k_distance(G, S, K) :-
     start(S, Pos),
     start(G, StartG),
     end(G, EndG),
-    (abs(Pos - StartG) =< K, !
-    ; abs(Pos - EndG) =< K).
-
+    (abs(Pos - StartG) =< K, ! ;
+       abs(Pos - EndG) =< K).
+    
 abs_score_pair(Score-TF, AbsScore-TF) :-
     AbsScore is abs(Score).
 
@@ -61,7 +73,7 @@ find_and_rank_tfs(SNP, Tf, G) :-
     member(Tf, RankedTFs).
 
 init_py :-
-    py_add_lib_dir('/home/abdu/bio_ai/code/hypothesis-generation-demo').
+    py_add_lib_dir('/home/abdu/code/hypothesis-generation-demo').
 
 load_motif_effects(SNP) :-
   (tfbs_snp(_, SNP) -> true % skip loading motif effects if data already exists. 

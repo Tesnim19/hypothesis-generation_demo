@@ -5,7 +5,6 @@
 :- use_module(library(apply)).
 :- use_module(library(gv)).
 :- use_module(library(yall)).
-:- use_module(library(term_ext)).
 :- use_module(library(process)).
 :- use_module(library(readutil)).
 
