@@ -8,6 +8,7 @@ from db import (
     GeneExpressionHandler, GWASLibraryHandler,
     PhenotypeHandler
 )
+from db.state_cache.stateCache import RedisStatusCache
 from storage import create_minio_client_from_env
 
 class Config:
@@ -21,6 +22,7 @@ class Config:
         self.swipl_port = 4242
         self.mongodb_uri = None
         self.db_name = None
+        self.redis_url = None
         self.embedding_model = "w601sxs/b1ade-embed-kd"
         self.plink_dir_38 = "./data/1000Genomes_phase3/plink_format_b38"
         self.data_dir = "./data"
@@ -49,6 +51,7 @@ class Config:
         # Also load MongoDB config from environment
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
         return config
 
     @classmethod
@@ -62,6 +65,7 @@ class Config:
         config.swipl_port = int(os.getenv("SWIPL_PORT", "4242"))
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
         config.embedding_model = os.getenv("EMBEDDING_MODEL", "w601sxs/b1ade-embed-kd")
         config.plink_dir_38 = os.getenv("PLINK_DIR_38", "./data/1000Genomes_phase3/plink_format_b38")
         config.data_dir = os.getenv("DATA_DIR", "./data")
@@ -110,6 +114,7 @@ def create_dependencies(config):
     # Use environment variables for MongoDB connection
     mongodb_uri = config.mongodb_uri 
     db_name = config.db_name
+    redis_url = config.redis_url
     
     # Validate MongoDB configuration
     if not mongodb_uri or not db_name:
@@ -131,6 +136,7 @@ def create_dependencies(config):
         'hypotheses': HypothesisHandler(mongodb_uri, db_name),
         'summaries': SummaryHandler(mongodb_uri, db_name),
         'tasks': TaskHandler(mongodb_uri, db_name),
+        'status_cache': RedisStatusCache(redis_url),
         'gene_expression': GeneExpressionHandler(mongodb_uri, db_name),
         'phenotypes': PhenotypeHandler(mongodb_uri, db_name),
         'gwas_library': GWASLibraryHandler(mongodb_uri, db_name),

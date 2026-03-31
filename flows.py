@@ -1,8 +1,8 @@
 from loguru import logger
 from prefect import flow
 from prefect.runtime import flow_run as _prefect_flow_run
-from status_tracker import TaskState
 import multiprocessing as mp
+from status_tracker import TaskState, status_tracker
 
 from tasks import (
     check_enrich, create_enrich_data, get_candidate_genes,
