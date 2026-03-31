@@ -1171,10 +1171,6 @@ def finemap_region_batch_worker(batch_data):
     # Producer Thread
     def producer(successful_regions, failed_regions): 
 
-        # reactivate converters in this thread 
-        pandas2ri.activate()
-        numpy2ri.activate()
-
         # Process regions with shared R session
         for region_idx, region in enumerate(region_batch):
             region_id = region['variant_id']
