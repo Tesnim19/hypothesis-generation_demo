@@ -15,6 +15,7 @@ class ProjectHandler(BaseHandler):
     def __init__(self, uri, db_name):
         super().__init__(uri, db_name)
         self.projects_collection = self.db['projects']
+        self.analysis_state_collection = self.db['analysis_states']
         # Initialize collections needed for cascade deletion
         self.credible_sets_collection = self.db['credible_sets']
         self.hypothesis_collection = self.db['hypotheses']
@@ -232,30 +233,32 @@ class ProjectHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Error deleting project data for {project_id}: {str(e)}")
             raise
-    
-    def get_project_analysis_path(self, user_id, project_id):
-        """Get the analysis path for a project"""
-        return os.path.abspath(f"data/projects/{user_id}/{project_id}/analysis")
-
-    def get_analysis_state_path(self, user_id, project_id):
-        """Get the analysis state file path"""
-        return f"data/states/{user_id}/{project_id}/analysis_state.json"
 
     def save_analysis_state(self, user_id, project_id, state_data):
-        """Save analysis state to file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        data = {**state_data, "state_updated_at": datetime.now(timezone.utc).isoformat()}
-        with open(state_path, 'w') as f:
-            json.dump(data, f, default=str)
+        """Upsert analysis state into MongoDB"""
+        doc = {
+            'user_id': user_id,
+            'project_id': project_id,
+            'state': state_data,
+            'updated_at': datetime.now(timezone.utc).isoformat(),
+        }
+
+        self.analysis_state_collection.update_one(
+            {'user_id': user_id, 'project_id': project_id},
+            {'$set': doc},
+            upsert=True
+        )
 
     def load_analysis_state(self, user_id, project_id):
         """Load analysis state from file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        if not os.path.exists(state_path):
+        doc = self.analysis_state_collection.find_one(
+            {'user_id': user_id, 'project_id': project_id}
+        )
+        if not doc:
             return None
-        with open(state_path, 'r') as f:
-            state = json.load(f)
+        
+        state = doc.get('state')
+        
         if state.get("status") == "Running":
             reconciled = self._reconcile_running_state(state)
             if reconciled["status"] != "Running":
