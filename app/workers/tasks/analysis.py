@@ -20,9 +20,9 @@ import psutil
 import gc
 import optuna
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from app.core.config import Config
 import re
 from app.core.utils import transform_credible_sets_to_locuszoom, get_deps, get_shared_temp_dir
+from app.core.config import get_settings
 
 
 logging.basicConfig(level=logging.INFO)
@@ -136,7 +136,7 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
     logger.info(f"[HARMONIZE] Resolved absolute path: {gwas_file_path}")
     
     # Get configuration
-    config = Config.from_env()
+    config = get_settings()
     if ref_dir is None:
         ref_dir = config.get_harmonizer_ref_dir(ref_genome)
     if code_repo is None:
@@ -431,7 +431,7 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
     logger.info(f"[COJO] Starting per-chromosome COJO analysis for population {population}")
     
     # Get configuration
-    config = Config.from_env()
+    config = get_settings()
     
     # Create user-isolated temporary directory for COJO processing
     # Extract user/project info from output_dir path (format: data/projects/{user_id}/{project_id}/analysis)
@@ -975,7 +975,7 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
         logger.info(f"[FINEMAP] Fine-mapping chr{chr_num}:{lead_variant_position} ±{window}kb")
 
         # Get config
-        config = Config.from_env()
+        config = get_settings()
         
         # Step 1: Filter variants in the region
         window_bp = window * 1000

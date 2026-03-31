@@ -19,7 +19,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.prolog
     ports:
-      - "4242:4242"
+      - "${PORT_PROLOG}:${PORT_PROLOG}"
     volumes:
       - ../pl:/app/pl
       # - /mnt/hdd_1/tesnim/version1/prolog_out_v2:/mnt/prolog_out_v2
@@ -38,13 +38,14 @@ services:
       - "8786:8786" 
       - "8787:8787" 
     environment:
-      - PYTHONPATH=/app
-      - SKIP_SEED=true 
+      - PYTHONPATH=${PYTHONPATH}
+      - SKIP_SEED=${SKIP_SEED}
     volumes:
       - ..:/app
     entrypoint: []
     command: >
-      sh -c "uv run dask scheduler --host 0.0.0.0 --port 8786 --dashboard-address :8787"
+      sh -c "dask scheduler --host 0.0.0.0 --port 8786 --dashboard-address :8787"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "from dask.distributed import Client; c = Client('tcp://127.0.0.1:8786', connection_limit=1, timeout='5s'); c.close()"]
       interval: 5s
@@ -59,17 +60,17 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     environment:
-      - DASK_ADDRESS=tcp://dask-scheduler:8786
-      - PREFECT_API_URL=http://prefect-service:4200/api
-      - PYTHONPATH=/app
-      - SWIPL_HOST=prolog-service
-      - SWIPL_PORT=4242
-      - ENSEMBL_HGNC_MAP=/app/data/ensembl_to_hgnc.pkl
-      - HGNC_ENSEMBL_MAP=/app/data/hgnc_to_ensembl.pkl
-      - GO_MAP=/app/data/go_map.pkl
-      - SKIP_SEED=true
-      - API_HOST=api-service
-      - API_PORT=5000
+      - DASK_ADDRESS=${DASK_ADDRESS}
+      - PREFECT_API_URL=${PREFECT_API_URL}
+      - PYTHONPATH=${PYTHONPATH}
+      - SWIPL_HOST=${HOST_PROLOG}
+      - SWIPL_PORT=${PORT_PROLOG}
+      - ENSEMBL_HGNC_MAP=${ENSEMBL_HGNC_MAP}
+      - HGNC_ENSEMBL_MAP=${HGNC_ENSEMBL_MAP}
+      - GO_MAP=${GO_MAP}
+      - SKIP_SEED=${SKIP_SEED}
+      - API_HOST=${HOST_API}
+      - API_PORT=${PORT_API}
       - OPENAI_API_KEY=${OpenAI}
     env_file:
       - ../.env
@@ -85,7 +86,7 @@ services:
       prolog-service:
         condition: service_started
     command: >
-      uv run dask worker tcp://dask-scheduler:8786 
+      uv run dask worker ${DASK_ADDRESS}
       --nworkers 4
       --nthreads 1 
       --memory-limit 40GB
@@ -108,17 +109,17 @@ services:
     ports:
       - "5008:5000"
     environment:
-      - FLASK_ENV=development
-      - PREFECT_API_URL=http://prefect-service:4200/api
-      - PYTHONPATH=/app
-      - DASK_ADDRESS=tcp://dask-scheduler:8786
-      - ENSEMBL_HGNC_MAP=/app/data/ensembl_to_hgnc.pkl
-      - HGNC_ENSEMBL_MAP=/app/data/hgnc_to_ensembl.pkl
-      - GO_MAP=/app/data/go_map.pkl
-      - SWIPL_HOST=prolog-service
-      - SWIPL_PORT=4242
+      - FLASK_ENV=${FLASK_ENV}
+      - PREFECT_API_URL=${PREFECT_API_URL}
+      - PYTHONPATH=${PYTHONPATH}
+      - DASK_ADDRESS=${DASK_ADDRESS}
+      - ENSEMBL_HGNC_MAP=${ENSEMBL_HGNC_MAP}
+      - HGNC_ENSEMBL_MAP=${HGNC_ENSEMBL_MAP}
+      - GO_MAP=${GO_MAP}
+      - SWIPL_HOST=${HOST_PROLOG}
+      - SWIPL_PORT=${PORT_PROLOG}
       - OPENAI_API_KEY=${OpenAI}
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL}
     env_file:
       - ../.env
     volumes:
@@ -137,7 +138,7 @@ services:
       uv run gunicorn "server:create_app_with_config"
       --workers 4
       --worker-class uvicorn.workers.UvicornWorker
-      --bind 0.0.0.0:5000
+      --bind 0.0.0.0:${PORT_API}
       --timeout 120
       --graceful-timeout 30
       --keep-alive 5
@@ -150,14 +151,14 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.prefect
     ports:
-      - "4292:4200"
+      - "4292:${PORT_PREFECT}"
     volumes:
       - ..:/app
       - prefect-data:/root/.prefect 
     environment:
-      - PREFECT_API_URL=http://localhost:4200/api
+      - PREFECT_API_URL=http://${PORT_PREFECT}/api
       - UV_PROJECT_ENVIRONMENT=/opt/prefect-venv
-      - DASK_ADDRESS=tcp://dask-scheduler:8786
+      - DASK_ADDRESS=${DASK_ADDRESS}
     env_file:
       - ../.env
     command: > 
@@ -165,7 +166,7 @@ services:
     networks:
       - app_network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
+      test: ["CMD", "curl", "-f", "http://${PORT_PREFECT}api/health"]
       interval: 30s
       timeout: 15s
       retries: 20
@@ -195,7 +196,7 @@ services:
       uv run prefect concurrency-limit create harmonize_tag 2 || true &&
 
       echo '--- 2. Registering Flows ---' &&
-      uv run python deployments.py --ensembl-hgnc-map /app/data/ensembl_to_hgnc.pkl --hgnc-ensembl-map /app/data/hgnc_to_ensembl.pkl --go-map /app/data/go_map.pkl --swipl-host prolog-service --swipl-port 4242 &&
+      uv run python app/workers/workflows/deploy.py --ensembl-hgnc-map ${ENSEMBL_HGNC_MAP} --hgnc-ensembl-map ${HGNC_ENSEMBL_MAP} --go-map ${GO_MAP} --swipl-host ${HOST_PROLOG} --swipl-port ${PORT_PROLOG} &&
 
       echo '--- 3. Starting The Chefs (Workers) ---' &&
       uv run prefect worker start --pool 'analysis-pool' --name 'heavy-worker' &
@@ -205,15 +206,15 @@ services:
       tail -f /dev/null
       "
     environment:
-      - PREFECT_API_URL=http://prefect-service:4200/api
+      - PREFECT_API_URL=${PREFECT_API_URL}
       - UV_PROJECT_ENVIRONMENT=/opt/flask-venv
-      - DASK_ADDRESS=tcp://dask-scheduler:8786  
-      - PYTHONPATH=/app
-      - ENSEMBL_HGNC_MAP=/app/data/ensembl_to_hgnc.pkl
-      - HGNC_ENSEMBL_MAP=/app/data/hgnc_to_ensembl.pkl
-      - GO_MAP=/app/data/go_map.pkl
-      - API_HOST=api-service
-      - API_PORT=5000
+      - DASK_ADDRESS=${DASK_ADDRESS}
+      - PYTHONPATH=${PYTHONPATH}
+      - ENSEMBL_HGNC_MAP=${ENSEMBL_HGNC_MAP}
+      - HGNC_ENSEMBL_MAP=${HGNC_ENSEMBL_MAP}
+      - GO_MAP=${GO_MAP}
+      - API_HOST=${HOST_API}
+      - API_PORT=${PORT_API}
       - OPENAI_API_KEY=${OpenAI}
     depends_on:
       prefect-service:
@@ -228,7 +229,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6399:6379"
+      - "6399:${PORT_REDIS}"
     networks:
       - app_network
 

@@ -11,36 +11,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from app.core.config import Config, create_dependencies
-from app.core.logging import setup_logging
-from app.core.socket import sio
-from app.core.status_tracker import StatusTracker
+from app.core import setup_logging, sio
+from app.core.deps import create_dependencies
+from app.core.config import get_settings, Settings
+from app.api import router
 
 
-def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="FastAPI + Socket.IO Server")
-    parser.add_argument("--port", type=int, default=5000)
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--embedding-model", type=str, default="w601sxs/b1ade-embed-kd")
-    parser.add_argument("--swipl-host", type=str, default="localhost")
-    parser.add_argument("--swipl-port", type=int, default=4242)
-    parser.add_argument("--ensembl-hgnc-map", type=str, required=True)
-    parser.add_argument("--hgnc-ensembl-map", type=str, required=True)
-    parser.add_argument("--go-map", type=str, required=True)
-    return parser.parse_args()
-
-
-def create_app(config: Config) -> python_socketio.ASGIApp:
+def create_app(config: Settings) -> python_socketio.ASGIApp:
     load_dotenv()
-
-    from app.api import init_deps, router
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        deps = create_dependencies(config)
-        status_tracker_instance = StatusTracker()
-        status_tracker_instance.initialize(deps["tasks"])
-        init_deps(deps)
+        # instantiate dependencies and store in app state for access in routes
+        create_dependencies(config)
         logger.info("Application dependencies initialized")
         yield
         logger.info("Application shutting down")
@@ -66,8 +49,7 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
 
 
 def main() -> None:
-    args = parse_arguments()
-    config = Config.from_args(args)
+    config = get_settings()
 
     if not all([config.ensembl_hgnc_map, config.hgnc_ensembl_map, config.go_map]):
         raise ValueError(

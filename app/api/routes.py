@@ -15,7 +15,7 @@ import requests as _http
 from fastapi import (
     APIRouter,
     Body,
-    Depends,
+    Depends,    
     File,
     Form,
     HTTPException,
@@ -27,8 +27,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 from werkzeug.utils import secure_filename
 
-from app.api.dependencies import get_current_user_id, get_deps, verify_service_token
-from app.core.socket import sio
+from app.api.dependencies import get_current_user_id, verify_service_token
+from app.core import sio
 from app.core.status_tracker import TaskState, status_tracker
 from app.core.utils import (
     allowed_file,
@@ -43,6 +43,7 @@ from app.workers.workflows.run_deployment import (
     invoke_analysis_pipeline_deployment,
     invoke_enrichment_deployment,
 )
+from app.core.deps import get_dependencies
 from app.workers.workflows.flows import hypothesis_flow
 
 router = APIRouter()
@@ -86,8 +87,9 @@ async def get_enrich(
     id: str | None = Query(None),
     project_id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    deps : dict = Depends(get_dependencies) 
 ):
-    enrichment = get_deps()["enrichment"]
+    enrichment = deps["enrichment"]
 
     if id:
         enrich = enrichment.get_enrich(current_user_id, id)
@@ -115,6 +117,7 @@ async def get_enrich(
 async def post_enrich(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
+    deps : dict = Depends(get_dependencies) 
 ):
     body: dict = {}
     try:
@@ -131,10 +134,10 @@ async def post_enrich(
     if not variant:
         raise HTTPException(status_code=400, detail="variant is required")
 
-    projects = get_deps()["projects"]
-    enrichment = get_deps()["enrichment"]
-    hypotheses = get_deps()["hypotheses"]
-    gene_expression = get_deps().get("gene_expression")
+    projects = deps["projects"]
+    enrichment = deps["enrichment"]
+    hypotheses = deps["hypotheses"]
+    gene_expression = deps["gene_expression"]
 
     project = projects.get_projects(current_user_id, project_id)
     if not project:
@@ -217,8 +220,10 @@ async def post_enrich(
 async def delete_enrich(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
-):
-    enrichment = get_deps()["enrichment"]
+    deps : dict = Depends(get_dependencies), 
+):  
+
+    enrichment = deps["enrichment"]
     if id:
         result = enrichment.delete_enrich(current_user_id, id)
         return result
@@ -233,10 +238,12 @@ async def delete_enrich(
 async def get_hypothesis(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
-):
-    hypotheses = get_deps()["hypotheses"]
-    enrichment = get_deps()["enrichment"]
-    gene_expression = get_deps().get("gene_expression")
+    deps: dict = Depends(get_dependencies),
+):   
+
+    hypotheses = deps["hypotheses"]
+    enrichment = deps["enrichment"]
+    gene_expression = deps["gene_expression"]
 
     if id:
         hypothesis = hypotheses.get_hypotheses(current_user_id, id)
@@ -395,9 +402,10 @@ async def post_hypothesis(
     id: str | None = Query(None, alias="id"),
     go: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    deps : dict = Depends(get_dependencies) 
 ):
     """Generate hypothesis synchronously and return graph + summary immediately."""
-    hypotheses = get_deps()["hypotheses"]
+    hypotheses = deps["hypotheses"]
     enrich_id = id
     go_id = go
 
@@ -427,8 +435,9 @@ async def post_hypothesis(
 async def delete_hypothesis(
     hypothesis_id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies),
 ):
-    hypotheses = get_deps()["hypotheses"]
+    hypotheses = deps["hypotheses"]
     if hypothesis_id:
         return hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
     raise HTTPException(status_code=400, detail="Hypothesis ID is required")
@@ -438,8 +447,9 @@ async def delete_hypothesis(
 async def bulk_delete_hypotheses(
     data: dict = Body(...),
     current_user_id: str = Depends(get_current_user_id),
-):
-    hypotheses = get_deps()["hypotheses"]
+    deps: dict = Depends(get_dependencies), 
+):  
+    hypotheses = deps["hypotheses"]
     hypothesis_ids = data.get("hypothesis_ids")
 
     if not hypothesis_ids:
@@ -465,13 +475,14 @@ async def bulk_delete_hypotheses(
 async def chat(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies)
 ):
     form = await request.form()
     query = form.get("query")
     hypothesis_id = form.get("hypothesis_id")
 
-    hypotheses = get_deps()["hypotheses"]
-    llm = get_deps()["llm"]
+    hypotheses = deps["hypotheses"]
+    llm = deps["llm"]
 
     hypothesis = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
     if not hypothesis:
@@ -492,12 +503,13 @@ async def chat(
 async def get_projects(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies),
 ):
-    projects = get_deps()["projects"]
-    analysis = get_deps()["analysis"]
-    hypotheses = get_deps()["hypotheses"]
-    enrichment = get_deps()["enrichment"]
-    gene_expression = get_deps().get("gene_expression")
+    projects = deps["projects"]
+    analysis = deps["analysis"]
+    hypotheses = deps["hypotheses"]
+    enrichment = deps["enrichment"]
+    gene_expression = deps.get("gene_expression")
 
     if id:
         response_data, status_code = get_project_with_full_data(
@@ -514,7 +526,7 @@ async def get_projects(
         return JSONResponse(content=response_data, status_code=status_code)
 
     raw_projects = projects.get_projects(current_user_id)
-    files = get_deps()["files"]
+    files = deps["files"]
     enhanced_projects: list[dict] = []
 
     for project in raw_projects:
@@ -582,10 +594,11 @@ async def get_projects(
 async def delete_project(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies),
 ):
     if not id:
         raise HTTPException(status_code=400, detail="Project ID is required")
-    projects = get_deps()["projects"]
+    projects = deps["projects"]
     success = projects.delete_project(current_user_id, id)
     if success:
         return {"message": "Project deleted successfully"}
@@ -596,8 +609,9 @@ async def delete_project(
 async def bulk_delete_projects(
     data: dict = Body(...),
     current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies),
 ):
-    projects = get_deps()["projects"]
+    projects = deps["projects"]
     project_ids = data.get("project_ids")
 
     if not project_ids:
@@ -644,7 +658,8 @@ async def post_analysis_pipeline(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
     gwas_file: UploadFile | None = File(None),
-):
+    deps: dict = Depends(get_dependencies)
+):  
     try:
         form = await request.form()
 
@@ -664,13 +679,13 @@ async def post_analysis_pipeline(
         batch_size: int = int(form.get("batch_size", 5))
         sample_size: int = int(form.get("sample_size", 10000))
 
-        projects = get_deps()["projects"]
-        files = get_deps()["files"]
-        analysis = get_deps()["analysis"]
-        gene_expression = get_deps().get("gene_expression")
-        config = get_deps()["config"]
-        storage = get_deps().get("storage")
-        gwas_library = get_deps().get("gwas_library")
+        projects = deps["projects"]
+        files = deps["files"]
+        analysis = deps["analysis"]
+        gene_expression = deps["gene_expression"]
+        config = deps["config"] # deps doesn't have config !
+        storage = deps["storage"]
+        gwas_library = deps["gwas_library"]
 
         if not project_name:
             raise HTTPException(status_code=400, detail="project_name is required")
@@ -1031,8 +1046,9 @@ async def get_phenotypes(
     search: str | None = Query(None),
     limit: int | None = Query(None),
     skip: int = Query(0),
+    deps: dict = Depends(get_dependencies)
 ):
-    phenotypes = get_deps()["phenotypes"]
+    phenotypes = deps["phenotypes"]
     try:
         if id:
             phenotype = phenotypes.get_phenotypes(phenotype_id=id)
@@ -1075,8 +1091,8 @@ async def get_phenotypes(
 
 
 @router.post("/phenotypes", status_code=201)
-async def post_phenotypes(data: list = Body(...)):
-    phenotypes = get_deps()["phenotypes"]
+async def post_phenotypes(data: list = Body(...), deps: dict = Depends(get_dependencies)):
+    phenotypes = deps["phenotypes"]
     try:
         if not isinstance(data, list):
             raise HTTPException(
@@ -1124,8 +1140,9 @@ async def get_credible_sets(
     project_id: str | None = Query(None),
     credible_set_id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies)
 ):
-    analysis = get_deps()["analysis"]
+    analysis = deps["analysis"]
 
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
@@ -1172,8 +1189,9 @@ async def get_gwas_files(
     sex: str | None = Query(None),
     limit: int | None = Query(None),
     skip: int = Query(0),
+    deps: dict = Depends(get_dependencies)
 ):
-    gwas_library = get_deps().get("gwas_library")
+    gwas_library = deps["gwas_library"]
     try:
         if limit is None:
             limit = 100
@@ -1225,9 +1243,9 @@ async def get_gwas_files(
 
 
 @router.get("/gwas-files/download/{file_id}")
-async def download_gwas_file(file_id: str):
-    gwas_library = get_deps().get("gwas_library")
-    storage = get_deps().get("storage")
+async def download_gwas_file(file_id: str, deps: dict = Depends(get_dependencies)):
+    gwas_library = deps["gwas_library"]
+    storage = deps["storage"]
 
     try:
         entry = gwas_library.get_gwas_entry(file_id=file_id)
@@ -1318,8 +1336,11 @@ async def download_gwas_file(file_id: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 @router.get("/user-files")
-async def get_user_files(current_user_id: str = Depends(get_current_user_id)):
-    files = get_deps()["files"]
+async def get_user_files(
+    current_user_id: str = Depends(get_current_user_id),
+    deps: dict = Depends(get_dependencies)):
+
+    files = deps["files"]
     try:
         all_files = files.get_file_metadata(current_user_id)
         if not all_files:
