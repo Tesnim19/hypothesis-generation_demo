@@ -36,27 +36,17 @@ overlaps_with(A, B) :-
              EndA < EndB.
 
 
-% within_k_distance(G, S, K, Out) :-
-%     chr(S, Chr),
-%     chr(G, Chr),
-%     G \= S,
-%     start(S, Pos),
-%     start(G, StartG),
-%     end(G, EndG),
-%     (   (abs(Pos - StartG) =< K ; abs(Pos - EndG) =< K)
-%     ->  Out = 1
-%     ;   Out = 0
-%     ).
-
-within_k_distance(G, S, K) :-
+within_k_distance(G, S, K, Out) :-
     chr(S, Chr),
     chr(G, Chr),
     G \= S,
     start(S, Pos),
     start(G, StartG),
     end(G, EndG),
-    (abs(Pos - StartG) =< K, ! ;
-       abs(Pos - EndG) =< K).
+    (   (abs(Pos - StartG) =< K ; abs(Pos - EndG) =< K)
+    ->  Out = 1
+    ;   Out = 0
+    ).
     
 abs_score_pair(Score-TF, AbsScore-TF) :-
     AbsScore is abs(Score).

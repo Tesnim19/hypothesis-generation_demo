@@ -262,3 +262,6 @@ results/*
 
 #images
 src/static/*
+
+# Docs
+docs/
