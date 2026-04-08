@@ -4,7 +4,7 @@ from typing import List
 import scipy.spatial
 
 from pydantic import BaseModel
-from llama_index.core.llms import ChatMessage
+from llama_index.core.base.llms.types import ChatMessage
 from llama_index.llms.openai import OpenAI
 from llama_index.llms.anthropic import Anthropic
 import openai

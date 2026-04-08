@@ -2,7 +2,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from loguru import logger
 
 from app.api.dependencies import verify_service_token
-from app.core.socket import sio
+from app.core.socketio_instance import sio
 
 router = APIRouter()
 

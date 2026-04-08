@@ -217,8 +217,12 @@ async def delete_hypothesis(
 ):
     hypotheses = get_deps()["hypotheses"]
     if hypothesis_id:
-        return hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
-    raise HTTPException(status_code=400, detail="Hypothesis ID is required")
+        result = hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
+        if isinstance(result, tuple):
+            body, status_code = result
+            return JSONResponse(body, status_code=status_code)
+        return result
+    raise HTTPException(status_code=400, detail="hypothesis_id is required")
 
 
 @router.post("/hypothesis/delete")

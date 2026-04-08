@@ -13,6 +13,8 @@ from . import (
     user_files,
 )
 
+from .hypothesis import hypothesis_flow
+
 router = APIRouter()
 router.include_router(internal.router)
 router.include_router(enrich.router)

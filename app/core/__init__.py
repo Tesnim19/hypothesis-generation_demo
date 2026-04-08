@@ -1,5 +1,5 @@
 from .config import Config, create_dependencies
-from .logging import setup_logging
+from .logging_config import setup_logging
 from .socketio_instance import sio
 from .status_tracker import StatusTracker, TaskState, status_tracker
 from .utils import (
