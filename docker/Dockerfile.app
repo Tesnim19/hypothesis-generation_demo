@@ -1,9 +1,7 @@
-# Application image that ties everything together.
-# Start from the "tools" stage to get system deps, R, genomics tools, Nextflow, etc.
-FROM tools AS app
+# Application image: lightweight layer built on top of hypothesis-base
+FROM hypothesis-base:latest
 
-# also bring in R packages built in r-env (they live under /usr/local/lib/R)
-COPY --from=r-env /usr/local/lib/R /usr/local/lib/R
+WORKDIR /app
 
 # install uv for Python dependency management
 RUN wget -qO- https://astral.sh/uv/install.sh | sh && \

@@ -9,7 +9,7 @@ import jwt
 from loguru import logger
 
 from app.api.dependencies import extract_token_from_environ, get_deps
-from app.core.socket import sio
+from app.core.socketio_instance import sio
 from app.core.status_tracker import status_tracker
 from app.core.utils import serialize_datetime_fields
 

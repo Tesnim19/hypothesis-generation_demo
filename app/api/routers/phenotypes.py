@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 
-from logurur import logger
+from loguru import logger
 
 from app.api.dependencies import get_deps
 from app.core.utils import serialize_datetime_fields
