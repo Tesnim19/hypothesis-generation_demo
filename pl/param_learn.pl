@@ -30,6 +30,10 @@ relevant_gene(G, S): 0.25 :- eqtl_association(S, G).
 relevant_gene(G, S): 0.25 :- activity_by_contact(S, G).
 
 relevant_gene(G, S): 0.25 :- pgboost(S, G).
+relevant_gene(G, S): 0.25 :- in_tad_with(S, G).
+% relevant_gene(G, S): 0.25 :- regulatory_effect(S, G), eqtl_association(S, G).
+% relevant_gene(G, S): 0.25 :- activity_by_contact(S, G), eqtl_association(S, G).
+% relevant_gene(G, S): 0.25 :- pgboost(S, G), regulatory_effect(S, G).
 
 :- end_in.
 
@@ -77,7 +81,7 @@ run_param(Dir, Program, [Fold|RestFold], [LPH|LPT],
   % Compute AUC-ROC using sklearn (trapezoidal) instead of convex hull
   maplist(res_to_label_score, Res, LabelScores),
   py_call(inference_util:sklearn_roc_auc(LabelScores), AROCH),
-  APRH = 0.0, % placeholder — PR not computed via sklearn yet
+  py_call(inference_util:sklearn_pr_auc(LabelScores), APRH),
   retract_all(ModelsRef),
   retract_all([TrainFoldRef]),
   retract_all([TestFoldRef]),
@@ -105,6 +109,8 @@ run_param_learning(Dir, NumFolds, AUCROC, AUCPR, M_AUCROC, S_AUCROC, M_AUCPR, S_
   format('AUCPR:  ~4f +/- ~4f~n', [M_AUCPR, S_AUCPR]),
   format('~n=== Per-Fold AUCROC ===~n'),
   maplist([Fold, Auc]>>format('  Fold ~w: ~6f~n', [Fold, Auc]), Folds, AUCROC),
+  format('~n=== Per-Fold AUCPR ===~n'),
+  maplist([Fold, Auc]>>format('  Fold ~w: ~6f~n', [Fold, Auc]), Folds, AUCPR),
   format('~n=== Per-Fold Learned Parameters ===~n'),
   print_per_fold_params(LPs, AllConfs, Folds),
   format('~n=== Average Learned Weights ===~n'),

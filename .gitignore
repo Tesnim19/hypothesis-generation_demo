@@ -206,3 +206,6 @@ data/chr*
 
 # Logs
 logs/
+
+# Docs
+docs/

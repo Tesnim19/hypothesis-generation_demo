@@ -19,10 +19,8 @@ relevant_gene(Gene, Snp):0.0035 :-
 
 relevant_gene(Gene, Snp):0.1616 :-
   pgboost(Snp, Gene).
+  
 :- end_in.
-% relevant_gene(Gene, Snp) :- regulatary_effect(Snp, Gene), sample_head([0.34, 0.66], 1, [Gene, Snp], NH), NH=1.
-% relevant_gene(Gene, Snp) :- eqtl_association(Snp, Gene), sample_head([0.02, 0.982], 2, [Gene, Snp], NH), NH=1.
-% relevant_gene(Gene, Snp) :- activity_by_contact(Snp, Gene), sample_head([0.021, 0.979], 3, [Gene, Snp], NH), NH=1.
 
 regulatory_effect(S, G) :- 
     in_regulatory_region(S, Enh),

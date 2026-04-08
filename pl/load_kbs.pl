@@ -110,8 +110,8 @@ load_with_time(Files, FileName) :-
 
 % user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
 % user:file_search_path(prolog_out_v3,'/mnt/hdd_2/abdu/prolog_out_v3').
-user:file_search_path(prolog_out,'/mnt/hdd_1/abdu/prolog_out_v3').
-user:file_search_path(prolog_out_v3,'/mnt/hdd_1/abdu/prolog_out_v3').
+user:file_search_path(prolog_out,'/mnt/hdd_1/biocypher-kg/output/prolog_out_v4').
+user:file_search_path(prolog_out_v3,'/mnt/hdd_1/biocypher-kg/output/prolog_out_v4').
 user:file_search_path(gene, prolog_out('gencode/gene')).
 user:file_search_path(exon, prolog_out('gencode/exon')).
 user:file_search_path(transcript, prolog_out('gencode/transcript')).
@@ -127,18 +127,18 @@ user:file_search_path(tflink, prolog_out_v3('tflink')).
 user:file_search_path(refseq, prolog_out_v3('refseq')).
 user:file_search_path(eqtl, prolog_out_v3('gtex/eqtl')).
 user:file_search_path(abc, prolog_out_v3('abc')).
-% user:file_search_path(cell_line_ontology, prolog_out('cell_line_ontology')).
-% user:file_search_path(uberon, prolog_out('uberon')).
-% user:file_search_path(efo, prolog_out('experimental_factor_ontology')).
-% user:file_search_path(bto, prolog_out('brenda_tissue_ontology')).
-% user:file_search_path(cadd, prolog_out('cadd')).
+user:file_search_path(cell_line_ontology, prolog_out('cell_line_ontology')).
+user:file_search_path(uberon, prolog_out('uberon')).
+user:file_search_path(efo, prolog_out('experimental_factor_ontology')).
+user:file_search_path(bto, prolog_out('brenda_tissue_ontology')).
+user:file_search_path(cadd, prolog_out('cadd')).
 user:file_search_path(dbsnp, prolog_out_v3('dbsnp')).
 user:file_search_path(dbsuper, prolog_out_v3('dbsuper')).
 user:file_search_path(enhancer_atlas, prolog_out_v3('enhancer_atlas')).
-% user:file_search_path(epd, prolog_out('epd')).
-%user:file_search_path(fabian, prolog_out('fabian')).
+user:file_search_path(epd, prolog_out('epd')).
+user:file_search_path(fabian, prolog_out('fabian')).
 user:file_search_path(peregrine, prolog_out_v3('peregrine')).
-% user:file_search_path(top_ld_eur, prolog_out('top_ld/EUR')).
+user:file_search_path(top_ld_eur, prolog_out('top_ld/EUR')).
 user:file_search_path(tfbs, prolog_out_v3('tfbs')).
 user:file_search_path(tf_snp, prolog_out('tf_snp')).
 user:file_search_path(pgboost, prolog_out_v3('pgboost')).
@@ -174,7 +174,7 @@ load_atomspace :-
     load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
     load_with_time([tf_snp(edges)], "tf_snp"),
     load_with_time([pgboost(edges)], "pgboost").
-    %load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
-    %load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
-    %load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
+    load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
+    load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
+    load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
 
