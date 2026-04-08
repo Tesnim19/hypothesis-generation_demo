@@ -2,7 +2,6 @@
 :- use_module(library(http/http_dispatch)).
 :- use_module(library(http/http_json)).
 :- use_module(library(http/http_parameters)).
-%:- use_module(library(pengines)).
 
 
 server_start(Port) :- http_server(http_dispatch, [port(Port)]).
@@ -10,9 +9,8 @@ server_stop(Port) :- http_stop_server(Port, []).
 
 
 :- http_handler('/api/hypgen', handle_hypgen, []).
-:- http_handler('/api/hypgen/candidate_genes/rsid', handle_candidate_genes_rsid, []).
-:- http_handler('/api/hypgen/candidate_genes/locus', handle_candidate_genes_locus, []).
-
+:- http_handler('/api/hypgen/candidate_genes', handle_candidate_genes, []).
+:- http_handler('/api/query', handle_query, []).
 
 :- http_handler('/api/error', 
     throw(http_reply(server_error(json{message:'Internal server error'}))), 
@@ -20,74 +18,73 @@ server_stop(Port) :- http_stop_server(Port, []).
 
 handle_hypgen(Request) :-
     http_parameters(Request, 
-              [pos(Pos, [integer, optional(false)]),
-               chr(Chr, [optional(false)]),
-               ref(Ref, [optional(false)]), 
-               alt(Alt, [optional(false)])]),
+              [rsid(RsId, [optional(false)]), 
+               seed(Seed, [integer, optional(false)]),
+               samples(Samples, [integer, optional(false)])]),
 
-    % Find SNP by position, ref, and alt
-    (findall(Snp, 
-            (chr(Snp, Chr), start(Snp, Pos), ref(Snp, Ref), alt(Snp, Alt)),
-            [Snp|_])  % Take the first matching SNP
-    ->  % Extract rsid from Snp term
         Snp = snp(RsId),
-        % Get genes and include rsid in response
-        (setof(G, relevant_gene(gene(G), Snp), Genes) -> 
+        ((proof_tree(relevant_gene(Gene, Snp), Seed, Samples, Graph)) -> 
             reply_json(json{
                 rsid: RsId,
-                response: Genes
+                response: Graph
             })
         ;   reply_json(json{
                 rsid: RsId,
                 response: []
-            })
-        )
-    ;   % No matching SNP found
-        reply_json(json{
-            rsid: '',
-            response: []
-            })
-    ).
+            })).
 
-handle_candidate_genes_rsid(Request) :-
+handle_candidate_genes(Request) :-
     http_parameters(Request, 
-            [rsid(Id, [atom, optional(false)])]),
-    ( candidate_genes(snp(Id), Genes) ->
+            [rsid(RsId, [optional(false)])]),
+
+    Snp = snp(RsId),
+    (candidate_genes(Snp, Genes) -> 
         reply_json(json{
-            rsid: Id,
+            rsid: RsId,
             candidate_genes: Genes
         })
-    ;
-        format(string(Msg), 'No candidate gene found for given rsid: ~w', [Id]),
-        reply_json(json{
-            rsid: Id,
-            error: Msg
-        }, [status(404)])
+    ;   reply_json(json{
+            rsid: RsId,
+            candidate_genes: []
+        })
     ).
 
-handle_candidate_genes_locus(Request) :-
+% Used for term_name queries (phenotype lookups)
+extract_term_id(Term, JsonTerm) :-
+    compound(Term),
+    functor(Term, Functor, 1),
+    arg(1, Term, Arg),
+    !,
+    % Return as "functor(arg)" format
+    format(atom(JsonTerm), '~w(~w)', [Functor, Arg]).
+extract_term_id(Term, Term).
+
+handle_query(Request) :-
     http_parameters(Request, 
-            [chr(Chr, [atom, optional(false)]), 
-             pos(Pos, [integer, optional(false)]), 
-             ref(Ref, [atom, optional(false)]),
-             alt(Alt, [atom, optional(false)])]),
-    ((chr(Snp, Chr), start(Snp, Pos), 
-      ref(Snp, Ref), alt(Snp, Alt), Snp = snp(Id)) ->
-        (candidate_genes(Snp, Genes) -> 
-            reply_json(json{
-                rsid: Id,
-                candidate_genes: Genes
-            })
-        ;
-            format(string(Msg), 'No candidate gene found for given rsid: ~w', [Id]),
-            reply_json(json{
-                rsid: Id,
-                error: Msg
-            }, [status(404)])
+            [query(QueryString, [optional(false)])]),
+    
+    catch(
+        (
+            term_string(Query, QueryString),
+            % Handle different query patterns
+            (   Query = gene_id(Name, X) ->
+                findall(X, gene_id(Name, X), Results)
+            ;   Query = gene_name(Gene, X) ->
+                findall(X, gene_name(Gene, X), Results)
+            ;   Query = variant_id(Variant, X) ->
+                findall(X, variant_id(Variant, X), Results)
+            ;   Query = term_name(Term, Name) ->
+                findall(Term, term_name(Term, Name), RawResults),
+                % Extract IDs from compound terms like efo(ID)
+                maplist(extract_term_id, RawResults, Results)
+            ;   % Unknown query pattern - reject to prevent arbitrary code execution
+                Results = []
+            ),
+            reply_json(Results)
+        ),
+        Error,
+        (
+            format(string(ErrorMsg), "Query execution failed: ~w", [Error]),
+            reply_json(json{error: ErrorMsg})
         )
-    ;
-        format(string(Msg2), 'Could not find a SNP with specified chr:pos:ref:alt (~w:~w:~w:~w)', [Chr, Pos, Ref, Alt]),
-        reply_json(json{
-            error: Msg2
-        }, [status(400)])
     ).

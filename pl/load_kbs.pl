@@ -160,7 +160,7 @@ load_atomspace :-
     load_with_time([abc(edges)], "abc"),
     %load_with_time([cell_line_ontology(nodes), cell_line_ontology(edges)], "cell_line ontology"),
     %load_with_time([uberon(nodes), uberon(edges)], "uberon"),
-    %load_with_time([efo(nodes), efo(edges)], "experimental factor ontology"),
+    load_with_time([efo(nodes), efo(edges)], "experimental factor ontology"),
     %load_with_time([bto(nodes), bto(edges)], "brenda tissue ontology"),
     % load_with_time([cadd(nodes)], "cadd"),
     load_with_time([dbsnp(nodes)], "dbsnp"),

@@ -110,7 +110,7 @@ class LLM:
         except:
             # retry
             response = self.llm.chat(messages)
-            response = json.loads(response)
+            response = json.loads(response.message.content)
         return response
         
     def get_relevant_go(self, phentoype, enrich_tbl, 
@@ -146,10 +146,22 @@ class LLM:
         :param k: Number of documents to retrieve
         :return:
         """
+        # Validate that data is not empty
+        if data is None or len(data) == 0:
+            print("Warning: Empty enrichment table provided to LLM")
+            return []
+        
         texts = []
         for _, row in data.iterrows():
             term, desc = row["Term"].strip(), row["Desc"].strip()
             texts.append(f"{term} [SEP] {desc}")
+        
+        # Validate that we have texts to embed
+        if not texts:
+            print("Warning: No texts to embed after processing enrichment table")
+            return []
+        
+        data = data.copy()  # Avoid SettingWithCopyWarning
         client = openai.Client()
         embeddings =  client.embeddings.create(input = texts, model="text-embedding-3-small").data
         data["embeddings"] = [emb.embedding for emb in embeddings]
