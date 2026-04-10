@@ -108,10 +108,13 @@ load_with_time(Files, FileName) :-
     format("Loaded ~w!~n", [FileName]).
 
 
-% user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
-% user:file_search_path(prolog_out_v3,'/mnt/hdd_2/abdu/prolog_out_v3').
-user:file_search_path(prolog_out,'/mnt/hdd_1/biocypher-kg/output/prolog_out_v4').
-user:file_search_path(prolog_out_v3,'/mnt/hdd_1/biocypher-kg/output/prolog_out_v4').
+%user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
+%user:file_search_path(prolog_out,'/mnt/prolog_out_v3').
+%user:file_search_path(prolog_out,'/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3_petta').
+%user:file_search_path(prolog_out_v3, '/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3_petta').
+user:file_search_path(prolog_out,'/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3').
+user:file_search_path(prolog_out_v3, '/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3').
+
 user:file_search_path(gene, prolog_out('gencode/gene')).
 user:file_search_path(exon, prolog_out('gencode/exon')).
 user:file_search_path(transcript, prolog_out('gencode/transcript')).
