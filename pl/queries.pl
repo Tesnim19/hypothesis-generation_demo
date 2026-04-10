@@ -9,7 +9,7 @@
 
 candidate_genes(S, Genes) :-
     setof(Gene, in_tad_with(S, gene(Gene)), InTadGenes),
-    setof(Gene, within_k_distance(gene(Gene), S, 500000), ClosestGenes),
+    setof(Gene, within_k_distance(gene(Gene), S, 500000, 1), ClosestGenes),
     union(InTadGenes, ClosestGenes, Genes).
   %maplist(gene_name, InTadGenes, Genes).
 
