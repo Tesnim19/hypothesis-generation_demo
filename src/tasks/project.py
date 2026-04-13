@@ -108,7 +108,7 @@ def save_analysis_state_task(user_id, project_id, state_data):
         emit_analysis_update(user_id, project_id, state_data)
         return True
     except Exception as e:
-        logger.info(f"Error saving analysis state: {str(e)}")
+        logger.error(f"Error saving analysis state: {str(e)}")
         raise
 
 
@@ -123,7 +123,7 @@ def load_analysis_state_task(projects_handler, user_id, project_id):
             logger.info(f"No analysis state found for project {project_id}")
         return state
     except Exception as e:
-        logger.info(f"Error loading analysis state: {str(e)}")
+        logger.error(f"Error loading analysis state: {str(e)}")
         raise
 
 

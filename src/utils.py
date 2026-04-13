@@ -10,6 +10,43 @@ import uuid
 from dask.distributed import get_worker
 
 
+def _post_task_update_bridge(payload: dict, log_context: str) -> bool:
+    """
+    POST JSON to the API internal task-update bridge for Socket.IO broadcast.
+    Returns True if the server responded with HTTP 2xx. Logs clearly on auth/env, HTTP, or network failure.
+    """
+    service_token = os.getenv("PREFECT_SERVICE_TOKEN")
+    if not service_token:
+        logger.error(
+            f"PREFECT_SERVICE_TOKEN not set – realtime update will not be emitted ({log_context})."
+        )
+        return False
+
+    api_host = os.getenv("API_HOST") or os.getenv("FLASK_HOST", "localhost")
+    api_port = os.getenv("API_PORT") or os.getenv("FLASK_PORT", "5000")
+    url = f"http://{api_host}:{api_port}/internal/task-update"
+
+    try:
+        resp = _requests.post(
+            url,
+            json=payload,
+            headers={"Authorization": f"Bearer {service_token}"},
+            timeout=5,
+        )
+        if not resp.ok:
+            body = (resp.text or "").strip().replace("\n", " ")[:500]
+            logger.error(
+                f"Task update bridge HTTP {resp.status_code} ({log_context}) url={url}: "
+                f"{body or '(empty body)'}"
+            )
+            return False
+        logger.info(f"Emitted task update [{resp.status_code}]: {log_context}")
+        return True
+    except Exception as exc:
+        logger.error(f"Failed to POST task update to {url} ({log_context}): {exc}")
+        return False
+
+
 def emit_task_update(hypothesis_id, task_name, state, progress=0, details=None, next_task=None, error=None):
     """Emit a real-time progress update to WebSocket clients."""
     task_history = status_tracker.get_history(hypothesis_id)
@@ -54,39 +91,16 @@ def emit_task_update(hypothesis_id, task_name, state, progress=0, details=None, 
         update["status"] = "failed"
         update["error"] = error
 
-    service_token = os.getenv("PREFECT_SERVICE_TOKEN")
-    if not service_token:
-        logger.error("PREFECT_SERVICE_TOKEN not set – task update will not be emitted.")
-        return
-
-    api_host = os.getenv("API_HOST") or os.getenv("FLASK_HOST", "localhost")
-    api_port = os.getenv("API_PORT") or os.getenv("FLASK_PORT", "5000")
-    url = f"http://{api_host}:{api_port}/internal/task-update"
-
-    try:
-        resp = _requests.post(
-            url,
-            json=update,
-            headers={"Authorization": f"Bearer {service_token}"},
-            timeout=5,
+    log_ctx = f"hypothesis_id={hypothesis_id} task={task_name} state={state.value}"
+    delivered = _post_task_update_bridge(update, log_ctx)
+    if not delivered:
+        logger.warning(
+            f"Realtime task update not delivered to clients; in-process history still updated — {log_ctx}"
         )
-        logger.info(f"Emitted task update [{resp.status_code}]: {task_name} – {state}")
-    except Exception as exc:
-        logger.error(f"Failed to POST task update to {url}: {exc}")
-        logger.info(f"Status saved locally (no delivery): {task_name} – {state}")
 
 
 def emit_analysis_update(user_id, project_id, state_data):
     """Push analysis pipeline progress to Socket.IO clients in room analysis_{project_id}."""
-    service_token = os.getenv("PREFECT_SERVICE_TOKEN")
-    if not service_token:
-        logger.error("PREFECT_SERVICE_TOKEN not set – analysis update will not be emitted.")
-        return
-
-    api_host = os.getenv("API_HOST") or os.getenv("FLASK_HOST", "localhost")
-    api_port = os.getenv("API_PORT") or os.getenv("FLASK_PORT", "5000")
-    url = f"http://{api_host}:{api_port}/internal/task-update"
-
     room = f"analysis_{project_id}"
     payload = {
         "target_room": room,
@@ -97,19 +111,15 @@ def emit_analysis_update(user_id, project_id, state_data):
         **state_data,
     }
 
-    try:
-        resp = _requests.post(
-            url,
-            json=payload,
-            headers={"Authorization": f"Bearer {service_token}"},
-            timeout=5,
+    log_ctx = (
+        f"project_id={project_id} user_id={user_id} "
+        f"stage={state_data.get('stage')} status={state_data.get('status')}"
+    )
+    delivered = _post_task_update_bridge(payload, log_ctx)
+    if not delivered:
+        logger.warning(
+            f"Realtime analysis update not delivered; callers may have persisted state in DB already — {log_ctx}"
         )
-        logger.info(
-            f"Emitted analysis update [{resp.status_code}]: project={project_id} "
-            f"stage={state_data.get('stage')} status={state_data.get('status')}"
-        )
-    except Exception as exc:
-        logger.error(f"Failed to POST analysis update to {url}: {exc}")
 
 
 def allowed_file(filename):

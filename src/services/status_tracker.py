@@ -45,10 +45,24 @@ class StatusTracker:
             
         self.task_history[hypothesis_id].append(update)
 
-        # Persist to DB on completion or failure
+        # Persist to DB on completion or failure at phase boundaries
         if state in [TaskState.COMPLETED, TaskState.FAILED]:
-            if task_name in ["Creating enrich data", "Generating hypothesis"] or task_name.startswith("Verifying existence") and progress == 80:
+            if self._should_persist_task_history(task_name, state):
                 self._persist_and_clear(hypothesis_id)
+
+    def _should_persist_task_history(self, task_name, state):
+        """
+        Flush in-memory task history to DB at milestones
+        """
+        if state not in (TaskState.COMPLETED, TaskState.FAILED):
+            return False
+        if task_name in ("Creating enrich data", "Generating hypothesis"):
+            return True
+        if task_name == "Verifying existence of enrichment data":
+            return True
+        if task_name == "Verifying existence of hypothesis data":
+            return True
+        return False
     
     def _persist_and_clear(self, hypothesis_id):
         """Persist task history to DB and clear from memory"""
