@@ -43,7 +43,7 @@ class Config:
         config.swipl_host = args.swipl_host
         config.swipl_port = args.swipl_port
         config.embedding_model = getattr(args, 'embedding_model', config.embedding_model)
-        # Flask-specific arguments (if present)
+        # HTTP bind host/port from CLI (if present)
         config.host = getattr(args, 'host', config.host)
         config.port = getattr(args, 'port', config.port)
         # Also load MongoDB config from environment
