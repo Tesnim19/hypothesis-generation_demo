@@ -1,248 +1,318 @@
-# === Gencode ===
-gencode_gene:
-  path: gencode/gene
-  nodes: true
-  edges: false
+settings:
+  prolog_base: /mnt/hdd_1/biocypher-kg/output/prolog_out_v4
 
-gencode_transcript:
-  path: gencode/transcript
-  nodes: true
-  edges: true
+kbs:
+  # === Gencode ===
+  gencode_gene:
+    path: gencode/gene
+    nodes: true
+    edges: false
+    loaded: true
 
-gencode_exon:
-  path: gencode/exon
-  nodes: true
-  edges: true
+  gencode_transcript:
+    path: gencode/transcript
+    nodes: true
+    edges: true
+    loaded: false
 
-# === Genes / Proteins ===
-uniprotkb:
-  path: uniprot
-  nodes: true
-  edges: true
+  gencode_exon:
+    path: gencode/exon
+    nodes: true
+    edges: true
+    loaded: false
 
-refseq_closest_gene:
-  path: refseq
-  nodes: false
-  edges: true
+  # === Genes / Proteins ===
+  uniprotkb:
+    path: uniprot
+    nodes: true
+    edges: true
+    loaded: false
 
-# === Pathways / Ontologies ===
-pathway:
-  path: reactome
-  nodes: true
-  edges: true
+  refseq_closest_gene:
+    path: refseq
+    nodes: false
+    edges: true
+    loaded: true
 
-gaf:
-  path: gaf
-  nodes: false
-  edges: true
+  # === Pathways / Ontologies ===
+  pathway:
+    path: reactome
+    nodes: true
+    edges: true
+    loaded: false
 
-gene_ontology_biological_process:
-  path: gene_ontology/biological_process
-  nodes: true
-  edges: true
+  gaf:
+    path: gaf
+    nodes: false
+    edges: true
+    loaded: false
 
-gene_ontology_cellular_component:
-  path: gene_ontology/cellular_component
-  nodes: true
-  edges: true
+  gene_ontology_biological_process:
+    path: gene_ontology/biological_process
+    nodes: true
+    edges: true
+    loaded: false
 
-gene_ontology_molecular_function:
-  path: gene_ontology/molecular_function
-  nodes: true
-  edges: true
+  gene_ontology_cellular_component:
+    path: gene_ontology/cellular_component
+    nodes: true
+    edges: true
+    loaded: false
 
-uberon:
-  path: uberon
-  nodes: true
-  edges: true
+  gene_ontology_molecular_function:
+    path: gene_ontology/molecular_function
+    nodes: true
+    edges: true
+    loaded: false
 
-cell_line_ontology:
-  path: cell_line_ontology
-  nodes: true
-  edges: true
+  uberon:
+    path: uberon
+    nodes: true
+    edges: true
+    loaded: false
 
-cell_ontology:
-  path: cell_ontology
-  nodes: true
-  edges: true
+  cell_line_ontology:
+    path: cell_line_ontology
+    nodes: true
+    edges: true
+    loaded: false
 
-experimental_factor_ontology:
-  path: experimental_factor_ontology
-  nodes: true
-  edges: true
+  cell_ontology:
+    path: cell_ontology
+    nodes: true
+    edges: true
+    loaded: false
 
-brenda_tissue_ontology:
-  path: brenda_tissue_ontology
-  nodes: true
-  edges: true
+  experimental_factor_ontology:
+    path: experimental_factor_ontology
+    nodes: true
+    edges: true
+    loaded: true
 
-# === Regulatory / Epigenomics ===
-tflink:
-  path: tflink
-  nodes: false
-  edges: true
+  brenda_tissue_ontology:
+    path: brenda_tissue_ontology
+    nodes: true
+    edges: true
+    loaded: false
 
-hocomoco:
-  path: hocomoco
-  nodes: true
-  edges: false
+  # === Regulatory / Epigenomics ===
+  tflink:
+    path: tflink
+    nodes: false
+    edges: true
+    loaded: true
 
-encode_tfbs:
-  path: tfbs
-  nodes: true
-  edges: true
+  hocomoco:
+    path: hocomoco
+    nodes: true
+    edges: false
+    loaded: false
 
-fabian:
-  path: fabian
-  nodes: false
-  edges: true
+  encode_tfbs:
+    path: tfbs
+    nodes: true
+    edges: true
+    loaded: true
 
-motif_diff:
-  path: MotifDiff
-  nodes: false
-  edges: true
+  fabian:
+    path: fabian
+    nodes: false
+    edges: true
+    loaded: false
 
-abc:
-  path: abc
-  nodes: false
-  edges: true
+  motif_diff:
+    path: MotifDiff
+    nodes: false
+    edges: true
+    loaded: false
 
-enhancer_atlas:
-  path: enhancer_atlas
-  nodes: true
-  edges: true
+  abc:
+    path: abc
+    nodes: false
+    edges: true
+    loaded: false
 
-epd_promoter:
-  path: epd
-  nodes: true
-  edges: true
+  enhancer_atlas:
+    path: enhancer_atlas
+    nodes: true
+    edges: true
+    loaded: true
 
-ccre_enhancer:
-  path: ccre/enhancer_ccre
-  nodes: true
-  edges: true
+  epd_promoter:
+    path: epd
+    nodes: true
+    edges: true
+    loaded: true
 
-ccre_promoter:
-  path: ccre/promoter_ccre
-  nodes: true
-  edges: true
+  ccre_enhancer:
+    path: ccre/enhancer_ccre
+    nodes: true
+    edges: true
+    loaded: true
 
-dbsuper_super_enhancer:
-  path: dbsuper
-  nodes: true
-  edges: true
+  ccre_promoter:
+    path: ccre/promoter_ccre
+    nodes: true
+    edges: true
+    loaded: true
 
-peregrine_enhancer:
-  path: peregrine
-  nodes: true
-  edges: true
+  catlas_ccre_enhancer:
+    path: catlas_ccre/enhancer
+    nodes: true
+    edges: true
+    loaded: true
 
-roadmap_chromatin_state:
-  path: roadmap/chromatin_state
-  nodes: false
-  edges: true
+  catlas_ccre_promoter:
+    path: catlas_ccre/promoter
+    nodes: true
+    edges: true
+    loaded: true
 
-roadmap_h3_mark:
-  path: roadmap/h3_mark
-  nodes: false
-  edges: true
+  catlas_ccre_abc_enhancer:
+    path: catlas_ccre/abc/enhancer
+    nodes: false
+    edges: true
+    loaded: true
 
-roadmap_dhs:
-  path: roadmap/dhs
-  nodes: false
-  edges: true
+  catlas_ccre_abc_promoter:
+    path: catlas_ccre/abc/promoter
+    nodes: false
+    edges: true
+    loaded: true
 
-tf_snp:
-  path: tf_snp
-  nodes: false
-  edges: true
+  dbsuper_super_enhancer:
+    path: dbsuper
+    nodes: true
+    edges: true
+    loaded: true
 
-# === Expression ===
-gtex_eqtl:
-  path: gtex/eqtl
-  nodes: false
-  edges: true
+  peregrine_enhancer:
+    path: peregrine
+    nodes: true
+    edges: true
+    loaded: true
 
-gtex_expression:
-  path: gtex/expression
-  nodes: false
-  edges: true
+  roadmap_chromatin_state:
+    path: roadmap/chromatin_state
+    nodes: false
+    edges: true
+    loaded: false
 
-bgee:
-  path: bgee
-  nodes: false
-  edges: true
+  roadmap_h3_mark:
+    path: roadmap/h3_mark
+    nodes: false
+    edges: true
+    loaded: false
 
-coxpressdb:
-  path: coxpressdb
-  nodes: false
-  edges: true
+  roadmap_dhs:
+    path: roadmap/dhs
+    nodes: false
+    edges: true
+    loaded: false
 
-# === Variants / Genomic ===
-cadd:
-  path: cadd
-  nodes: true
-  edges: false
+  tf_snp:
+    path: tf_snp
+    nodes: false
+    edges: true
+    loaded: true
 
-dbsnp:
-  path: dbsnp
-  nodes: true
-  edges: false
+  # === Expression ===
+  gtex_eqtl:
+    path: gtex/eqtl
+    nodes: false
+    edges: true
+    loaded: true
 
-dbvar_variant:
-  path: dbvar
-  nodes: true
-  edges: false
+  gtex_expression:
+    path: gtex/expression
+    nodes: false
+    edges: true
+    loaded: false
 
-dgv_variant:
-  path: dgv
-  nodes: true
-  edges: false
+  bgee:
+    path: bgee
+    nodes: false
+    edges: true
+    loaded: false
 
-polyphen2:
-  path: polyphen-2
-  nodes: true
-  edges: false
+  coxpressdb:
+    path: coxpressdb
+    nodes: false
+    edges: true
+    loaded: false
 
-tadmap:
-  path: tadmap
-  nodes: true
-  edges: true
+  # === Variants / Genomic ===
+  cadd:
+    path: cadd
+    nodes: true
+    edges: false
+    loaded: false
 
-topld_eur:
-  path: top_ld/EUR
-  nodes: false
-  edges: true
+  dbsnp:
+    path: dbsnp
+    nodes: true
+    edges: false
+    loaded: true
 
-#topld_afr:
-#  path: top_ld/AFR
-#  nodes: false
-#  edges: true
+  dbvar_variant:
+    path: dbvar
+    nodes: true
+    edges: false
+    loaded: false
 
-# === GWAS ===
-gwas_downstream:
-  path: gwas/downstream
-  nodes: false
-  edges: true
+  dgv_variant:
+    path: dgv
+    nodes: true
+    edges: false
+    loaded: false
 
-gwas_ingene:
-  path: gwas/ingene
-  nodes: false
-  edges: true
+  polyphen2:
+    path: polyphen-2
+    nodes: true
+    edges: false
+    loaded: false
 
-gwas_upstream:
-  path: gwas/upstream
-  nodes: false
-  edges: true
+  tadmap:
+    path: tadmap
+    nodes: true
+    edges: true
+    loaded: true
 
-# === Non-coding RNA ===
-rna_central_non_coding_rna:
-  path: rna_central
-  nodes: true
-  edges: true
+  topld_eur:
+    path: top_ld/EUR
+    nodes: false
+    edges: true
+    loaded: false
 
-# === PPI ===
-string:
-  path: string
-  nodes: false
-  edges: true
+  # === GWAS ===
+  gwas_downstream:
+    path: gwas/downstream
+    nodes: false
+    edges: true
+    loaded: false
+
+  gwas_ingene:
+    path: gwas/ingene
+    nodes: false
+    edges: true
+    loaded: false
+
+  gwas_upstream:
+    path: gwas/upstream
+    nodes: false
+    edges: true
+    loaded: false
+
+  # === Non-coding RNA ===
+  rna_central_non_coding_rna:
+    path: rna_central
+    nodes: true
+    edges: true
+    loaded: false
+
+  # === PPI ===
+  string:
+    path: string
+    nodes: false
+    edges: true
+    loaded: false

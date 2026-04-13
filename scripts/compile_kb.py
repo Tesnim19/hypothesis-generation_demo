@@ -50,7 +50,6 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Compile Knowledge Bases')
     parser.add_argument('--config-path', type=str, help='Path to the config file')
     parser.add_argument('--compile-script', type=str, help='Path to the script that compiles the KBs')
-    parser.add_argument('--path-prefix', type=str, help='Prefix to add to the path of the KBs')
     parser.add_argument('--hook-script', type=str, help='Path to the hooks file')
     parser.add_argument('--workers', type=int, default=None,
                         help='Number of parallel workers (default: number of CPUs)')
@@ -59,11 +58,9 @@ def parse_args():
 def main(): 
     args = parse_args()
     with open(args.config_path, 'r') as f:
-        config_dict = yaml.safe_load(f)
-    
-    if not args.path_prefix:
-        logger.error('Error: path_prefix is required!')
-        return
+        config = yaml.safe_load(f)
+        config_dict = {k: v for k, v in config['kbs'].items() if v.get('loaded', False)}
+        path_prefix = config['settings']['prolog_base']
     
     #make sure the compile script exists
     if not os.path.exists(args.compile_script):
@@ -74,7 +71,7 @@ def main():
         logger.error('Error: hook_path is required!')
         return
     
-    compile_kbs(config_dict, args.compile_script, args.hook_script ,args.path_prefix, args.workers)
+    compile_kbs(config_dict, args.compile_script, args.hook_script ,path_prefix, args.workers)
     
 
 if __name__ == '__main__':
