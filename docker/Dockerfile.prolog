@@ -24,7 +24,8 @@ RUN apt-get update && \
     libserd-0-0 \
     python3 \
     libpython3.11 \
-    libraptor2-0 && \
+    libraptor2-0 \
+    netcat-openbsd && \
     rm -rf /var/lib/apt/lists/*
 
 # Set environment variable
