@@ -21,6 +21,7 @@ class Config:
         self.swipl_port = 4242
         self.mongodb_uri = None
         self.db_name = None
+        self.redis_url = None
         self.embedding_model = "w601sxs/b1ade-embed-kd"
         self.plink_dir_38 = "./data/1000Genomes_phase3/plink_format_b38"
         self.data_dir = "./data"
@@ -49,6 +50,7 @@ class Config:
         # Also load MongoDB config from environment
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
         return config
 
     @classmethod
@@ -62,6 +64,7 @@ class Config:
         config.swipl_port = int(os.getenv("SWIPL_PORT", "4242"))
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
         config.embedding_model = os.getenv("EMBEDDING_MODEL", "w601sxs/b1ade-embed-kd")
         config.plink_dir_38 = os.getenv("PLINK_DIR_38", "./data/1000Genomes_phase3/plink_format_b38")
         config.data_dir = os.getenv("DATA_DIR", "./data")
@@ -134,5 +137,6 @@ def create_dependencies(config):
         'gene_expression': GeneExpressionHandler(mongodb_uri, db_name),
         'phenotypes': PhenotypeHandler(mongodb_uri, db_name),
         'gwas_library': GWASLibraryHandler(mongodb_uri, db_name),
-        'storage': minio_storage
+        'storage': minio_storage,
+        'redis_url': config.redis_url,
     }
