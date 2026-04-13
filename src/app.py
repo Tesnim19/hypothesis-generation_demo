@@ -53,7 +53,7 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
     async def lifespan(app: FastAPI):
         deps = create_dependencies(config)
         status_tracker = StatusTracker()
-        status_tracker.initialize(deps["tasks"])
+        status_tracker.initialize(deps["tasks"], redis_url=deps["redis_url"])
         init_deps(deps)
         logger.info("Application dependencies initialized")
         yield

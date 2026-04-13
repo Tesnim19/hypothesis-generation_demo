@@ -74,6 +74,7 @@ services:
       - API_HOST=api-service
       - API_PORT=5000
       - OPENAI_API_KEY=${OpenAI}
+      - REDIS_URL=redis://redis:6379
     env_file:
       - ../.env
     volumes:
@@ -87,6 +88,8 @@ services:
         condition: service_healthy
       prolog-service:
         condition: service_started
+      redis:
+        condition: service_healthy
     command: >
       uv run dask worker tcp://dask-scheduler:8786 
       --nworkers 4
@@ -241,12 +244,15 @@ services:
       - API_HOST=api-service
       - API_PORT=5000
       - OPENAI_API_KEY=${OpenAI}
+      - REDIS_URL=redis://redis:6379
     depends_on:
       prefect-service:
         condition: service_healthy
       dask-scheduler:
         condition: service_started
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - app_network
