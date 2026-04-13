@@ -99,7 +99,7 @@ def prepare_gwas_file_task(
 
 @task()
 def save_analysis_state_task(user_id, project_id, state_data):
-    """Save analysis state to file system"""
+    """Save analysis pipeline state to MongoDB."""
     try:
         deps = get_deps()
         projects_handler = deps["projects"]
@@ -114,7 +114,7 @@ def save_analysis_state_task(user_id, project_id, state_data):
 
 @task()
 def load_analysis_state_task(projects_handler, user_id, project_id):
-    """Load analysis state from file system"""
+    """Load analysis pipeline state from MongoDB (legacy JSON is migrated on read)."""
     try:
         state = projects_handler.load_analysis_state(user_id, project_id)
         if state:

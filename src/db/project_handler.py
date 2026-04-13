@@ -23,7 +23,11 @@ class ProjectHandler(BaseHandler):
         self.enrich_collection = self.db['enrich']
         self.analysis_results_collection = self.db['analysis_results']
         self.file_metadata_collection = self.db['file_metadata']
-    
+        self.analysis_state_collection = self.db['analysis_state']
+        self.analysis_state_collection.create_index(
+            [('user_id', 1), ('project_id', 1)], unique=True
+        )
+
     def create_project(self, user_id, name, gwas_file_id, phenotype,population, ref_genome, analysis_parameters=None):
         """Create a new project"""
         project_data = {
@@ -210,14 +214,25 @@ class ProjectHandler(BaseHandler):
                     })
                     logger.info(f"Deleted file metadata for project {project_id}")
             
-            # 8. Delete analysis state files
+            # 8. Delete analysis state (MongoDB + legacy JSON file if present)
+            try:
+                ar = self.analysis_state_collection.delete_many({
+                    'user_id': user_id,
+                    'project_id': project_id,
+                })
+                if ar.deleted_count:
+                    logger.info(
+                        f"Deleted {ar.deleted_count} analysis state doc(s) for project {project_id}"
+                    )
+            except Exception as state_e:
+                logger.warning(f"Could not delete analysis state from DB: {state_e}")
             analysis_state_path = self.get_analysis_state_path(user_id, project_id)
             if os.path.exists(analysis_state_path):
                 try:
                     os.remove(analysis_state_path)
-                    logger.info(f"Deleted analysis state file: {analysis_state_path}")
+                    logger.info(f"Deleted legacy analysis state file: {analysis_state_path}")
                 except Exception as state_e:
-                    logger.warning(f"Could not delete analysis state file {analysis_state_path}: {state_e}")
+                    logger.warning(f"Could not delete legacy analysis state file: {state_e}")
             
             # 9. Delete analysis results directory
             analysis_dir = self.get_project_analysis_path(user_id, project_id)
@@ -238,24 +253,85 @@ class ProjectHandler(BaseHandler):
         return os.path.abspath(f"data/projects/{user_id}/{project_id}/analysis")
 
     def get_analysis_state_path(self, user_id, project_id):
-        """Get the analysis state file path"""
+        """Legacy JSON path (migration only; primary store is MongoDB ``analysis_state``)."""
         return f"data/states/{user_id}/{project_id}/analysis_state.json"
 
-    def save_analysis_state(self, user_id, project_id, state_data):
-        """Save analysis state to file"""
-        state_path = self.get_analysis_state_path(user_id, project_id)
-        os.makedirs(os.path.dirname(state_path), exist_ok=True)
-        data = {**state_data, "state_updated_at": datetime.now(timezone.utc).isoformat()}
-        with open(state_path, 'w') as f:
-            json.dump(data, f, default=str)
+    def _analysis_state_to_public(self, doc: dict | None) -> dict | None:
+        """Strip DB-only keys so API clients see the same shape as the old JSON file."""
+        if not doc:
+            return None
+        return {
+            k: v
+            for k, v in doc.items()
+            if k not in ("_id", "user_id", "project_id")
+        }
 
-    def load_analysis_state(self, user_id, project_id):
-        """Load analysis state from file"""
+    def _migrate_legacy_analysis_state_file(self, user_id, project_id) -> dict | None:
+        """One-time read from JSON file, write to MongoDB, remove file."""
         state_path = self.get_analysis_state_path(user_id, project_id)
         if not os.path.exists(state_path):
             return None
-        with open(state_path, 'r') as f:
-            state = json.load(f)
+        try:
+            with open(state_path, 'r') as f:
+                legacy = json.load(f)
+        except Exception as exc:
+            logger.warning(f"Could not read legacy analysis state {state_path}: {exc}")
+            return None
+        if not isinstance(legacy, dict):
+            return None
+        now_iso = datetime.now(timezone.utc).isoformat()
+        doc = {
+            "user_id": user_id,
+            "project_id": project_id,
+            **legacy,
+            "state_updated_at": legacy.get("state_updated_at") or now_iso,
+        }
+        self.analysis_state_collection.replace_one(
+            {"user_id": user_id, "project_id": project_id},
+            doc,
+            upsert=True,
+        )
+        try:
+            os.remove(state_path)
+            logger.info(f"Migrated analysis state to MongoDB and removed {state_path}")
+        except OSError as exc:
+            logger.warning(f"Could not remove legacy analysis state file {state_path}: {exc}")
+        return self._analysis_state_to_public(doc)
+
+    def save_analysis_state(self, user_id, project_id, state_data):
+        """Persist analysis pipeline state to MongoDB (and drop legacy JSON if present)."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        doc = {
+            **state_data,
+            "user_id": user_id,
+            "project_id": project_id,
+            "state_updated_at": now_iso,
+        }
+        self.analysis_state_collection.replace_one(
+            {"user_id": user_id, "project_id": project_id},
+            doc,
+            upsert=True,
+        )
+        legacy_path = self.get_analysis_state_path(user_id, project_id)
+        if os.path.exists(legacy_path):
+            try:
+                os.remove(legacy_path)
+            except OSError as exc:
+                logger.warning(f"Could not remove legacy analysis state file: {exc}")
+
+    def load_analysis_state(self, user_id, project_id):
+        """Load analysis state from MongoDB, migrating legacy JSON on first read."""
+        doc = self.analysis_state_collection.find_one({
+            "user_id": user_id,
+            "project_id": project_id,
+        })
+        state = self._analysis_state_to_public(doc)
+        if state is None:
+            state = self._migrate_legacy_analysis_state_file(user_id, project_id)
+
+        if not state:
+            return None
+
         if state.get("status") == "Running":
             reconciled = self._reconcile_running_state(state)
             if reconciled["status"] != "Running":
