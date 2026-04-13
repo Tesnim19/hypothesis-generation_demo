@@ -1,8 +1,9 @@
+:- use_module(library(yaml)).
 :- style_check(-discontiguous).
+:- set_prolog_flag(style_check, false).
 :- dynamic(user:file_search_path/2).
-% :- dynamic(bgc/1).
-% :- multifile(bgc/1).
 :- multifile(user:file_search_path/2).
+
 % Node predicates
 :- multifile gene/1.
 :- multifile protein/1.
@@ -61,7 +62,6 @@
 :- multifile chromatin_state/2.
 :- multifile in_dnase_I_hotspot/2.
 :- multifile histone_modification/2.
-:- multifile regulates/2.
 :- multifile distance/2.
 
 % Properties
@@ -100,83 +100,48 @@
 :- multifile rel_type/2.
 
 
-load_with_time(Files, FileName) :-
-    format("Loading ~w...~n", [FileName]),
+load_with_time(Files, Name) :-
+    format("Loading ~w...~n", [Name]),
     time(consult(Files)),
-    format("Loaded ~w!~n", [FileName]).
+    format("Loaded ~w!~n", [Name]).
 
+kb_yaml_path(Path) :-
+    source_file(load_atomspace, File),
+    file_directory_name(File, Dir),
+    atomic_list_concat([Dir, '/../config/kb.yaml'], Path).
 
-%user:file_search_path(prolog_out_v2,'/mnt/prolog_out_v2').
-%user:file_search_path(prolog_out,'/mnt/prolog_out_v3').
-%user:file_search_path(prolog_out,'/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3_petta').
-%user:file_search_path(prolog_out_v3, '/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3_petta').
-user:file_search_path(prolog_out,'/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3').
-user:file_search_path(prolog_out_v3, '/mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3').
+load_kb_entry(Key, Entry) :-
+    (   get_dict(nodes, Entry, true)
+    ->  NodeTerm =.. [Key, nodes], NodesFiles = [NodeTerm]
+    ;   NodesFiles = []
+    ),
+    (   get_dict(edges, Entry, true)
+    ->  EdgeTerm =.. [Key, edges], EdgesFiles = [EdgeTerm]
+    ;   EdgesFiles = []
+    ),
+    append(NodesFiles, EdgesFiles, Files),
+    (   Files \= []
+    ->  load_with_time(Files, Key)
+    ;   true
+    ).
 
-user:file_search_path(gene, prolog_out('gencode/gene')).
-user:file_search_path(exon, prolog_out('gencode/exon')).
-user:file_search_path(transcript, prolog_out('gencode/transcript')).
-user:file_search_path(uniprot, prolog_out('uniprot')).
-user:file_search_path(gene_ontology, prolog_out('gene_ontology')).
-user:file_search_path(gaf, prolog_out('gaf')).
-% user:file_search_path(cellxgene, prolog_out('cellxgene')).
-user:file_search_path(tadmap, prolog_out('tadmap')).
-user:file_search_path(tflink, prolog_out('tflink')).
-%user:file_search_path(roadmap_chromatin_state, prolog_out('roadmap/chromatin_state')).
-%user:file_search_path(roadmap_dhs, prolog_out('roadmap/dhs')).
-%user:file_search_path(roadmap_h3_mark, prolog_out('roadmap/h3_mark')).
-
-user:file_search_path(refseq, prolog_out_v3('refseq')).
-user:file_search_path(eqtl, prolog_out_v3('gtex/eqtl')).
-user:file_search_path(abc, prolog_out_v3('abc')).
-user:file_search_path(cell_line_ontology, prolog_out('cell_line_ontology')).
-user:file_search_path(uberon, prolog_out('uberon')).
-user:file_search_path(efo, prolog_out('experimental_factor_ontology')).
-user:file_search_path(bto, prolog_out('brenda_tissue_ontology')).
-user:file_search_path(cadd, prolog_out('cadd')).
-user:file_search_path(dbsnp, prolog_out_v3('dbsnp')).
-user:file_search_path(dbsuper, prolog_out_v3('dbsuper')).
-user:file_search_path(enhancer_atlas, prolog_out_v3('enhancer_atlas')).
-user:file_search_path(epd, prolog_out('epd')).
-user:file_search_path(fabian, prolog_out('fabian')).
-user:file_search_path(peregrine, prolog_out_v3('peregrine')).
-user:file_search_path(top_ld_eur, prolog_out('top_ld/EUR')).
-user:file_search_path(tfbs, prolog_out_v3('tfbs')).
-user:file_search_path(tf_snp, prolog_out('tf_snp')).
-user:file_search_path(pgboost, prolog_out_v3('pgboost')).
-user:file_search_path(enhancer_ccre, prolog_out('ccre/enhancer_ccre')).
-user:file_search_path(promoter_ccre, prolog_out('ccre/promoter_ccre')).
-
-
-load_atomspace :- 
-    %load_with_time([transcript(nodes), transcript(edges)], "gencode transcripts"),
-    load_with_time([gene(nodes)], "gencode genes"),
-    % load_with_time([exon(nodes)], "gencode exons"),
-    %load_with_time([uniprot(nodes), uniprot(edges)], "uniprot"),
-    load_with_time([eqtl(edges)], "gtex eqtl"),
-    %load_with_time([gene_ontology(nodes), gene_ontology(edges)], "gene ontology"),
-    %load_with_time([gaf(edges)], "go gene product"),
-    % % load_with_time([cellxgene(edges)], ),
-    load_with_time([tadmap(nodes), tadmap(edges)], "tadmap"),
-    load_with_time([refseq(edges)], "refseq"),
-    load_with_time([abc(edges)], "abc"),
-    %load_with_time([cell_line_ontology(nodes), cell_line_ontology(edges)], "cell_line ontology"),
-    %load_with_time([uberon(nodes), uberon(edges)], "uberon"),
-    load_with_time([efo(nodes), efo(edges)], "experimental factor ontology"),
-    %load_with_time([bto(nodes), bto(edges)], "brenda tissue ontology"),
-    % load_with_time([cadd(nodes)], "cadd"),
-    load_with_time([dbsnp(nodes)], "dbsnp"),
-    load_with_time([dbsuper(nodes), dbsuper(edges)], "dbsuper"),
-    load_with_time([enhancer_ccre(nodes), enhancer_ccre(edges)], "enhancer ccre"),
-    load_with_time([promoter_ccre(nodes), promoter_ccre(edges)], "promoter ccre"),
-    load_with_time([enhancer_atlas(nodes), enhancer_atlas(edges)], "enhancer atlas"),
-    load_with_time([peregrine(nodes), peregrine(edges)], "peregrine"),
-    load_with_time([epd(nodes), epd(edges)], "epd"),
-    load_with_time([tflink(edges)], "tflink"),
-    load_with_time([tfbs(nodes), tfbs(edges)], "tfbs"),
-    load_with_time([tf_snp(edges)], "tf_snp"),
-    load_with_time([pgboost(edges)], "pgboost").
-    load_with_time([roadmap_chromatin_state(edges)], "roadmap chromatin state"),
-    load_with_time([roadmap_dhs(edges)], "roadmap dhs"),
-    load_with_time([roadmap_h3_mark(edges)], "roadmap h3 mark"),
-
+load_atomspace :-
+    kb_yaml_path(YamlPath),
+    yaml_read(YamlPath, Config),
+    get_dict(settings, Config, Settings),
+    get_dict(prolog_base, Settings, BasePath),
+    atom_string(BasePathAtom, BasePath),
+    assertz(user:file_search_path(prolog_out, BasePathAtom)),
+    get_dict(kbs, Config, KBs),
+    dict_pairs(KBs, _, Pairs),
+    forall(
+        member(Key-Entry, Pairs),
+        (   get_dict(path, Entry, KBPath),
+            atom_string(KBPathAtom, KBPath),
+            assertz(user:file_search_path(Key, prolog_out(KBPathAtom))),
+            (   get_dict(loaded, Entry, true)
+            ->  load_kb_entry(Key, Entry)
+            ;   true
+            )
+        )
+    ).
