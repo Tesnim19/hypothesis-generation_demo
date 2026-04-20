@@ -12,7 +12,11 @@ from fastapi.responses import FileResponse
 from loguru import logger
 
 from src.api.dependencies import _deps
-from src.api.schemas.gwas import GwasDownloadUrlResponse, GwasFilesListResponse
+from src.api.schemas.gwas import (
+    GWASFileItem,
+    GwasDownloadUrlResponse,
+    GwasFilesListResponse,
+)
 
 router = APIRouter()
 
@@ -70,7 +74,7 @@ async def get_gwas_files(
 
         total_count = gwas_library.get_entry_count(search_term=search, sex_filter=sex)
         return GwasFilesListResponse(
-            gwas_files=gwas_files,
+            gwas_files=[GWASFileItem.model_validate(f) for f in gwas_files],
             total_files=total_count,
             returned=len(gwas_files),
             skip=skip,

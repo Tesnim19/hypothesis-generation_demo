@@ -13,6 +13,7 @@ from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
 from src.api.schemas.common import FlexibleDict, FlexibleList
 from src.api.schemas.enrichment import (
+    EnrichmentListItem,
     EnrichmentsListResponse,
     EnrichPostAcceptedResponse,
     EnrichPostBody,
@@ -49,13 +50,15 @@ async def get_enrich(
             project_enrichments = [
                 e for e in enrichments if e.get("project_id") == project_id
             ]
+            ser = serialize_datetime_fields(project_enrichments)
             return EnrichmentsListResponse(
-                enrichments=serialize_datetime_fields(project_enrichments)
+                enrichments=[EnrichmentListItem.model_validate(e) for e in ser]
             )
         else:
             if enrichments and enrichments.get("project_id") == project_id:
+                one = serialize_datetime_fields(enrichments)
                 return EnrichmentsListResponse(
-                    enrichments=[serialize_datetime_fields(enrichments)]
+                    enrichments=[EnrichmentListItem.model_validate(one)]
                 )
             return EnrichmentsListResponse(enrichments=[])
 

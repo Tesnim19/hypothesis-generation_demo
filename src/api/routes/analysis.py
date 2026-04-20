@@ -6,9 +6,10 @@ from loguru import logger
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
 from src.api.schemas.analysis import (
+    CredibleSetVariantRow,
     CredibleSetsResponse,
-    get_credible_sets_params,
     CredibleSetsQueryParams,
+    get_credible_sets_params,
 )
 from src.utils import convert_variants_to_object_array, serialize_datetime_fields
 
@@ -43,7 +44,9 @@ async def get_credible_sets(
         variants = variants_data.get("data", {})
         variants_array = convert_variants_to_object_array(variants)
         variants_array = serialize_datetime_fields(variants_array)
-        return CredibleSetsResponse(variants=variants_array)
+        return CredibleSetsResponse(
+            variants=[CredibleSetVariantRow.model_validate(v) for v in variants_array]
+        )
 
     except HTTPException:
         raise

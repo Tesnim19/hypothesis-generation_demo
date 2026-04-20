@@ -5,7 +5,7 @@ from loguru import logger
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
-from src.api.schemas.files import UserFilesResponse
+from src.api.schemas.files import UserFileItem, UserFilesResponse
 from src.utils import serialize_datetime_fields
 
 router = APIRouter()
@@ -45,7 +45,10 @@ async def get_user_files(current_user_id: str = Depends(get_current_user_id)):
 
         user_files.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
         user_files = serialize_datetime_fields(user_files)
-        return UserFilesResponse(files=user_files, total_files=len(user_files))
+        return UserFilesResponse(
+            files=[UserFileItem.model_validate(f) for f in user_files],
+            total_files=len(user_files),
+        )
 
     except Exception as exc:
         logger.error(f"Error fetching user files: {exc}")

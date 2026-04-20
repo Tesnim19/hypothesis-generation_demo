@@ -3,17 +3,15 @@ from __future__ import annotations
 import asyncio
 from typing import Union
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
-from pydantic import ValidationError
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
 from src.api.schemas.common import FlexibleDict, FlexibleList
 from src.api.schemas.hypothesis import (
     BulkDeleteHypothesesRequest,
-    HypothesisChatForm,
     HypothesisChatResponse,
     HypothesisGraphResponse,
 )
@@ -243,23 +241,10 @@ async def delete_hypothesis(
 
 @router.post("/hypothesis/delete")
 async def bulk_delete_hypotheses(
-    data: dict = Body(...),
+    req: BulkDeleteHypothesesRequest,
     current_user_id: str = Depends(get_current_user_id),
 ):
     hypotheses = _deps["hypotheses"]
-    try:
-        req = BulkDeleteHypothesesRequest.model_validate(data)
-    except ValidationError as exc:
-        errs = exc.errors()
-        err0 = errs[0] if errs else {}
-        ctx_err = err0.get("ctx", {}).get("error")
-        if ctx_err is not None:
-            detail = str(ctx_err)
-        else:
-            detail = err0.get("msg", "Invalid request body")
-        raise HTTPException(status_code=400, detail=detail) from exc
-
-    assert req.hypothesis_ids is not None
     result, status_code = hypotheses.bulk_delete_hypotheses(
         current_user_id, req.hypothesis_ids
     )
@@ -269,31 +254,19 @@ async def bulk_delete_hypotheses(
 
 @router.post("/chat", response_model=HypothesisChatResponse)
 async def chat(
-    request: Request,
+    query: str = Form(...),
+    hypothesis_id: str = Form(...),
     current_user_id: str = Depends(get_current_user_id),
 ):
-    form = await request.form()
-
-    def _scalar(v: object) -> str | None:
-        if v is None:
-            return None
-        if hasattr(v, "read") and hasattr(v, "filename"):
-            return None
-        return str(v)
-
-    cf = HypothesisChatForm.model_validate(
-        {"query": _scalar(form.get("query")), "hypothesis_id": _scalar(form.get("hypothesis_id"))}
-    )
-
     hypotheses = _deps["hypotheses"]
     llm = _deps["llm"]
 
-    hypothesis = hypotheses.get_hypotheses(current_user_id, cf.hypothesis_id)
+    hypothesis = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
     if not hypothesis:
         raise HTTPException(
             status_code=404, detail="Hypothesis not found or access denied"
         )
 
     graph = hypothesis.get("graph")
-    response = llm.chat(cf.query, graph)
+    response = llm.chat(query, graph)
     return HypothesisChatResponse(response=response)

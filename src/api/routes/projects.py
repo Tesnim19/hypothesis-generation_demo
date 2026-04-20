@@ -7,7 +7,7 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import ValidationError
@@ -22,6 +22,7 @@ from src.api.schemas.projects import (
     BulkDeleteProjectsPartialResponse,
     BulkDeleteProjectsRequest,
     ProjectDeleteMessage,
+    ProjectSummary,
     ProjectsListResponse,
     parse_analysis_pipeline_form_fields,
 )
@@ -123,7 +124,10 @@ async def get_projects(
         enhanced["hypothesis_count"] = hypothesis_count
         enhanced_projects.append(enhanced)
 
-    return ProjectsListResponse(projects=serialize_datetime_fields(enhanced_projects))
+    serialized = serialize_datetime_fields(enhanced_projects)
+    return ProjectsListResponse(
+        projects=[ProjectSummary.model_validate(p) for p in serialized]
+    )
 
 
 @router.delete("/projects", response_model=ProjectDeleteMessage)
@@ -142,26 +146,11 @@ async def delete_project(
 
 @router.post("/projects/delete")
 async def bulk_delete_projects(
-    data: dict = Body(...),
+    req: BulkDeleteProjectsRequest,
     current_user_id: str = Depends(get_current_user_id),
 ):
     projects = _deps["projects"]
-    try:
-        req = BulkDeleteProjectsRequest.model_validate(data)
-    except ValidationError as exc:
-        errs = exc.errors()
-        err0 = errs[0] if errs else {}
-        ctx_err = err0.get("ctx", {}).get("error")
-        if ctx_err is not None:
-            detail = str(ctx_err)
-        else:
-            detail = err0.get("msg", "Invalid request body")
-        raise HTTPException(status_code=400, detail=detail) from exc
-
-    project_ids = req.project_ids
-    assert project_ids is not None
-
-    result = projects.bulk_delete_projects(current_user_id, project_ids)
+    result = projects.bulk_delete_projects(current_user_id, req.project_ids)
 
     if result and isinstance(result, dict):
         if result["success"]:
