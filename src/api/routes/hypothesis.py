@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Union
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import ValidationError
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
+from src.api.schemas.common import FlexibleDict, FlexibleList
+from src.api.schemas.hypothesis import (
+    BulkDeleteHypothesesRequest,
+    HypothesisChatForm,
+    HypothesisChatResponse,
+    HypothesisGraphResponse,
+)
 from src.flows import hypothesis_flow
 from src.services.status_tracker import TaskState, status_tracker
 from src.tasks import extract_probability, get_related_hypotheses
@@ -16,7 +25,7 @@ from src.utils import normalize_status_responses, serialize_datetime_fields
 router = APIRouter()
 
 
-@router.get("/hypothesis")
+@router.get("/hypothesis", response_model=Union[FlexibleDict, FlexibleList])
 async def get_hypothesis(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
@@ -94,7 +103,7 @@ async def get_hypothesis(
                     logger.warning(f"Could not get tissue selection: {ts_e}")
 
             response_data["tissue_selected"] = selected_tissue
-            return serialize_datetime_fields(response_data)
+            return FlexibleDict.model_validate(serialize_datetime_fields(response_data))
 
         latest_state = status_tracker.get_latest_state(id)
 
@@ -147,7 +156,7 @@ async def get_hypothesis(
                 logger.warning(f"Could not get tissue selection: {ts_e}")
 
         status_data["tissue_selected"] = selected_tissue
-        return serialize_datetime_fields(status_data)
+        return FlexibleDict.model_validate(serialize_datetime_fields(status_data))
 
     # List all hypotheses for the user
     all_hypotheses = hypotheses.get_hypotheses(user_id=current_user_id)
@@ -174,10 +183,10 @@ async def get_hypothesis(
 
         formatted.append(entry)
 
-    return serialize_datetime_fields(formatted)
+    return FlexibleList.model_validate(serialize_datetime_fields(formatted))
 
 
-@router.post("/hypothesis", status_code=200)
+@router.post("/hypothesis", status_code=200, response_model=HypothesisGraphResponse)
 async def post_hypothesis(
     id: str | None = Query(None, alias="id"),
     go: str | None = Query(None),
@@ -209,8 +218,16 @@ async def post_hypothesis(
     if status_code == 404:
         raise HTTPException(status_code=404, detail=result.get("message", "Not found"))
     if status_code == 200:
-        return {"id": hypothesis_id, "summary": result.get("summary"), "graph": result.get("graph")}
-    return {"id": hypothesis_id, "summary": result.get("summary"), "graph": result.get("graph")}
+        return HypothesisGraphResponse(
+            id=hypothesis_id,
+            summary=result.get("summary"),
+            graph=result.get("graph"),
+        )
+    return HypothesisGraphResponse(
+        id=hypothesis_id,
+        summary=result.get("summary"),
+        graph=result.get("graph"),
+    )
 
 
 @router.delete("/hypothesis")
@@ -230,41 +247,53 @@ async def bulk_delete_hypotheses(
     current_user_id: str = Depends(get_current_user_id),
 ):
     hypotheses = _deps["hypotheses"]
-    hypothesis_ids = data.get("hypothesis_ids")
+    try:
+        req = BulkDeleteHypothesesRequest.model_validate(data)
+    except ValidationError as exc:
+        errs = exc.errors()
+        err0 = errs[0] if errs else {}
+        ctx_err = err0.get("ctx", {}).get("error")
+        if ctx_err is not None:
+            detail = str(ctx_err)
+        else:
+            detail = err0.get("msg", "Invalid request body")
+        raise HTTPException(status_code=400, detail=detail) from exc
 
-    if not hypothesis_ids:
-        raise HTTPException(
-            status_code=400, detail="hypothesis_ids is required in request body"
-        )
-    if not isinstance(hypothesis_ids, list):
-        raise HTTPException(status_code=400, detail="hypothesis_ids must be a list")
-    if not hypothesis_ids:
-        raise HTTPException(
-            status_code=400, detail="hypothesis_ids list cannot be empty"
-        )
-
-    result, status_code = hypotheses.bulk_delete_hypotheses(current_user_id, hypothesis_ids)
-    return JSONResponse(content=result, status_code=status_code)
+    assert req.hypothesis_ids is not None
+    result, status_code = hypotheses.bulk_delete_hypotheses(
+        current_user_id, req.hypothesis_ids
+    )
+    payload = FlexibleDict.model_validate(result).model_dump(mode="json")
+    return JSONResponse(content=payload, status_code=status_code)
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=HypothesisChatResponse)
 async def chat(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
 ):
     form = await request.form()
-    query = form.get("query")
-    hypothesis_id = form.get("hypothesis_id")
+
+    def _scalar(v: object) -> str | None:
+        if v is None:
+            return None
+        if hasattr(v, "read") and hasattr(v, "filename"):
+            return None
+        return str(v)
+
+    cf = HypothesisChatForm.model_validate(
+        {"query": _scalar(form.get("query")), "hypothesis_id": _scalar(form.get("hypothesis_id"))}
+    )
 
     hypotheses = _deps["hypotheses"]
     llm = _deps["llm"]
 
-    hypothesis = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
+    hypothesis = hypotheses.get_hypotheses(current_user_id, cf.hypothesis_id)
     if not hypothesis:
         raise HTTPException(
             status_code=404, detail="Hypothesis not found or access denied"
         )
 
     graph = hypothesis.get("graph")
-    response = llm.chat(query, graph)
-    return {"response": response}
+    response = llm.chat(cf.query, graph)
+    return HypothesisChatResponse(response=response)

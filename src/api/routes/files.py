@@ -5,18 +5,19 @@ from loguru import logger
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
+from src.api.schemas.files import UserFilesResponse
 from src.utils import serialize_datetime_fields
 
 router = APIRouter()
 
 
-@router.get("/user-files")
+@router.get("/user-files", response_model=UserFilesResponse)
 async def get_user_files(current_user_id: str = Depends(get_current_user_id)):
     files = _deps["files"]
     try:
         all_files = files.get_file_metadata(current_user_id)
         if not all_files:
-            return {"files": [], "total_files": 0}
+            return UserFilesResponse(files=[], total_files=0)
 
         if not isinstance(all_files, list):
             all_files = [all_files]
@@ -44,7 +45,7 @@ async def get_user_files(current_user_id: str = Depends(get_current_user_id)):
 
         user_files.sort(key=lambda x: x.get("upload_date", ""), reverse=True)
         user_files = serialize_datetime_fields(user_files)
-        return {"files": user_files, "total_files": len(user_files)}
+        return UserFilesResponse(files=user_files, total_files=len(user_files))
 
     except Exception as exc:
         logger.error(f"Error fetching user files: {exc}")

@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 from loguru import logger
 
 from src.api.dependencies import _deps
+from src.api.schemas.gwas import GwasDownloadUrlResponse, GwasFilesListResponse
 
 router = APIRouter()
 
@@ -25,7 +26,7 @@ def _download_to_path_sync(url: str, path: str) -> int:
     return os.path.getsize(path)
 
 
-@router.get("/gwas-files")
+@router.get("/gwas-files", response_model=GwasFilesListResponse)
 async def get_gwas_files(
     search: str | None = Query(None),
     sex: str | None = Query(None),
@@ -68,13 +69,13 @@ async def get_gwas_files(
             gwas_files.append(gwas_file_entry)
 
         total_count = gwas_library.get_entry_count(search_term=search, sex_filter=sex)
-        return {
-            "gwas_files": gwas_files,
-            "total_files": total_count,
-            "returned": len(gwas_files),
-            "skip": skip,
-            "limit": limit,
-        }
+        return GwasFilesListResponse(
+            gwas_files=gwas_files,
+            total_files=total_count,
+            returned=len(gwas_files),
+            skip=skip,
+            limit=limit,
+        )
 
     except Exception as exc:
         logger.error(f"Error fetching GWAS files: {exc}")
@@ -104,7 +105,7 @@ async def download_gwas_file(file_id: str):
                 gwas_library.increment_download_count(file_id)
                 download_url = storage.generate_presigned_url(cached_path, expiration=3600)
                 if download_url:
-                    return {"download_url": download_url, "cached": True}
+                    return GwasDownloadUrlResponse(download_url=download_url, cached=True)
 
                 with tempfile.NamedTemporaryFile(
                     delete=False, suffix=f"_{filename}"

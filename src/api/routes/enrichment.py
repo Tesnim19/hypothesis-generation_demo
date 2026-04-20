@@ -2,32 +2,46 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from typing import Union
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
+from pydantic import ValidationError
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
+from src.api.schemas.common import FlexibleDict, FlexibleList
+from src.api.schemas.enrichment import (
+    EnrichmentsListResponse,
+    EnrichPostAcceptedResponse,
+    EnrichPostBody,
+    EnrichQueryParams,
+    get_enrich_query_params,
+)
 from src.run_deployment import invoke_enrichment_deployment
 from src.utils import serialize_datetime_fields
 
 router = APIRouter()
 
 
-@router.get("/enrich")
+@router.get(
+    "/enrich",
+    response_model=Union[FlexibleDict, EnrichmentsListResponse, FlexibleList],
+)
 async def get_enrich(
-    id: str | None = Query(None),
-    project_id: str | None = Query(None),
+    params: EnrichQueryParams = Depends(get_enrich_query_params),
     current_user_id: str = Depends(get_current_user_id),
 ):
     enrichment = _deps["enrichment"]
+    id_ = params.id
+    project_id = params.project_id
 
-    if id:
-        enrich = enrichment.get_enrich(current_user_id, id)
+    if id_:
+        enrich = enrichment.get_enrich(current_user_id, id_)
         if not enrich:
             raise HTTPException(status_code=404, detail="Enrich not found or access denied.")
-        return serialize_datetime_fields(enrich)
+        return FlexibleDict.model_validate(serialize_datetime_fields(enrich))
 
     if project_id:
         enrichments = enrichment.get_enrich(user_id=current_user_id)
@@ -35,30 +49,48 @@ async def get_enrich(
             project_enrichments = [
                 e for e in enrichments if e.get("project_id") == project_id
             ]
-            return {"enrichments": serialize_datetime_fields(project_enrichments)}
+            return EnrichmentsListResponse(
+                enrichments=serialize_datetime_fields(project_enrichments)
+            )
         else:
             if enrichments and enrichments.get("project_id") == project_id:
-                return {"enrichments": [serialize_datetime_fields(enrichments)]}
-            return {"enrichments": []}
+                return EnrichmentsListResponse(
+                    enrichments=[serialize_datetime_fields(enrichments)]
+                )
+            return EnrichmentsListResponse(enrichments=[])
 
     enrich = enrichment.get_enrich(user_id=current_user_id)
-    return serialize_datetime_fields(enrich)
+    return FlexibleList.model_validate(serialize_datetime_fields(enrich))
 
 
-@router.post("/enrich", status_code=202)
+@router.post("/enrich", status_code=202, response_model=EnrichPostAcceptedResponse)
 async def post_enrich(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
 ):
-    body: dict = {}
+    body_raw: dict = {}
     try:
-        body = await request.json()
+        raw = await request.json()
+        if isinstance(raw, dict):
+            body_raw = raw
     except Exception:
         pass
 
-    variant = request.query_params.get("variant") or body.get("variant")
-    project_id = request.query_params.get("project_id") or body.get("project_id")
-    seed = int(body.get("seed", 42))
+    try:
+        body_m = EnrichPostBody.model_validate(body_raw)
+    except ValidationError as exc:
+        errs = exc.errors()
+        err0 = errs[0] if errs else {}
+        ctx_err = err0.get("ctx", {}).get("error")
+        if ctx_err is not None:
+            detail = str(ctx_err)
+        else:
+            detail = err0.get("msg", "Invalid request body")
+        raise HTTPException(status_code=400, detail=detail) from exc
+
+    variant = request.query_params.get("variant") or body_m.variant
+    project_id = request.query_params.get("project_id") or body_m.project_id
+    seed = body_m.seed
 
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
@@ -75,7 +107,7 @@ async def post_enrich(
 
     phenotype = project["phenotype"]
 
-    tissue_name = request.query_params.get("tissue_name") or body.get("tissue_name")
+    tissue_name = request.query_params.get("tissue_name") or body_m.tissue_name
     if not tissue_name:
         raise HTTPException(status_code=400, detail="tissue_name is required")
 
@@ -115,7 +147,9 @@ async def post_enrich(
                 seed=seed,
             ),
         )
-        return {"hypothesis_id": existing_hypothesis["id"], "project_id": project_id}
+        return EnrichPostAcceptedResponse(
+            hypothesis_id=existing_hypothesis["id"], project_id=project_id
+        )
 
     hypothesis_id = str(uuid4())
     hypothesis_data = {
@@ -143,7 +177,7 @@ async def post_enrich(
             seed=seed,
         ),
     )
-    return {"hypothesis_id": hypothesis_id, "project_id": project_id}
+    return EnrichPostAcceptedResponse(hypothesis_id=hypothesis_id, project_id=project_id)
 
 
 @router.delete("/enrich")

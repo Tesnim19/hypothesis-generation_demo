@@ -7,13 +7,24 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
+from pydantic import ValidationError
 from werkzeug.utils import secure_filename
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
+from src.api.schemas.common import FlexibleDict
+from src.api.schemas.projects import (
+    AnalysisPipelineStartResponse,
+    BulkDeleteProjectsOkResponse,
+    BulkDeleteProjectsPartialResponse,
+    BulkDeleteProjectsRequest,
+    ProjectDeleteMessage,
+    ProjectsListResponse,
+    parse_analysis_pipeline_form_fields,
+)
 from src.tasks.project import count_gwas_records, get_project_with_full_data
 from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
@@ -50,7 +61,8 @@ async def get_projects(
         )
         if status_code == 200:
             response_data = serialize_datetime_fields(response_data)
-        return JSONResponse(content=response_data, status_code=status_code)
+        payload = FlexibleDict.model_validate(response_data).model_dump(mode="json")
+        return JSONResponse(content=payload, status_code=status_code)
 
     raw_projects = projects.get_projects(current_user_id)
     files = _deps["files"]
@@ -111,10 +123,10 @@ async def get_projects(
         enhanced["hypothesis_count"] = hypothesis_count
         enhanced_projects.append(enhanced)
 
-    return {"projects": serialize_datetime_fields(enhanced_projects)}
+    return ProjectsListResponse(projects=serialize_datetime_fields(enhanced_projects))
 
 
-@router.delete("/projects")
+@router.delete("/projects", response_model=ProjectDeleteMessage)
 async def delete_project(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
@@ -124,7 +136,7 @@ async def delete_project(
     projects = _deps["projects"]
     success = projects.delete_project(current_user_id, id)
     if success:
-        return {"message": "Project deleted successfully"}
+        return ProjectDeleteMessage(message="Project deleted successfully")
     raise HTTPException(status_code=404, detail="Project not found or access denied")
 
 
@@ -134,44 +146,47 @@ async def bulk_delete_projects(
     current_user_id: str = Depends(get_current_user_id),
 ):
     projects = _deps["projects"]
-    project_ids = data.get("project_ids")
+    try:
+        req = BulkDeleteProjectsRequest.model_validate(data)
+    except ValidationError as exc:
+        errs = exc.errors()
+        err0 = errs[0] if errs else {}
+        ctx_err = err0.get("ctx", {}).get("error")
+        if ctx_err is not None:
+            detail = str(ctx_err)
+        else:
+            detail = err0.get("msg", "Invalid request body")
+        raise HTTPException(status_code=400, detail=detail) from exc
 
-    if not project_ids:
-        raise HTTPException(
-            status_code=400, detail="project_ids is required in request body"
-        )
-    if not isinstance(project_ids, list):
-        raise HTTPException(status_code=400, detail="project_ids must be a list")
-    if not project_ids:
-        raise HTTPException(
-            status_code=400, detail="project_ids list cannot be empty"
-        )
+    project_ids = req.project_ids
+    assert project_ids is not None
 
     result = projects.bulk_delete_projects(current_user_id, project_ids)
 
     if result and isinstance(result, dict):
         if result["success"]:
-            return {
-                "message": f"Successfully deleted {result['deleted_count']} project(s)",
-                "deleted_count": result["deleted_count"],
-                "total_requested": result["total_requested"],
-            }
+            return BulkDeleteProjectsOkResponse(
+                message=f"Successfully deleted {result['deleted_count']} project(s)",
+                deleted_count=result["deleted_count"],
+                total_requested=result["total_requested"],
+            )
+        partial = BulkDeleteProjectsPartialResponse(
+            message=(
+                f"Partially deleted {result['deleted_count']}/{result['total_requested']}"
+                " project(s)"
+            ),
+            deleted_count=result["deleted_count"],
+            total_requested=result["total_requested"],
+            errors=result.get("errors"),
+        )
         return JSONResponse(
-            content={
-                "message": (
-                    f"Partially deleted {result['deleted_count']}/{result['total_requested']}"
-                    " project(s)"
-                ),
-                "deleted_count": result["deleted_count"],
-                "total_requested": result["total_requested"],
-                "errors": result.get("errors"),
-            },
+            content=partial.model_dump(mode="json"),
             status_code=207,
         )
     raise HTTPException(status_code=500, detail="Failed to delete projects")
 
 
-@router.post("/analysis-pipeline", status_code=202)
+@router.post("/analysis-pipeline", status_code=202, response_model=AnalysisPipelineStartResponse)
 async def post_analysis_pipeline(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
@@ -179,21 +194,34 @@ async def post_analysis_pipeline(
     try:
         form = await request.form()
 
-        project_name: str | None = form.get("project_name")
-        population: str = form.get("population", "EUR")
-        max_workers: int = int(form.get("max_workers", 3))
-        is_uploaded: bool = form.get("is_uploaded", "false").lower() == "true"
+        try:
+            fp = parse_analysis_pipeline_form_fields(form)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ValidationError as exc:
+            errs = exc.errors()
+            err0 = errs[0] if errs else {}
+            ctx_err = err0.get("ctx", {}).get("error")
+            if ctx_err is not None:
+                detail = str(ctx_err)
+            else:
+                detail = err0.get("msg", "Invalid parameters")
+            raise HTTPException(status_code=400, detail=detail) from exc
 
+        project_name = fp.project_name
+        population = fp.population
+        max_workers = fp.max_workers
+        is_uploaded = fp.is_uploaded
         gwas_file = form.get("gwas_file") if is_uploaded else None
 
-        maf_threshold: float = float(form.get("maf_threshold", 0.01))
-        seed: int = int(form.get("seed", 42))
-        window: int = int(form.get("window", 2000))
-        L: int = int(form.get("L", -1))
-        coverage: float = float(form.get("coverage", 0.95))
-        min_abs_corr: float = float(form.get("min_abs_corr", 0.5))
-        batch_size: int = int(form.get("batch_size", 5))
-        sample_size: int = int(form.get("sample_size", 10000))
+        maf_threshold = fp.maf_threshold
+        seed = fp.seed
+        window = fp.window
+        L = fp.L
+        coverage = fp.coverage
+        min_abs_corr = fp.min_abs_corr
+        batch_size = fp.batch_size
+        sample_size = fp.sample_size
 
         projects = _deps["projects"]
         files = _deps["files"]
@@ -207,14 +235,14 @@ async def post_analysis_pipeline(
         if not is_uploaded and file_id_param and gwas_library:
             gwas_entry = gwas_library.get_gwas_entry(file_id=file_id_param)
 
-        phenotype: str | None = form.get("phenotype")
+        phenotype: str | None = fp.phenotype
         if not phenotype and gwas_entry:
             phenotype = gwas_entry.get("description") or gwas_entry.get("phenotype_code")
             # Clean up leading '#' if it exists in the library description
             if isinstance(phenotype, str) and phenotype.startswith("#"):
                 phenotype = phenotype.lstrip("#").strip()
 
-        raw_ref_genome = form.get("ref_genome")
+        raw_ref_genome = fp.ref_genome
         ref_genome: str = raw_ref_genome or "GRCh37"
 
         if gwas_entry and (not raw_ref_genome or raw_ref_genome == "GRCh37"):
@@ -239,45 +267,6 @@ async def post_analysis_pipeline(
         if ref_genome not in ("GRCh37", "GRCh38"):
             raise HTTPException(
                 status_code=400, detail="Reference genome must be GRCh37 or GRCh38"
-            )
-        if population not in ("EUR", "AFR", "AMR", "EAS", "SAS"):
-            raise HTTPException(
-                status_code=400,
-                detail="Population must be one of: EUR, AFR, AMR, EAS, SAS",
-            )
-        if not (1 <= max_workers <= 16):
-            raise HTTPException(
-                status_code=400, detail="Max workers must be between 1-16"
-            )
-        if not (0.001 <= maf_threshold <= 0.5):
-            raise HTTPException(
-                status_code=400, detail="MAF threshold must be between 0.001-0.5"
-            )
-        if not (1 <= seed <= 999999):
-            raise HTTPException(
-                status_code=400, detail="Seed must be between 1-999999"
-            )
-        if window > 10000:
-            raise HTTPException(
-                status_code=400,
-                detail="Fine-mapping window shouldn't be greater than 10000 kb",
-            )
-        if L != -1 and not (1 <= L <= 50):
-            raise HTTPException(
-                status_code=400, detail="L must be -1 (auto) or between 1-50"
-            )
-        if not (0.5 <= coverage <= 0.999):
-            raise HTTPException(
-                status_code=400, detail="Coverage must be between 0.5-0.999"
-            )
-        if not (0.5 <= min_abs_corr <= 1.0):
-            raise HTTPException(
-                status_code=400,
-                detail="Min absolute correlation must be between 0.5-1.0",
-            )
-        if not (1 <= batch_size <= 20):
-            raise HTTPException(
-                status_code=400, detail="Batch size must be between 1-20"
             )
 
         start_time = datetime.now()
@@ -539,12 +528,12 @@ async def post_analysis_pipeline(
             ),
         )
 
-        return {
-            "status": "started",
-            "project_id": project_id,
-            "file_id": file_metadata_id,
-            "message": "Analysis pipeline started successfully",
-        }
+        return AnalysisPipelineStartResponse(
+            status="started",
+            project_id=project_id,
+            file_id=file_metadata_id,
+            message="Analysis pipeline started successfully",
+        )
 
     except HTTPException:
         raise
