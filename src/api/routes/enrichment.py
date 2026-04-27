@@ -5,9 +5,8 @@ from datetime import datetime, timezone
 from typing import Union
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from loguru import logger
-from pydantic import ValidationError
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
@@ -68,32 +67,16 @@ async def get_enrich(
 
 @router.post("/enrich", status_code=202, response_model=EnrichPostAcceptedResponse)
 async def post_enrich(
-    request: Request,
+    body: EnrichPostBody = Body(...),
+    variant: str | None = Query(None),
+    project_id: str | None = Query(None),
+    tissue_name: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
 ):
-    body_raw: dict = {}
-    try:
-        raw = await request.json()
-        if isinstance(raw, dict):
-            body_raw = raw
-    except Exception:
-        pass
-
-    try:
-        body_m = EnrichPostBody.model_validate(body_raw)
-    except ValidationError as exc:
-        errs = exc.errors()
-        err0 = errs[0] if errs else {}
-        ctx_err = err0.get("ctx", {}).get("error")
-        if ctx_err is not None:
-            detail = str(ctx_err)
-        else:
-            detail = err0.get("msg", "Invalid request body")
-        raise HTTPException(status_code=400, detail=detail) from exc
-
-    variant = request.query_params.get("variant") or body_m.variant
-    project_id = request.query_params.get("project_id") or body_m.project_id
-    seed = body_m.seed
+    variant = variant or body.variant
+    project_id = project_id or body.project_id
+    tissue_name = tissue_name or body.tissue_name
+    seed = body.seed
 
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")
