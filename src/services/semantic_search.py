@@ -7,7 +7,7 @@ import torch
 from datasets import load_dataset, Dataset
 from outlines.models import Transformers
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, util
 from transformers import AutoTokenizer, AutoModel
 
 # torch.set_grad_enabled(False)
@@ -22,6 +22,36 @@ class SemanticSearch:
         """
 
         self.embed_model = SentenceTransformer(embedding_model, token=hf_token)
+
+    def rank_documents(
+        self, query: str, texts: List[str]
+    ) -> List[Tuple[int, float]]:
+        """
+        Rank plain-text documents by cosine similarity to the query.
+        Returns (original_index, score) pairs sorted by descending score.
+        """
+        if not texts:
+            return []
+        q = (query or "").strip()
+        if not q:
+            return [(i, 0.0) for i in range(len(texts))]
+
+        query_emb = self.embed_model.encode(
+            q,
+            convert_to_tensor=True,
+            normalize_embeddings=True,
+        )
+        doc_embs = self.embed_model.encode(
+            texts,
+            convert_to_tensor=True,
+            normalize_embeddings=True,
+            batch_size=32,
+            show_progress_bar=False,
+        )
+        hits = util.semantic_search(
+            query_emb, doc_embs, top_k=len(texts)
+        )
+        return [(h["corpus_id"], float(h["score"])) for h in hits[0]]
 
     def get_relevant_go(self, phentoype, enrich_tbl, k=10):
         """

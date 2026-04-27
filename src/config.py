@@ -1,5 +1,6 @@
 import os
 from src.services.llm import LLM
+from src.services.semantic_search import SemanticSearch
 from src.services.prolog import PrologQuery
 from src.db import (
     UserHandler, ProjectHandler, FileHandler, AnalysisHandler,
@@ -118,7 +119,15 @@ def create_dependencies(config):
     
     # Initialize MinIO storage
     minio_storage = create_minio_client_from_env()
-    
+
+    semantic_search = SemanticSearch(
+        embedding_model=config.embedding_model,
+        hf_token=os.getenv("HF_TOKEN"),
+    )
+
+    gwas_semantic_max_docs = int(os.getenv("GWAS_SEMANTIC_MAX_DOCS", "10000"))
+    gwas_hybrid_keyword_max = int(os.getenv("GWAS_HYBRID_KEYWORD_MAX", "10000"))
+
     return {
         'config': config,
         'enrichr': enrichr,
@@ -137,4 +146,7 @@ def create_dependencies(config):
         'gwas_library': GWASLibraryHandler(mongodb_uri, db_name),
         'storage': minio_storage,
         'redis_url': config.redis_url,
+        'semantic_search': semantic_search,
+        'gwas_semantic_max_docs': gwas_semantic_max_docs,
+        'gwas_hybrid_keyword_max': gwas_hybrid_keyword_max,
     }
