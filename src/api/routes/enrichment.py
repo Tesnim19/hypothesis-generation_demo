@@ -7,8 +7,8 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from loguru import logger
 
-from api.dependencies import _deps
-from api.auth import get_current_user_id
+from src.api.dependencies import _deps
+from src.api.auth import get_current_user_id
 from src.run_deployment import invoke_enrichment_deployment
 from src.utils import serialize_datetime_fields
 
@@ -66,7 +66,6 @@ async def post_enrich(
         raise HTTPException(status_code=400, detail="variant is required")
 
     projects = _deps["projects"]
-    enrichment = _deps["enrichment"]
     hypotheses = _deps["hypotheses"]
     gene_expression = _deps.get("gene_expression")
 

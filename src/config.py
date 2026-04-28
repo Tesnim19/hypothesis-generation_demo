@@ -1,14 +1,13 @@
 import os
-import argparse
-from services.llm import LLM
-from services.prolog import PrologQuery
-from db import (
+from src.services.llm import LLM
+from src.services.prolog import PrologQuery
+from src.db import (
     UserHandler, ProjectHandler, FileHandler, AnalysisHandler,
     EnrichmentHandler, HypothesisHandler, SummaryHandler, TaskHandler,
     GeneExpressionHandler, GWASLibraryHandler,
     PhenotypeHandler
 )
-from services.storage import create_minio_client_from_env
+from src.services.storage import create_minio_client_from_env
 
 class Config:
     """Centralized configuration for the application"""
@@ -21,6 +20,7 @@ class Config:
         self.swipl_port = 4242
         self.mongodb_uri = None
         self.db_name = None
+        self.redis_url = None
         self.embedding_model = "w601sxs/b1ade-embed-kd"
         self.plink_dir_38 = "./data/1000Genomes_phase3/plink_format_b38"
         self.data_dir = "./data"
@@ -49,6 +49,8 @@ class Config:
         # Also load MongoDB config from environment
         config.mongodb_uri = os.getenv("MONGODB_URI")
         config.db_name = os.getenv("DB_NAME")
+        config.redis_url = os.getenv("REDIS_URL")
+
         return config
 
     @classmethod
@@ -71,10 +73,9 @@ class Config:
         config.harmonizer_ref_dir_38 = os.getenv("HARMONIZER_REF_DIR_38", "/app/data/harmonizer_ref/b38")
         config.harmonizer_code_repo = os.getenv("HARMONIZER_CODE_REPO", "./gwas-sumstats-harmoniser")  # Nextflow workflow
         config.harmonizer_script_dir = os.getenv("HARMONIZER_SCRIPT_DIR", "./scripts/1000Genomes_phase3")  # Shell scripts
-        return config
+        config.redis_url = os.getenv("REDIS_URL")
 
-    def get_plink_dir(self, ref_genome=None):
-        return self.plink_dir_38
+        return config
 
     def get_harmonizer_ref_dir(self, ref_genome):
         """Get the harmonizer reference directory for the specified genome build"""
@@ -85,14 +86,14 @@ class Config:
         else:
             raise ValueError(f"Unsupported reference genome: {ref_genome}. Must be 'GRCh37' or 'GRCh38'")
 
-    def get_plink_file_pattern(self, ref_genome=None, population=None, chrom=None):
+    def get_plink_file_pattern(self, *, population, chrom):
         return f"{population}.chr{chrom}.1KG.GRCh38"
 
 
 def create_dependencies(config):
     """Factory function to create all dependencies from config"""
     # Import here to avoid circular dependency
-    from services.enrich import Enrich
+    from src.services.enrich import Enrich
     
     enrichr = Enrich(
         config.ensembl_hgnc_map,
@@ -134,5 +135,6 @@ def create_dependencies(config):
         'gene_expression': GeneExpressionHandler(mongodb_uri, db_name),
         'phenotypes': PhenotypeHandler(mongodb_uri, db_name),
         'gwas_library': GWASLibraryHandler(mongodb_uri, db_name),
-        'storage': minio_storage
+        'storage': minio_storage,
+        'redis_url': config.redis_url,
     }

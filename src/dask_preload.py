@@ -15,7 +15,7 @@ def dask_setup(worker):
     
     try:
         from src.config import create_dependencies, Config
-        from services.status_tracker import status_tracker
+        from src.services.status_tracker import status_tracker
         
         config = Config.from_env()
         logger.info("[DASK PRELOAD] Config created, creating dependencies...")
@@ -23,7 +23,7 @@ def dask_setup(worker):
         logger.info("[DASK PRELOAD] Dependencies created successfully")
         
         # Initialize StatusTracker singleton for this worker
-        status_tracker.initialize(deps['tasks'])
+        status_tracker.initialize(deps["tasks"], redis_url=deps["redis_url"])
         
         worker.deps = deps
         logger.info("[DASK PRELOAD] Worker dependencies set up successfully!")
