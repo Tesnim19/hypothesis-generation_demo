@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
 
 from loguru import logger
+from src.services.state_cache import RedisStatusCache
 
 
 class TaskState(Enum):
@@ -15,6 +15,8 @@ class TaskState(Enum):
 
 class StatusTracker:
     _instance = None
+    _task_handler = None
+    _cache: RedisStatusCache | None = None
     
     def __new__(cls):
         if cls._instance is None:
@@ -24,23 +26,19 @@ class StatusTracker:
         return cls._instance
     
     @classmethod
-    def initialize(cls, task_handler, redis_url: Optional[str] = None) -> None:
+    def initialize(cls, task_handler, redis_url: str) -> None:
         cls._task_handler = task_handler
 
-        if redis_url:
-            try:
-                from src.services.state_cache import RedisStatusCache
-                cls._cache = RedisStatusCache(redis_url)
-                cls._cache.ping()
-                logger.info("StatusTracker: Redis cache enabled ({})", redis_url)
-            except Exception as exc:  # pragma: no cover
-                logger.warning(
-                    "StatusTracker: could not connect to Redis – running without cache. Error: {}",
-                    exc,
-                )
-                cls._cache = None
-        else:
+        if not redis_url:
+            raise ValueError("StatusTracker requires REDIS_URL")
+
+        try:
+            cls._cache = RedisStatusCache(redis_url)
+            cls._cache.ping()
+            logger.info("StatusTracker: Redis cache enabled ({})", redis_url)
+        except Exception as exc:  # pragma: no cover
             cls._cache = None
+            raise RuntimeError(f"StatusTracker could not connect to Redis: {exc}") from exc
 
     @staticmethod
     def _dedup_and_sort(updates):
@@ -49,11 +47,6 @@ class StatusTracker:
             key = (upd.get("task"), upd.get("timestamp"))
             seen[key] = upd
         return sorted(seen.values(), key=lambda x: x.get("timestamp") or "")
-
-    @classmethod
-    def _cache_instance(cls):
-        """Return the RedisStatusCache or None (never raises)."""
-        return getattr(cls, "_cache", None)
 
     def add_update(
         self,
@@ -86,14 +79,13 @@ class StatusTracker:
             
         self.task_history[hypothesis_id].append(update)
 
-        cache = getattr(self.__class__, "_cache", None)
-        if cache is not None:
-            try:
-                cache.add_update(hypothesis_id, update)
-            except Exception as exc:
-                logger.warning(
-                    "StatusTracker: Redis write failed for {} – {}", hypothesis_id, exc
-                )
+
+        try:
+            self._cache.add_update(hypothesis_id, update)
+        except Exception as exc:
+            logger.warning(
+                "StatusTracker: Redis write failed for {} – {}", hypothesis_id, exc
+            )
 
         # Persist to DB on completion or failure at specific milestones
         if state in [TaskState.COMPLETED, TaskState.FAILED]:
@@ -110,69 +102,62 @@ class StatusTracker:
         if hypothesis_id not in self.task_history:
             return
 
-        if not hasattr(self.__class__, "_task_handler"):
+        if self._task_handler is None:
             raise RuntimeError("StatusTracker not initialized")
 
-        db_history = self.__class__._task_handler.get_task_history(hypothesis_id) or []
+        db_history = self._task_handler.get_task_history(hypothesis_id) or []
         new_history = self.task_history[hypothesis_id]
 
         redis_history: list = []
-        cache = getattr(self.__class__, "_cache", None)
-        if cache is not None:
-            try:
-                redis_history = cache.get_history(hypothesis_id) or []
-            except Exception as exc:
-                logger.warning(
-                    "StatusTracker: Redis read failed during persist for {} – {}",
-                    hypothesis_id,
-                    exc,
-                )
+        try:
+            redis_history = self._cache.get_history(hypothesis_id) or []
+        except Exception as exc:
+            logger.warning(
+                "StatusTracker: Redis read failed during persist for {} – {}",
+                hypothesis_id,
+                exc,
+            )
 
         combined = db_history + redis_history + new_history
 
         final_history = self._dedup_and_sort(combined)
 
-        self.__class__._task_handler.save_task_history(hypothesis_id, final_history)
+        self._task_handler.save_task_history(hypothesis_id, final_history)
 
         # Clear in-memory state
         del self.task_history[hypothesis_id]
         self.completed_hypotheses.add(hypothesis_id)
 
         # Clear Redis cache entry now that it is safely in the DB
-        cache = getattr(self.__class__, "_cache", None)
-        if cache is not None:
-            try:
-                cache.clear_history(hypothesis_id)
-            except Exception as exc:
-                logger.warning(
-                    "StatusTracker: Redis clear failed for {} – {}", hypothesis_id, exc
-                )
+
+        try:
+            self._cache.clear_history(hypothesis_id)
+        except Exception as exc:
+            logger.warning(
+                "StatusTracker: Redis clear failed for {} – {}", hypothesis_id, exc
+            )
 
     def get_history(self, hypothesis_id):
         memory_history = list(self.task_history.get(hypothesis_id, []))
 
-        cache = self._cache_instance()
         redis_history = []
         is_persisted = False
 
-        if cache is not None:
-            try:
-                is_persisted = cache.is_persisted(hypothesis_id)
-                if not is_persisted:
-                    redis_history = cache.get_history(hypothesis_id) or []
-            except Exception as exc:
-                logger.warning(
-                    "StatusTracker: Redis read failed for {} – {}",
-                    hypothesis_id,
-                    exc,
-                )
-                is_persisted = True  # fall through to DB on Redis failure
+        try:
+            is_persisted = self._cache.is_persisted(hypothesis_id)
+            if not is_persisted:
+                redis_history = self._cache.get_history(hypothesis_id) or []
+        except Exception as exc:
+            logger.warning(
+                "StatusTracker: Redis read failed for {} – {}",
+                hypothesis_id,
+                exc,
+            )
+            is_persisted = True  # fall through to DB on Redis failure
 
         db_history = []
-        if cache is None or is_persisted:
-            db_history = (
-                self.__class__._task_handler.get_task_history(hypothesis_id) or []
-            )
+        if is_persisted:
+            db_history = self._task_handler.get_task_history(hypothesis_id) or []
 
         combined = memory_history + redis_history + db_history
         if not combined:
@@ -187,22 +172,18 @@ class StatusTracker:
         if history:
             candidates.append(history[-1])
 
-        cache = getattr(self.__class__, "_cache", None)
-        if cache is not None:
-            try:
-                latest = cache.get_latest(hypothesis_id)
-                if latest:
-                    candidates.append(latest)
-            except Exception as exc:
-                logger.warning(
-                    "StatusTracker: Redis latest-read failed for {} – {}", hypothesis_id, exc
-                )
+        try:
+            latest = self._cache.get_latest(hypothesis_id)
+            if latest:
+                candidates.append(latest)
+        except Exception as exc:
+            logger.warning(
+                "StatusTracker: Redis latest-read failed for {} – {}", hypothesis_id, exc
+            )
 
         db_history = []
         try:
-            db_history = (
-                self.__class__._task_handler.get_task_history(hypothesis_id) or []
-            )
+            db_history = self._task_handler.get_task_history(hypothesis_id) or []
             if db_history:
                 candidates.append(db_history[-1])
         except Exception as exc:
@@ -215,6 +196,7 @@ class StatusTracker:
             return None
 
         return max(candidates, key=lambda x: x.get("timestamp") or "")
+        
     def calculate_progress(self, task_history: list) -> float:
         if not task_history:
             return 0.0
