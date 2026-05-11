@@ -59,9 +59,10 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Nextflow for harmonization workflow (requires Java)
+ARG NEXTFLOW_VERSION=23.10.1
 RUN cd /tmp && \
-    wget -qO- https://get.nextflow.io | bash && \
-    mv nextflow /usr/local/bin/ && \
+    wget -q https://github.com/nextflow-io/nextflow/releases/download/v${NEXTFLOW_VERSION}/nextflow-${NEXTFLOW_VERSION}-all && \
+    mv nextflow-${NEXTFLOW_VERSION}-all /usr/local/bin/nextflow && \
     chmod +x /usr/local/bin/nextflow
 
 RUN pip install --upgrade pip setuptools wheel
