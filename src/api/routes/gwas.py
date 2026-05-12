@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import tempfile
 import traceback
 from typing import Any, Literal
 
+import torch
 import requests as _http
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -35,6 +37,10 @@ def _gwas_entry_search_text(entry: dict) -> str:
         if v is not None and str(v).strip():
             parts.append(str(v).strip())
     return "\n".join(parts) if parts else ""
+
+
+def _gwas_search_text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _entry_to_api_dict(entry: dict) -> dict[str, Any]:
@@ -79,6 +85,9 @@ def _run_hybrid_gwas_search(
     """
     Keyword substring matches first (full set up to cap), then semantic-ranked
     rows that are not already keyword hits. Pagination applies to this combined list.
+
+    Document embeddings for the semantic pool are cached in Mongo (per file_id, model, and
+    hash of search text) so repeated hybrid searches encode only missing rows + the query.
     """
     gwas_library = _deps.get("gwas_library")
     semantic = _deps.get("semantic_search")
@@ -87,18 +96,70 @@ def _run_hybrid_gwas_search(
     if semantic is None:
         raise RuntimeError("semantic_search dependency is not configured")
 
-    keyword_entries, _ = gwas_library.get_gwas_keyword_matches_unpaged(
+    model_id = getattr(semantic, "model_id", None) or ""
+
+    keyword_entries = gwas_library.get_gwas_keyword_matches_unpaged(
         search_term=search,
         sex_filter=sex,
         max_results=keyword_max,
     )
     kw_ids = {_gwas_entry_id(e) for e in keyword_entries if _gwas_entry_id(e)}
 
-    candidates, _ = gwas_library.get_gwas_semantic_candidates(
+    candidates = gwas_library.get_gwas_semantic_candidates(
         sex_filter=sex, max_docs=max_semantic
     )
-    texts = [_gwas_entry_search_text(e) for e in candidates]
-    ranked = semantic.rank_documents(search, texts)
+    if not candidates:
+        combined = keyword_entries
+        page_entries = combined[skip : skip + limit]
+        gwas_files = [_entry_to_api_dict(e) for e in page_entries]
+        return {
+            "gwas_files": gwas_files,
+            "total_files": len(combined),
+            "returned": len(gwas_files),
+            "skip": skip,
+            "limit": limit,
+        }
+
+    n = len(candidates)
+    vectors: list[list[float] | None] = [None] * n
+    to_fetch: list[tuple[int, str, str, str]] = []
+
+    for i, e in enumerate(candidates):
+        text = _gwas_entry_search_text(e)
+        text_hash = _gwas_search_text_sha256(text) if text else _gwas_search_text_sha256("")
+        fid = _gwas_entry_id(e)
+        stored = e.get("st_embedding")
+        if (
+            isinstance(stored, list)
+            and len(stored) > 0
+            and e.get("st_embed_model") == model_id
+            and e.get("st_embed_text_sha256") == text_hash
+        ):
+            vectors[i] = [float(x) for x in stored]
+        else:
+            to_fetch.append((i, fid, text, text_hash))
+
+    if to_fetch:
+        texts_batch = [t for _, _, t, _ in to_fetch]
+        new_embs = semantic.embed_model.encode(
+            texts_batch,
+            convert_to_tensor=True,
+            normalize_embeddings=True,
+            batch_size=64,
+            show_progress_bar=False,
+        )
+        persist: list[tuple[str, list[float], str, str]] = []
+        for j, (idx, fid, _t, th) in enumerate(to_fetch):
+            vec = new_embs[j].detach().cpu().tolist()
+            vectors[idx] = vec
+            if fid:
+                persist.append((fid, vec, model_id, th))
+        if persist:
+            gwas_library.bulk_set_gwas_semantic_embeddings(persist)
+
+    device = semantic.embed_model.device
+    doc_embs = torch.tensor(vectors, dtype=torch.float32, device=device)
+    ranked = semantic.rank_from_doc_embeddings(search, doc_embs)
     order = [idx for idx, _ in ranked]
     semantic_ordered = [candidates[i] for i in order]
     tail = [e for e in semantic_ordered if _gwas_entry_id(e) not in kw_ids]

@@ -5,10 +5,10 @@ import faiss
 import outlines
 import torch
 from datasets import load_dataset, Dataset
-from outlines.models import Transformers
+# from outlines.models import Transformers
 from pydantic import BaseModel, Field
 from sentence_transformers import SentenceTransformer, util
-from transformers import AutoTokenizer, AutoModel
+# from transformers import AutoTokenizer, AutoModel
 
 # torch.set_grad_enabled(False)
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -21,7 +21,33 @@ class SemanticSearch:
         :param embedding_model: The name of the hugging face model to use for embedding
         """
 
+        self.model_id = embedding_model
         self.embed_model = SentenceTransformer(embedding_model, token=hf_token)
+
+    def rank_from_doc_embeddings(
+        self, query: str, doc_embs: torch.Tensor
+    ) -> List[Tuple[int, float]]:
+        """
+        Rank documents given precomputed normalized document embeddings (N, D).
+        Same ordering semantics as rank_documents, without encoding document texts.
+        """
+        if doc_embs.numel() == 0 or doc_embs.shape[0] == 0:
+            return []
+        q = (query or "").strip()
+        if not q:
+            return [(i, 0.0) for i in range(doc_embs.shape[0])]
+
+        query_emb = self.embed_model.encode(
+            q,
+            convert_to_tensor=True,
+            normalize_embeddings=True,
+        )
+        if doc_embs.device != query_emb.device:
+            doc_embs = doc_embs.to(query_emb.device)
+        hits = util.semantic_search(
+            query_emb, doc_embs, top_k=doc_embs.shape[0]
+        )
+        return [(h["corpus_id"], float(h["score"])) for h in hits[0]]
 
     def rank_documents(
         self, query: str, texts: List[str]

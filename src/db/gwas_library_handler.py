@@ -7,7 +7,8 @@ that can be downloaded on-demand and cached in MinIO.
 
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+from pymongo import UpdateOne
 from loguru import logger
 from .base_handler import BaseHandler
 
@@ -150,18 +151,13 @@ class GWASLibraryHandler(BaseHandler):
         self,
         sex_filter: Optional[str] = None,
         max_docs: int = 10_000,
-    ) -> Tuple[List[Dict], bool]:
-        """
-        Load GWAS documents for semantic ranking (no text filter).
-        Returns (entries, pool_limited) where pool_limited is True if the library
-        has more matching documents than max_docs.
-        """
+    ) -> List[Dict]:
+        """Load GWAS documents for semantic ranking (no text filter), capped at max_docs."""
         try:
             query: Dict = {}
             if sex_filter:
                 query["sex"] = sex_filter
 
-            total = self.collection.count_documents(query)
             cursor = (
                 self.collection.find(query)
                 .sort([("file_id", 1)])
@@ -171,31 +167,63 @@ class GWASLibraryHandler(BaseHandler):
             for entry in cursor:
                 entry.pop("_id", None)
                 entries.append(entry)
-            pool_limited = total > max_docs
-            return entries, pool_limited
+            return entries
         except Exception as e:
             logger.error(f"Error loading GWAS semantic candidates: {e}")
-            return [], False
+            return []
+
+    def bulk_set_gwas_semantic_embeddings(
+        self,
+        updates: List[tuple[str, List[float], str, str]],
+    ) -> None:
+        """
+        Persist embedding cache for hybrid search.
+        Each tuple is (file_id, embedding vector, SentenceTransformer model id, sha256 hex of search text).
+        """
+        if not updates:
+            return
+        now = datetime.now(timezone.utc)
+        ops: List[UpdateOne] = []
+        for file_id, vec, model_id, text_sha in updates:
+            if not file_id or not vec:
+                continue
+            ops.append(
+                UpdateOne(
+                    {"file_id": file_id},
+                    {
+                        "$set": {
+                            "st_embedding": vec,
+                            "st_embed_model": model_id,
+                            "st_embed_text_sha256": text_sha,
+                            "updated_at": now,
+                        }
+                    },
+                )
+            )
+        if not ops:
+            return
+        try:
+            self.collection.bulk_write(ops, ordered=False)
+        except Exception as e:
+            logger.error(f"bulk_set_gwas_semantic_embeddings failed: {e}")
 
     def get_gwas_keyword_matches_unpaged(
         self,
         search_term: str,
         sex_filter: Optional[str] = None,
         max_results: int = 10_000,
-    ) -> Tuple[List[Dict], bool]:
+    ) -> List[Dict]:
         """
         All GWAS entries matching substring search (same fields as get_all_gwas_entries),
         sorted like paginated queries, but without skip — capped at max_results.
-        Returns (entries, hits_capped) if more than max_results documents match.
         """
         try:
             if not search_term or not search_term.strip():
-                return [], False
+                return []
             query: Dict = {}
             query.update(self._search_substring_query(search_term))
             if sex_filter:
                 query["sex"] = sex_filter
-            total = self.collection.count_documents(query)
             cursor = (
                 self.collection.find(query)
                 .sort([("download_count", -1), ("display_name", 1)])
@@ -205,11 +233,10 @@ class GWASLibraryHandler(BaseHandler):
             for entry in cursor:
                 entry.pop("_id", None)
                 entries.append(entry)
-            hits_capped = total > max_results
-            return entries, hits_capped
+            return entries
         except Exception as e:
             logger.error(f"Error loading GWAS keyword matches: {e}")
-            return [], False
+            return []
 
     def get_entry_count(
         self,

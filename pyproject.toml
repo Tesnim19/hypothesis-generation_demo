@@ -20,6 +20,7 @@ dependencies = [
     "torchvision",
     "torchaudio",
     "sentence-transformers",
+    "datasets>=2.14.0",
     "llama_index",
     "llama-index-llms-anthropic",
     "pengines",
