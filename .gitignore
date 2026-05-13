@@ -248,8 +248,5 @@ work #nextflow work dir
 runlog
 work/
 
+# test_dir
 scratch/*
-
-
-
-CLAUDE.md
