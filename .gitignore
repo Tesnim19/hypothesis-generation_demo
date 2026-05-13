@@ -247,3 +247,6 @@ work #nextflow work dir
 .nextflow.log*
 runlog
 work/
+
+# test_dir
+scratch/*
