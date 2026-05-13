@@ -6,6 +6,7 @@ This script runs on container startup to populate the database with
 initial data if collections are empty.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -101,8 +102,6 @@ def seed_phenotypes(handler: PhenotypeHandler, phenotypes_json_path: str) -> boo
         logger.info(f"Seeding phenotypes from: {phenotypes_json_path}")
         
         # Load phenotypes from JSON file
-        import json
-        
         with open(phenotypes_json_path, 'r', encoding='utf-8') as f:
             phenotypes_data = json.load(f)
         
