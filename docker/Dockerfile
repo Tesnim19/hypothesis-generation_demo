@@ -58,10 +58,10 @@ RUN apt-get update && apt-get install -y \
     openjdk-17-jre-headless \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Nextflow for harmonization workflow (requires Java)
+ARG NEXTFLOW_VERSION=23.10.1
 RUN cd /tmp && \
-    wget -qO- https://get.nextflow.io | bash && \
-    mv nextflow /usr/local/bin/ && \
+    wget -q https://github.com/nextflow-io/nextflow/releases/download/v${NEXTFLOW_VERSION}/nextflow-${NEXTFLOW_VERSION}-all && \
+    mv nextflow-${NEXTFLOW_VERSION}-all /usr/local/bin/nextflow && \
     chmod +x /usr/local/bin/nextflow
 
 RUN pip install --upgrade pip setuptools wheel
@@ -143,8 +143,8 @@ RUN /opt/conda/bin/conda config --set channel_priority strict && \
     /opt/conda/bin/conda create -n ldsc python=2.7 anaconda -y && \
     /opt/conda/bin/conda clean -afy
 
-# Install LDSC in the conda environment
-RUN git clone https://github.com/bulik/ldsc.git /opt/ldsc
+# Populate /opt/ldsc from repo 
+RUN mkdir -p /opt/ldsc
 WORKDIR /opt/ldsc
 
 # Install LDSC dependencies manually with compatible versions
@@ -175,6 +175,13 @@ RUN uv sync --no-cache --extra r-integration --no-binary-package rpy2
 
 # Copy application
 COPY . .
+
+# LDSC: use git submodule checkout under notebooks/tools/ldsc (Python 2.7 env + wrappers already set)
+RUN if [ -f /app/notebooks/tools/ldsc/ldsc.py ]; then \
+      rm -rf /opt/ldsc && cp -a /app/notebooks/tools/ldsc /opt/ldsc && chmod +x /opt/ldsc/ldsc.py; \
+    else \
+      rm -rf /opt/ldsc && git clone https://github.com/bulik/ldsc.git /opt/ldsc && chmod +x /opt/ldsc/ldsc.py; \
+    fi
 
 # Make entrypoint script executable
 RUN chmod +x /app/entrypoint.sh
