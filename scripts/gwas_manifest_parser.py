@@ -119,7 +119,7 @@ class GWASManifestParser:
         description = description.strip()
         
         # Create display name (shorter version for UI)
-        display_name = self._create_display_name(description, phenotype_code)
+        display_name = self._create_display_name(description)
         
         # Extract sex category
         sex = (
