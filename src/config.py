@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+
 from src.services.llm import LLM
 from src.services.prolog import PrologQuery
 from src.db import (
@@ -32,6 +34,15 @@ class Config:
         self.harmonizer_ref_dir_38 = "/app/data/harmonizer_ref/b38"
         self.harmonizer_code_repo = "./gwas-sumstats-harmoniser"  # Nextflow workflow
         self.harmonizer_script_dir = "./scripts/1000Genomes_phase3"  # Shell scripts
+        # Zhang cell-type LDSC (GRCh38 + precomputed ldscores); paths relative to repo_root
+        _repo = Path(__file__).resolve().parent.parent
+        self.repo_root = str(_repo)
+        self.ldsc_baseline_ld_prefix = "data/OSF/baseline_v1.2/baseline."
+        self.ldsc_merged_ccre_prefix = "data/ldscores/all_merged_cCREs/all_merged_cCREs."
+        self.ldsc_w_ld_prefix = "data/OSF/weights/weights.hm3_noMHC."
+        self.ldsc_w_hm3_snplist = "data/ldsc/data/w_hm3.snplist"
+        self.ldsc_hm3_no_mhc_list = "data/1000Genomes_phase3/hm3_no_MHC.list.txt"
+        self.ldsc_cts_file = "data/cts/cell_types_available.cts"
 
     @classmethod
     def from_args(cls, args):
@@ -74,7 +85,24 @@ class Config:
         config.harmonizer_code_repo = os.getenv("HARMONIZER_CODE_REPO", "./gwas-sumstats-harmoniser")  # Nextflow workflow
         config.harmonizer_script_dir = os.getenv("HARMONIZER_SCRIPT_DIR", "./scripts/1000Genomes_phase3")  # Shell scripts
         config.redis_url = os.getenv("REDIS_URL")
-
+        _repo = Path(__file__).resolve().parent.parent
+        config.repo_root = os.getenv("REPO_ROOT", str(_repo))
+        config.ldsc_baseline_ld_prefix = os.getenv(
+            "LDSC_BASELINE_LD_PREFIX", "data/OSF/baseline_v1.2/baseline."
+        )
+        config.ldsc_merged_ccre_prefix = os.getenv(
+            "LDSC_MERGED_CCRE_PREFIX", "data/ldscores/all_merged_cCREs/all_merged_cCREs."
+        )
+        config.ldsc_w_ld_prefix = os.getenv(
+            "LDSC_W_LD_PREFIX", "data/OSF/weights/weights.hm3_noMHC."
+        )
+        config.ldsc_w_hm3_snplist = os.getenv(
+            "LDSC_W_HM3_SNPLIST", "data/ldsc/data/w_hm3.snplist"
+        )
+        config.ldsc_hm3_no_mhc_list = os.getenv(
+            "LDSC_HM3_NO_MHC_LIST", "data/1000Genomes_phase3/hm3_no_MHC.list.txt"
+        )
+        config.ldsc_cts_file = os.getenv("LDSC_CTS_FILE", "data/cts/cell_types_available.cts")
         return config
 
     def get_harmonizer_ref_dir(self, ref_genome):
@@ -88,6 +116,17 @@ class Config:
 
     def get_plink_file_pattern(self, *, population, chrom):
         return f"{population}.chr{chrom}.1KG.GRCh38"
+
+    def get_ldsc_ref_ld_chr(self) -> str:
+        """Comma-separated chromosome-prefix pair for ldsc.py --h2-cts (baseline + merged cCRE)."""
+        return f"{self.ldsc_baseline_ld_prefix},{self.ldsc_merged_ccre_prefix}"
+
+    def resolve_ldsc_path(self, rel_path: str) -> str:
+        """Absolute path under repo_root for subprocess cwd-relative LDSC IO."""
+        p = Path(rel_path)
+        if p.is_absolute():
+            return str(p)
+        return str(Path(self.repo_root) / rel_path)
 
 
 def create_dependencies(config):

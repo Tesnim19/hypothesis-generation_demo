@@ -139,16 +139,11 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 )
 
                 if selected_tissue:
-                    # Offload coexpression to Dask (avoids OOM in prefect-deployment)
-                    tissue_uberon_id = enrichr.get_tissue_uberon_id(current_user_id, project_id, selected_tissue)
-                    coexpression_data = None
-                    if tissue_uberon_id:
-                        coexpression_data = get_coexpression_matrix_for_tissue.submit(
-                            this_causal_gene, tissue_uberon_id, cell_type=None, k=500
-                        ).result()
+                    coexpression_data = get_coexpression_matrix_for_tissue.submit(
+                        this_causal_gene, selected_tissue, k=500
+                    ).result()
                     enrich_tbl = enrichr.run(
                         this_causal_gene, tissue_name=selected_tissue,
-                        user_id=current_user_id, project_id=project_id,
                         coexpression_data=coexpression_data
                     )
                 else:
