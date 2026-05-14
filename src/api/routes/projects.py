@@ -218,7 +218,22 @@ async def post_analysis_pipeline(
         coverage: float = float(form.get("coverage", 0.95))
         min_abs_corr: float = float(form.get("min_abs_corr", 0.5))
         batch_size: int = int(form.get("batch_size", 5))
-        sample_size: int = int(form.get("sample_size", 10000))
+        _ss = form.get("sample_size")
+        try:
+            form_sample_size: int | None = (
+                int(_ss) if _ss not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="sample_size must be an integer when provided",
+            )
+
+        projects = _deps["projects"]
+        files = _deps["files"]
+        config = _deps["config"]
+        storage = _deps.get("storage")
+        gwas_library = _deps.get("gwas_library")
 
         gwas_entry = None
         file_id_param: str | None = form.get("gwas_file") if not is_uploaded else None
@@ -529,6 +544,15 @@ async def post_analysis_pipeline(
         total_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[API] Project {project_id} ready in {total_time:.1f}s, firing Prefect")
 
+        sample_size_n = GWASLibraryHandler.resolve_pipeline_sample_size(
+            gwas_entry if not is_uploaded else None,
+            form_sample_size,
+        )
+        logger.info(
+            f"[API] Pipeline sample_size={sample_size_n} "
+            f"(form={form_sample_size}, library_entry={not is_uploaded and gwas_entry is not None})"
+        )
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
@@ -546,7 +570,7 @@ async def post_analysis_pipeline(
                 L=L,
                 coverage=coverage,
                 min_abs_corr=min_abs_corr,
-                sample_size=sample_size,
+                sample_size=sample_size_n,
                 file_metadata_id=file_metadata_id if _file_needs_processing else None,
                 file_needs_processing=_file_needs_processing,
                 file_storage_key=object_key if _file_needs_processing else None,
