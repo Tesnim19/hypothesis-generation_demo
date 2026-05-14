@@ -43,6 +43,8 @@ class Config:
         self.ldsc_w_hm3_snplist = "data/ldsc/data/w_hm3.snplist"
         self.ldsc_hm3_no_mhc_list = "data/1000Genomes_phase3/hm3_no_MHC.list.txt"
         self.ldsc_cts_file = "data/cts/cell_types_available.cts"
+        self.cell_ontology_tsv = "data/Cell_ontology.tsv"
+        self.catlas_abc_aliases_tsv = "data/catlas_abc_cell_type_aliases.tsv"
 
     @classmethod
     def from_args(cls, args):
@@ -103,6 +105,10 @@ class Config:
             "LDSC_HM3_NO_MHC_LIST", "data/1000Genomes_phase3/hm3_no_MHC.list.txt"
         )
         config.ldsc_cts_file = os.getenv("LDSC_CTS_FILE", "data/cts/cell_types_available.cts")
+        config.cell_ontology_tsv = os.getenv("CELL_ONTOLOGY_TSV", "data/Cell_ontology.tsv")
+        config.catlas_abc_aliases_tsv = os.getenv(
+            "CATLAS_ABC_ALIASES_TSV", "data/catlas_abc_cell_type_aliases.tsv"
+        )
         return config
 
     def get_harmonizer_ref_dir(self, ref_genome):
