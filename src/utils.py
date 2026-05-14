@@ -50,6 +50,11 @@ def analysis_state_for_public_api(state: dict | None) -> dict:
     return out
 
 
+def project_running_task(analysis_state: dict | None) -> str:
+    """User-facing analysis pipeline step for GET /projects (uses normalized message)."""
+    return analysis_state_for_public_api(analysis_state).get("message") or ""
+
+
 def public_task_history_entries(entries: list | None) -> list:
     if not entries:
         return []
