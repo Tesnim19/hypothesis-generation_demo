@@ -72,7 +72,8 @@ def seed_gwas_library(handler: GWASLibraryHandler, manifest_path: str) -> bool:
         
         logger.info(f"GWAS library seeded successfully!")
         logger.info(f"Inserted: {result['inserted_count']}")
-        logger.info(f"Skipped: {result['skipped_count']}")
+        logger.info(f"Updated: {result['updated_count']}")
+        logger.info(f"Skipped (already existed): {result['skipped_existing_count']}")
         
         return True
         

@@ -14,7 +14,40 @@ from .base_handler import BaseHandler
 
 class GWASLibraryHandler(BaseHandler):
     """Handler for GWAS library collection"""
-    
+
+    # Neale lab UK Biobank round 2 totals (reference only when DB row lacks default_sample_size).
+    UKB_NEALE_BOTH_SEXES_FALLBACK = 361_194
+
+    @staticmethod
+    def sex_stratified_neale_reference_n(sex: Optional[str]) -> int:
+        s = (sex or "both_sexes").strip().lower().replace(" ", "_")
+        if s in ("males", "male"):
+            return 168_962
+        if s in ("females", "female"):
+            return 194_174
+        return 361_194
+
+    @classmethod
+    def resolve_pipeline_sample_size(
+        cls,
+        entry: Optional[Dict] = None,
+        form_sample_size: Optional[int] = None,
+    ) -> int:
+        """
+        N passed to harmonization / LDSC: explicit form value, else verified library
+        sample_size, else default_sample_size (Neale sex-stratified reference), else
+        inferred from sex, else global fallback.
+        """
+        if form_sample_size is not None:
+            return int(form_sample_size)
+        if entry:
+            if entry.get("sample_size") is not None:
+                return int(entry["sample_size"])
+            if entry.get("default_sample_size") is not None:
+                return int(entry["default_sample_size"])
+            return cls.sex_stratified_neale_reference_n(entry.get("sex"))
+        return cls.UKB_NEALE_BOTH_SEXES_FALLBACK
+
     def __init__(self, mongodb_uri: str, db_name: str):
         """
         Initialize the GWAS library handler
@@ -277,7 +310,18 @@ class GWASLibraryHandler(BaseHandler):
             logger.error(f"Error incrementing download count for {file_id}: {e}")
             return False
     
-    def bulk_create_gwas_entries(self, entries: List[Dict]) -> Dict:
+    def clear_collection(self) -> int:
+        """Delete all entries from the collection. Returns deleted count."""
+        result = self.collection.delete_many({})
+        logger.info(f"Cleared {result.deleted_count} entries from gwas_library")
+        return result.deleted_count
+
+    def bulk_create_gwas_entries(
+        self,
+        entries: List[Dict],
+        *,
+        skip_existing: bool = False,
+    ) -> Dict:
         """
         Bulk insert GWAS entries into the collection
         
@@ -285,15 +329,21 @@ class GWASLibraryHandler(BaseHandler):
             entries (List[Dict]): List of GWAS entries to insert
             
         Returns:
-            dict: Result with inserted_count and skipped_count
+            dict: inserted_count, updated_count, skipped_existing_count
         """
         try:
             from datetime import datetime, timezone
             
             inserted_count = 0
-            skipped_count = 0
+            updated_count = 0
+            skipped_existing_count = 0
             
             for entry in entries:
+                if skip_existing and self.collection.find_one(
+                    {"file_id": entry["file_id"]}, {"_id": 1}
+                ):
+                    skipped_existing_count += 1
+                    continue
                 # Add timestamps
                 entry['created_at'] = datetime.now(timezone.utc)
                 entry['updated_at'] = datetime.now(timezone.utc)
@@ -304,27 +354,38 @@ class GWASLibraryHandler(BaseHandler):
                 entry.setdefault('minio_path', None)
                 entry.setdefault('file_size', None)
                 entry.setdefault('last_accessed', None)
-                entry.setdefault('sample_size', None)
+                entry.setdefault(
+                    'default_sample_size',
+                    self.sex_stratified_neale_reference_n(entry.get('sex')),
+                )
                 entry.setdefault('genome_build', None)
+                # Repopulate: clear stale sample_size when parser omits it (no CSV / no scrape).
+                if 'sample_size' not in entry:
+                    entry['sample_size'] = None
                 
                 try:
-                    # Insert with unique constraint on file_id
-                    self.collection.insert_one(entry)
-                    inserted_count += 1
-                except Exception as e:
-                    # Skip duplicates
-                    if 'duplicate key error' in str(e).lower():
-                        logger.debug(f"Skipping duplicate entry: {entry.get('file_id')}")
-                        skipped_count += 1
+                    result = self.collection.update_one(
+                        {"file_id": entry["file_id"]},
+                        {"$set": entry},
+                        upsert=True,
+                    )
+                    if result.upserted_id:
+                        inserted_count += 1
                     else:
-                        logger.warning(f"Error inserting entry {entry.get('file_id')}: {e}")
-                        skipped_count += 1
+                        updated_count += 1
+                except Exception as e:
+                    logger.warning(f"Error upserting entry {entry.get('file_id')}: {e}")
+                    updated_count += 1
             
-            logger.info(f"Bulk insert complete: {inserted_count} inserted, {skipped_count} skipped")
+            logger.info(
+                f"Bulk upsert complete: {inserted_count} inserted, {updated_count} updated, "
+                f"{skipped_existing_count} skipped (existing)"
+            )
             
             return {
                 'inserted_count': inserted_count,
-                'skipped_count': skipped_count
+                'updated_count': updated_count,
+                'skipped_existing_count': skipped_existing_count,
             }
             
         except Exception as e:
