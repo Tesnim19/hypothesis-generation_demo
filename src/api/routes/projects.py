@@ -41,6 +41,7 @@ from src.utils import (
     compute_file_md5,
     get_shared_temp_dir,
     normalize_status_responses,
+    project_running_task,
     serialize_datetime_fields,
 )
 
@@ -92,9 +93,13 @@ async def get_projects(
             analysis_state = projects.load_analysis_state(current_user_id, project["id"])
             raw = analysis_state.get("status") if analysis_state else None
             enhanced["status"] = normalize_status_responses(raw)
+            enhanced["running_task"] = project_running_task(analysis_state)
         except Exception as state_e:
             logger.warning(f"Could not load analysis state for project {project['id']}: {state_e}")
             enhanced["status"] = normalize_status_responses("Completed")
+            enhanced["running_task"] = project_running_task(
+                {"status": "Completed", "message": "Analysis completed successfully."}
+            )
 
         enhanced["population"] = project.get("population")
         enhanced["ref_genome"] = project.get("ref_genome")
