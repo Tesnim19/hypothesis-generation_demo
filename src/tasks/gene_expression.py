@@ -16,6 +16,65 @@ from statsmodels.stats.multitest import fdrcorrection
 from src.config import Config
 from src.utils import get_deps
 from src.tasks.ldsc_sumstats import harmonized_to_ldsc_sumstats_zhang
+from src.catlas_census_mapping import (
+    ResolvedCensusCellFilter,
+    _escape_soma_string_literal,
+    resolve_ldsc_for_census,
+)
+
+
+def _census_obs_axis_query_for_resolved(
+    experiment,
+    resolved: ResolvedCensusCellFilter,
+):
+    """Try cell_type labels then CL ids until a query returns > 0 cells."""
+    if resolved.skip_coexpression:
+        logger.info(
+            f"[Census] skip coexpression for ldsc={resolved.ldsc_name!r} "
+            f"reason={resolved.skip_reason} ({resolved.source})"
+        )
+        return None
+
+    for lab in resolved.cell_type_labels:
+        esc = _escape_soma_string_literal(lab)
+        vf = f"cell_type == '{esc}'"
+        try:
+            aq = experiment.axis_query(
+                measurement_name="RNA",
+                obs_query=soma.AxisQuery(value_filter=vf),
+            )
+            n = len(aq.obs_joinids())
+            if n > 0:
+                logger.info(
+                    f"[Census] ldsc={resolved.ldsc_name!r} matched n={n} via cell_type={lab!r} "
+                    f"({resolved.source})"
+                )
+                return aq
+        except Exception as e:
+            logger.warning(f"[Census] cell_type filter failed {vf!r}: {e}")
+
+    for cl in resolved.cl_ids:
+        esc = _escape_soma_string_literal(cl)
+        vf = f"cell_type_ontology_term_id == '{esc}'"
+        try:
+            aq = experiment.axis_query(
+                measurement_name="RNA",
+                obs_query=soma.AxisQuery(value_filter=vf),
+            )
+            n = len(aq.obs_joinids())
+            if n > 0:
+                logger.info(
+                    f"[Census] ldsc={resolved.ldsc_name!r} matched n={n} via {cl} ({resolved.source})"
+                )
+                return aq
+        except Exception as e:
+            logger.warning(f"[Census] CL id filter failed {vf!r}: {e}")
+
+    logger.warning(
+        f"[Census] no obs for ldsc={resolved.ldsc_name!r} ({resolved.source}) "
+        f"labels={resolved.cell_type_labels} cl_ids={resolved.cl_ids}"
+    )
+    return None
 
 
 @task(log_prints=True)
@@ -178,39 +237,64 @@ def process_ldsc_results(results_dir, output_prefix, top_n=10):
 
 @task(log_prints=True)
 def map_tissues_to_cellxgene(top_tissues):
-    """Map cell-type labels for downstream CellxGene queries.
-    """
+    """Map LDSC cell-type names to Catlas / Census metadata for storage and queries."""
+    config = Config.from_env()
     results = {}
-    for cell_type in top_tissues:
-        results[cell_type] = {"cell_type": cell_type}
-        logger.info(f"[Mapping] '{cell_type}' → zhang_cell_type passthrough")
+    for ldsc_name in top_tissues:
+        resolved = resolve_ldsc_for_census(
+            ldsc_name,
+            repo_root=config.repo_root,
+            cell_ontology_rel=config.cell_ontology_tsv,
+            catlas_aliases_rel=config.catlas_abc_aliases_tsv,
+        )
+        results[ldsc_name] = {
+            "cell_type": ldsc_name,
+            "census_mapping_source": resolved.source,
+            "census_cell_type_labels": resolved.cell_type_labels,
+            "census_cl_ids": resolved.cl_ids,
+            "census_skip_coexpression": resolved.skip_coexpression,
+            "census_skip_reason": resolved.skip_reason,
+        }
+        if resolved.skip_coexpression:
+            logger.info(f"[Mapping] {ldsc_name!r} → skip ({resolved.skip_reason})")
+        else:
+            logger.info(
+                f"[Mapping] {ldsc_name!r} → census_labels={resolved.cell_type_labels} "
+                f"cl_ids={resolved.cl_ids} ({resolved.source})"
+            )
     return results
 
 
 @task(log_prints=True)
 def get_coexpression_matrix_for_tissue(gene, cell_type, k=500, batch_size=1000):
     """Query CellxGene census for co-expressed genes in the given cell type.
+
+    ``cell_type`` is the LDSC / CTS name (e.g. ``Atrial_Cardiomyocyte``). Catlas TSVs
+    resolve it to Census ``cell_type`` strings and/or CL ids.
     """
-    # Normalise label (Title_Case_Underscores) → CellxGene format (lowercase spaces)
-    cxg_cell_type = cell_type.replace("_", " ").lower()
-    logger.info(f"Starting coexpression for gene '{gene}' | cell type: '{cxg_cell_type}'")
+    config = Config.from_env()
+    resolved = resolve_ldsc_for_census(
+        cell_type,
+        repo_root=config.repo_root,
+        cell_ontology_rel=config.cell_ontology_tsv,
+        catlas_aliases_rel=config.catlas_abc_aliases_tsv,
+    )
+    log_label = cell_type.replace("_", " ").lower()
+    logger.info(
+        f"Starting coexpression for gene '{gene}' | ldsc={cell_type!r} "
+        f"(passthrough_label={log_label!r}) source={resolved.source} "
+        f"skip={resolved.skip_coexpression}"
+    )
 
     with cellxgene_census.open_soma(census_version="2024-07-01") as census:
         experiment = census["census_data"]["homo_sapiens"]
 
-        value_filter = f"cell_type == '{cxg_cell_type}'"
-
-        try:
-            axis_query = experiment.axis_query(
-                measurement_name="RNA",
-                obs_query=soma.AxisQuery(value_filter=value_filter)
-            )
-        except ValueError as e:
-            logger.warning(f"No cells found for cell type '{cxg_cell_type}': {e}")
+        axis_query = _census_obs_axis_query_for_resolved(experiment, resolved)
+        if axis_query is None:
             return [], [], []
 
         obs_joinids = axis_query.obs_joinids().to_numpy()
-        logger.info(f"Found {len(obs_joinids)} cells for tissue '{cxg_cell_type}'")
+        logger.info(f"Found {len(obs_joinids)} cells for ldsc cell type '{cell_type}'")
 
         if len(obs_joinids) > 100000:
             obs_joinids = obs_joinids[:100000] 
@@ -219,7 +303,7 @@ def get_coexpression_matrix_for_tissue(gene, cell_type, k=500, batch_size=1000):
             n = len(obs_joinids)
             
         if n == 0:
-            logger.warning(f"No cells found for tissue UBERON ID '{cxg_cell_type}'")
+            logger.warning(f"No cells in join set for ldsc cell type '{cell_type}'")
             return [], [], []
 
         # Get library sizes from obs metadata
@@ -303,7 +387,10 @@ def get_coexpression_matrix_for_tissue(gene, cell_type, k=500, batch_size=1000):
         # Filter cells with non-zero expression
         nonzero_mask = gene_expr > 0
         if np.sum(nonzero_mask) < 10:
-            logger.warning(f"Too few cells with non-zero expression for gene '{gene}' in tissue UBERON ID '{cxg_cell_type}'")
+            logger.warning(
+                f"Too few cells with non-zero expression for gene '{gene}' in "
+                f"ldsc cell type '{cell_type}'"
+            )
             return [], [], all_genes_list
 
         sub_joinids = obs_joinids[nonzero_mask]
