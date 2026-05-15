@@ -204,7 +204,7 @@ to_gwas_ssf() {
   READER="cat"
   case "$SRC" in *.gz|*.bgz) READER="bgzip -dc";; esac
 
-  # Build minimal GWAS-SSF (Neale/PLINK2 autodetect), force chromosome to "chr*" form
+  # Build minimal GWAS-SSF (Neale/PLINK2/SSF autodetect), force chromosome to "chr*" form
   $READER "$SRC" | awk -v OFS="\t" '
     BEGIN{
       print "chromosome\tbase_pair_location\teffect_allele\tother_allele\tbeta\tstandard_error\tp_value\teffect_allele_frequency\trsid"
@@ -213,7 +213,8 @@ to_gwas_ssf() {
       for(i=1;i<=NF;i++) h[tolower($i)]=i
       is_neale = h["variant"] && (h["beta"]||h["or"]) && (h["se"]||h["stderr"]||h["standard_error"]) && (h["pval"]||h["p"])
       is_plink = ((h["chr"]||h["chrom"]) && (h["bp"]||h["pos"]) && h["a1"] && h["a2"] && (h["beta"]||h["or"]) && (h["se"]||h["stderr"]||h["standard_error"]) && (h["p"]||h["pval"]))
-      if(!is_neale && !is_plink){ print "ERROR: unknown layout" > "/dev/stderr"; exit 2 }
+      is_ssf   = (h["chromosome"] && h["base_pair_location"] && h["effect_allele"] && h["other_allele"] && h["beta"] && h["standard_error"] && (h["p_value"]||h["p"]))
+      if(!is_neale && !is_plink && !is_ssf){ print "ERROR: unknown layout" > "/dev/stderr"; exit 2 }
       next
     }
     {
@@ -226,6 +227,16 @@ to_gwas_ssf() {
         if(h["pval"]) p=$h["pval"]; else if(h["p"]) p=$h["p"]
         if(h["af"]) eaf=$h["af"]; else if(h["minor_af"]) eaf=$h["minor_af"]; else if(h["effect_allele_frequency"]) eaf=$h["effect_allele_frequency"]
         if(h["rsid"]) rsid=$h["rsid"]; else if(h["snp"]) rsid=$h["snp"]
+      } else if(is_ssf) {
+        chrom = $h["chromosome"]
+        pos   = $h["base_pair_location"]
+        ea    = $h["effect_allele"]
+        oa    = $h["other_allele"]
+        beta  = $h["beta"]
+        se    = $h["standard_error"]
+        if(h["p_value"]) p=$h["p_value"]; else p=$h["p"]
+        if(h["effect_allele_frequency"]) eaf=$h["effect_allele_frequency"]; else eaf="NA"
+        if(h["rsid"]) rsid=$h["rsid"]; else if(h["variant_id"]) rsid=$h["variant_id"]; else rsid="NA"
       } else {
         chrom = (h["chr"]? $h["chr"] : $h["chrom"])
         pos   = (h["bp"]?  $h["bp"]  : $h["pos"])
@@ -319,7 +330,39 @@ chromlist_from_ssf() {
 }
 
 
-OUT_GZ="$(to_gwas_ssf)" 
+# Detect if input is already in SSF format — skip reformatting (same logic as notebook)
+_check_reader="cat"
+case "$SUMSTATS" in *.gz|*.bgz) _check_reader="bgzip -dc";; esac
+_header=$($_check_reader "$SUMSTATS" | head -1 | tr '[:upper:]' '[:lower:]')
+
+if echo "$_header" | grep -q "base_pair_location" && echo "$_header" | grep -q "effect_allele"; then
+  echo "Input is already in SSF format — skipping reformatting"
+  OUT_GZ="$SUMSTATS"
+  OUT_YAML="${SUMSTATS}-meta.yaml"
+  if [[ ! -f "$OUT_YAML" ]]; then
+    MD5="$(md5sum < "$SUMSTATS" | awk '{print $1}')"
+    cat > "$OUT_YAML" <<YAML
+# Study meta-data
+date_metadata_last_modified: $(date +%F)
+
+# Genotyping Information
+genome_assembly: GRCh${BUILD}
+coordinate_system: 1-based
+
+# Summary Statistic information
+data_file_name: $(basename "$SUMSTATS")
+file_type: GWAS-SSF v0.1
+data_file_md5sum: ${MD5}
+
+# Harmonization status
+is_harmonised: false
+is_sorted: false
+YAML
+  fi
+else
+  OUT_GZ="$(to_gwas_ssf)"
+fi
+
 echo "SSF file: $OUT_GZ"
 CHROMLIST="$(chromlist_from_ssf "$OUT_GZ")"
 echo "Chromosomes detected: $CHROMLIST"
