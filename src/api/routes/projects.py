@@ -20,6 +20,7 @@ from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
     allowed_file,
     compute_file_md5,
+    get_population_label,
     get_shared_temp_dir,
     normalize_status_responses,
     project_running_task,
@@ -82,7 +83,7 @@ async def get_projects(
                 {"status": "Completed", "message": "Analysis completed successfully."}
             )
 
-        enhanced["population"] = project.get("population")
+        enhanced["population"] = get_population_label(project.get("population"))
         enhanced["ref_genome"] = project.get("ref_genome")
 
         total_credible_sets = 0
@@ -128,8 +129,11 @@ async def delete_project(
     if not id:
         raise HTTPException(status_code=400, detail="Project ID is required")
     projects = _deps["projects"]
-    success = projects.delete_project(current_user_id, id)
-    if success:
+    result = projects.delete_project(current_user_id, id)
+    if result is False:
+        raise HTTPException(status_code=500, detail="Failed to delete project")
+    # bulk_delete_projects returns a dict; a dict is always truthy in Python — check deleted_count
+    if isinstance(result, dict) and result.get("deleted_count", 0) > 0:
         return {"message": "Project deleted successfully"}
     raise HTTPException(status_code=404, detail="Project not found or access denied")
 

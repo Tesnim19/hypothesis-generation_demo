@@ -11,6 +11,23 @@ import uuid
 from dask.distributed import get_worker
 
 
+POPULATION_LABELS: dict[str, str] = {
+    "EUR": "European",
+    "AFR": "African",
+    "AMR": "Admixed American",
+    "EAS": "East Asian",
+    "SAS": "South Asian",
+}
+
+
+def get_population_label(code: str | None) -> str | None:
+    """Return the human-readable population name for a given population code.
+    """
+    if not code:
+        return None
+    return POPULATION_LABELS.get(str(code).upper(), code)
+
+
 def normalize_status_responses(raw: str | None) -> str:
     """Map stored status strings to Running, Failed, or Completed (API / sockets)."""
     if raw is None or not str(raw).strip():
