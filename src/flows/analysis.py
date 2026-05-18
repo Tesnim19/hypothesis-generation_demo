@@ -86,12 +86,12 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             user_id=user_id, project_id=project_id
         ).result()
 
-        # Extract the actual file path from the result
+        # harmonize_sumstats_with_nextflow now returns just the file path.
+        # Keep tuple handling for backward compatibility with older task versions.
         if isinstance(harmonized_file_result, tuple):
-            harmonized_df, harmonized_file = harmonized_file_result
+            harmonized_file = harmonized_file_result[1]
         else:
             harmonized_file = harmonized_file_result
-            harmonized_df = pd.read_csv(harmonized_file, sep='\t', index_col=0)
 
         # Clean up the raw GWAS input file
         if gwas_file_path and os.path.exists(gwas_file_path):
@@ -120,7 +120,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
         save_analysis_state_task.submit(user_id, project_id, harmonization_state).result()
 
         logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
-        significant_df_result = filter_significant_variants.submit(harmonized_df, output_dir).result()
+        significant_df_result = filter_significant_variants.submit(harmonized_file, output_dir).result()
 
         # Extract the actual DataFrame
         if isinstance(significant_df_result, tuple):
