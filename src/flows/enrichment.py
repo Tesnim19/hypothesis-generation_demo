@@ -133,7 +133,7 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
 
             if use_shared_enrichment and this_causal_gene in shared_enrichment_cache:
                 logger.info(f"Reusing shared enrichment for gene {this_causal_gene}")
-                relevant_gos, enrichment_run_meta  = shared_enrichment_cache[this_causal_gene]
+                relevant_gos, enrichment_run_meta = shared_enrichment_cache[this_causal_gene]
             else:
                 # Run enrichment for this specific gene
                 logger.info(f"Running enrichment for gene {this_causal_gene} (graph {idx+1}/{len(graphs_with_prob)})")
