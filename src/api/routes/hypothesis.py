@@ -9,7 +9,7 @@ from loguru import logger
 
 from src.api.dependencies import _deps
 from src.api.auth import get_current_user_id
-from src.run_deployment import invoke_hypothesis_deployment
+from src.flows import hypothesis_flow
 from src.services.status_tracker import TaskState, status_tracker
 from src.tasks import extract_probability, get_related_hypotheses
 from src.utils import (
@@ -219,65 +219,23 @@ async def post_hypothesis(
 
     hypothesis_id = hypothesis["id"]
 
-    def run_hypothesis_deployment_blocking():
-        return invoke_hypothesis_deployment(
-            current_user_id,
-            hypothesis_id,
-            enrich_id,
-            go_id,
-            wait_timeout=_HYPOTHESIS_FLOW_WAIT_TIMEOUT,
-        )
-
-    loop = asyncio.get_running_loop()
-    try:
-        flow_run = await loop.run_in_executor(None, run_hypothesis_deployment_blocking)
-    except Exception as e:
-        logger.exception("Hypothesis Prefect run_deployment failed")
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Could not run the hypothesis flow on Prefect. If the API logs show "
-                "404 for deployments/name/hypothesis-flow/hypothesis-generation-deployment, "
-                "the deployment is not registered—restart prefect-deployment so "
-                "src/deployments.py runs. "
-                f"Details: {e!s}"
-            ),
-        ) from e
-
-    state = flow_run.state
-    if state is None:
-        raise HTTPException(
-            status_code=502, detail="Hypothesis flow run has no state; check Prefect."
-        )
-
-    if not state.is_final():
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                "Hypothesis generation did not finish in time; the run may still be "
-                "active in Prefect. Try again shortly."
-            ),
-        )
-
-    if state.is_failed() or state.is_crashed() or state.is_cancelled():
-        raise HTTPException(
-            status_code=500,
-            detail=state.message or "Hypothesis flow failed or was cancelled.",
-        )
-
-    if not state.is_completed():
-        raise HTTPException(
-            status_code=500,
-            detail=state.message or "Hypothesis flow did not complete successfully.",
-        )
+    flow_future = hypothesis_flow.submit(
+        current_user_id,
+        hypothesis_id,
+        enrich_id,
+        go_id,
+    )
 
     try:
-        flow_return = state.result(raise_on_failure=True)
+        flow_return = await flow_future.result()
     except Exception as e:
-        logger.exception("Could not load hypothesis flow result from Prefect state")
+        logger.exception("Hypothesis Prefect flow execution failed")
         raise HTTPException(
             status_code=500,
-            detail=f"Hypothesis flow finished but result could not be read: {e}",
+            detail=(
+                "Hypothesis generation failed while executing the flow. "
+                "Check API logs for details."
+            ),
         ) from e
 
     if (
