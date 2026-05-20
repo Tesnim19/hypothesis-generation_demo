@@ -109,3 +109,11 @@ Type II Skeletal Myocyte	CL:0002212	Type_II_Skeletal_Myocyte
 V Cardiomyocyte	CL:2000046	Ventricular_Cardiomyocyte
 Vasc Sm Muscle 1	CL:0019018	Vascular_Smooth_Muscle_1
 Vasc Sm Muscle 2	CL:0019018	Vascular_Smooth_Muscle_2
+T Lymphocyte 1 (CD8+)	CL:0000625	T_Lymphocyte_1_CD8_
+T lymphocyte 2 (CD4+)	CL:0000624	T_lymphocyte_2_CD4_
+Fetal T Lymphocyte 1 (CD4+)	CL:0000084	Fetal_T_Lymphocyte_1_CD4_
+Fetal T Lymphocyte 2 (Cytotoxic)	CL:0000084	Fetal_T_Lymphocyte_2_Cytotoxic
+Macrophage (General)	CL:0000235	Fetal_Macrophage_General_3
+Macrophage (General)	CL:0000235	Fetal_Macrophage_General_1
+Fetal B Lymphocyte 2 (CXCR5+)	CL:0000236	Fetal_B_Lymphocyte_2_CXCR5_
+Fetal T Lymphocyte 3 (IL2+)	CL:0000084	Fetal_T_Lymphocyte_3_IL2_
