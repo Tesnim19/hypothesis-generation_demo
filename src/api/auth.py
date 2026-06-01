@@ -29,3 +29,12 @@ async def get_current_user_id(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Token is invalid!",
         )
+async def get_current_user_email(
+    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> str | None:
+    """FastAPI dependency: extract email from JWT token if present."""
+    try:
+        data = _decode(creds.credentials)
+        return data.get("email")
+    except Exception:
+        return None

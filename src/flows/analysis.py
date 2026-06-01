@@ -7,6 +7,9 @@ from loguru import logger
 from prefect import flow
 from prefect.runtime import flow_run as _prefect_flow_run
 from prefect_dask import DaskTaskRunner
+from src.services.mail import send_email
+from src.utils import get_deps
+import asyncio
 
 from src.config import Config
 from src.tasks import (
@@ -34,6 +37,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1,
                            coverage=0.95, min_abs_corr=0.5, sample_size=None,
+                           user_email: str | None = None, project_name: str | None = None,
                            file_metadata_id=None, file_needs_processing=False,
                            file_storage_key=None, file_id_new=None,
                            file_source_minio_path=None, file_source_download_url=None,
@@ -293,6 +297,25 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 "ldsc_status": ldsc_status
             }
             save_analysis_state_task.submit(user_id, project_id, completed_state).result()
+
+            # Send completion email if we have an address
+            if user_email:
+                display_name = project_name or project_id
+                try:
+                    asyncio.run(send_email(
+                        subject="Your analysis is complete",
+                        recipients=[user_email],
+                        body=(
+                            f"Your analysis for project '{display_name}' has completed successfully.\n\n"
+                            "You can now view your results in the platform."
+                        ),
+                    ))
+                    logger.info(f"[PIPELINE] Completion email sent to {user_email}")
+                except Exception as mail_e:
+                    # Email failure must never fail the pipeline
+                    logger.error(f"[PIPELINE] Could not send completion email: {mail_e}")
+            else:
+                logger.info("[PIPELINE] No user_email provided — skipping completion notification")
 
             logger.info(f"[PIPELINE] Analysis completed successfully!")
             logger.info(f"[PIPELINE] - Total variants: {total_variants}")

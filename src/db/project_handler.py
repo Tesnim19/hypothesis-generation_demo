@@ -24,7 +24,7 @@ class ProjectHandler(BaseHandler):
         self.analysis_results_collection = self.db['analysis_results']
         self.file_metadata_collection = self.db['file_metadata']
     
-    def create_project(self, user_id, name, gwas_file_id, phenotype,population, ref_genome, analysis_parameters=None):
+    def create_project(self, user_id, name, gwas_file_id, phenotype,population, ref_genome, analysis_parameters=None, user_email=None):
         """Create a new project"""
         project_data = {
             'user_id': user_id,
@@ -36,7 +36,8 @@ class ProjectHandler(BaseHandler):
             'gwas_file_id': gwas_file_id,
             'population': population,
             'ref_genome': ref_genome,
-            'analysis_parameters': analysis_parameters or {}
+            'analysis_parameters': analysis_parameters or {},
+            "user_email": user_email,
         }
         result = self.projects_collection.insert_one(project_data)
         return str(result.inserted_id)
