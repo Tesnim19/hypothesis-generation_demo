@@ -264,7 +264,7 @@ def execute_phenotype_query(phenotype, hypothesis_id):
         logger.info("Executing Prolog query to retrieve phenotype id...")
         deps = get_deps()
         prolog_query = deps["prolog_query"]
-        result = prolog_query.execute_query(f"term_name(efo(X), {phenotype})")
+        result = prolog_query.execute_query(f"term_name(efo(X), '{phenotype}')")
 
         emit_task_update(
             hypothesis_id=hypothesis_id,
