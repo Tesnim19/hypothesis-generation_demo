@@ -512,6 +512,12 @@ async def post_analysis_pipeline(
                 source=source,
             )
 
+        sample_size_resolution = GWASLibraryHandler.resolve_sample_size_info(
+            gwas_entry if not is_uploaded else None,
+            form_sample_size,
+        )
+        sample_size_n = sample_size_resolution.pipeline_value
+
         analysis_parameters = {
             "maf_threshold": maf_threshold,
             "seed": seed,
@@ -521,6 +527,10 @@ async def post_analysis_pipeline(
             "min_abs_corr": min_abs_corr,
             "batch_size": batch_size,
             "max_workers": max_workers,
+            "sample_size": sample_size_n,
+            "sample_size_source": sample_size_resolution.source,
+            "sample_size_message": sample_size_resolution.message,
+            "sample_size_is_user_provided": sample_size_resolution.is_user_provided,
         }
 
         project_id = projects.create_project(
@@ -552,13 +562,10 @@ async def post_analysis_pipeline(
         total_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[API] Project {project_id} ready in {total_time:.1f}s, firing Prefect")
 
-        sample_size_n = GWASLibraryHandler.resolve_pipeline_sample_size(
-            gwas_entry if not is_uploaded else None,
-            form_sample_size,
-        )
         logger.info(
             f"[API] Pipeline sample_size={sample_size_n} "
-            f"(form={form_sample_size}, library_entry={not is_uploaded and gwas_entry is not None})"
+            f"(source={sample_size_resolution.source}, form={form_sample_size}, "
+            f"library_entry={not is_uploaded and gwas_entry is not None})"
         )
 
         loop = asyncio.get_running_loop()
@@ -595,6 +602,7 @@ async def post_analysis_pipeline(
             "project_id": project_id,
             "file_id": file_metadata_id,
             "message": "Analysis pipeline started successfully",
+            **sample_size_resolution.to_api_dict(),
         }
 
     except HTTPException:

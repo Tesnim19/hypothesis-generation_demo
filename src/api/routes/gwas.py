@@ -7,12 +7,15 @@ import tempfile
 import traceback
 
 import requests as _http
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from loguru import logger
 
-from src.api.dependencies import get_gwas_library_handler, get_storage
-from src.db import GWASLibraryHandler
+from src.api.auth import get_current_user_id
+from src.api.dependencies import get_file_handler, get_gwas_library_handler, get_storage
+from src.db import FileHandler, GWASLibraryHandler
 
 router = APIRouter()
 
@@ -48,6 +51,7 @@ async def get_gwas_files(
             desc = entry.get("description") or ""
             if isinstance(desc, str) and desc.startswith("#"):
                 desc = desc.lstrip("#").strip()
+            resolution = GWASLibraryHandler.resolve_sample_size_info(entry=entry)
             gwas_file_entry: dict = {
                 "id": file_id,
                 "phenotype": desc,
@@ -59,8 +63,10 @@ async def get_gwas_files(
                 "download_count": entry.get("download_count", 0),
                 "url": f"/gwas-files/download/{file_id}",
                 "showcase_link": entry.get("showcase_link", ""),
-                "sample_size": entry.get("sample_size"),
                 "genome_build": entry.get("genome_build"),
+                **GWASLibraryHandler.sample_size_fields_for_library_entry(
+                    entry, resolution
+                ),
             }
             if entry.get("file_size"):
                 gwas_file_entry["file_size_mb"] = round(
@@ -81,6 +87,54 @@ async def get_gwas_files(
         logger.error(f"Error fetching GWAS files: {exc}")
         raise HTTPException(
             status_code=500, detail=f"Failed to fetch GWAS files: {exc}"
+        )
+
+
+@router.get("/gwas-files/{file_id}/sample-size-info")
+async def get_sample_size_info(
+    file_id: str,
+    gwas_source: Literal["library", "upload"] | None = Query(
+        None,
+        description="Optional. If set, only that source is checked. If omitted, library is tried first, then user uploads.",
+    ),
+    current_user_id: str = Depends(get_current_user_id),
+    gwas_library: GWASLibraryHandler = Depends(get_gwas_library_handler),
+    files: FileHandler = Depends(get_file_handler),
+):
+    """
+    Preview sample size after the user selects a file.
+    """
+    try:
+        if gwas_source in (None, "library"):
+            entry = gwas_library.get_gwas_entry(file_id=file_id)
+            if entry:
+                resolution = GWASLibraryHandler.resolve_sample_size_info(entry=entry)
+                return {
+                    **GWASLibraryHandler.sample_size_fields_for_library_entry(
+                        entry, resolution
+                    ),
+                    "gwas_source": "library",
+                }
+            if gwas_source == "library":
+                raise HTTPException(
+                    status_code=404, detail="GWAS file not found in library"
+                )
+
+        file_meta = files.get_file_metadata(current_user_id, file_id)
+        if file_meta:
+            resolution = GWASLibraryHandler.resolve_upload_sample_size_info(
+                file_meta.get("file_path")
+            )
+            return {**resolution.to_api_dict(), "gwas_source": "upload"}
+
+        raise HTTPException(status_code=404, detail="GWAS file not found")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Error resolving sample-size info for {file_id}: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to resolve sample-size info: {exc}",
         )
 
 

@@ -60,3 +60,4 @@ dependencies = [
 
 [project.optional-dependencies]
 r-integration = ["rpy2>=3.5.0,<3.6.0"]
+dev = ["pytest>=8.0.0"]
