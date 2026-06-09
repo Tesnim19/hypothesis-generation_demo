@@ -26,6 +26,7 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
     config = Config.from_env()
     deps = create_dependencies(config)
     hypotheses = deps['hypotheses']
+    enrichr = deps['enrichr']
 
     hypothesis = check_hypothesis.submit(current_user_id, enrich_id, go_id, hypothesis_id).result()
     if hypothesis:
@@ -71,13 +72,18 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
 
     causal_graph = graph
 
-    coexpressed_gene_ids = get_gene_ids.submit([g.lower() for g in coexpressed_gene_names], hypothesis_id).result()
+    coexpressed_gene_ids = get_gene_ids.submit(
+        [g.lower() for g in coexpressed_gene_names], hypothesis_id
+    ).result()
 
     nodes, edges = causal_graph["nodes"], causal_graph["edges"]
 
-    causal_gene_id = causal_gene.lower()
-    causal_gene_name = causal_gene.upper()
-    logger.info(f"Using causal gene from enrichment: {causal_gene_name} (ID: {causal_gene_id})")
+    causal_gene_symbol = enrichr.to_symbol(causal_gene)
+    causal_gene_ensembl = enrichr.to_ensembl_id(causal_gene_symbol) or causal_gene.lower()
+    logger.info(
+        f"Using causal gene from enrichment: {causal_gene_symbol} "
+        f"(Ensembl: {causal_gene_ensembl})"
+    )
 
     # Standardize variant IDs
     variant_nodes = [n for n in nodes if n["type"] == "snp"]
@@ -98,13 +104,29 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
             edge["target"] = variant_id
 
     gene_nodes = [n for n in nodes if n["type"] == "gene"]
-    gene_ids = [n['id'] for n in gene_nodes]
-    gene_entities = [f"gene({id})" for id in gene_ids]
-    query = f"maplist(gene_name, {gene_entities}, X)".replace("'", "")
+    prolog_gene_nodes = []
+    prolog_gene_ids = []
 
-    gene_names = execute_gene_query.submit(query, hypothesis_id).result()
-    for gene_id_node, gene_name, node in zip(gene_ids, gene_names, gene_nodes):
-        node["name"] = gene_name
+    for node in gene_nodes:
+        node_id = node.get("id", "")
+        if enrichr.is_ensembl_id(node_id):
+            prolog_gene_nodes.append(node)
+            prolog_gene_ids.append(node_id)
+        else:
+            node["name"] = enrichr.to_symbol(node.get("name") or node_id)
+
+    if prolog_gene_ids:
+        gene_entities = [f"gene({gene_id})" for gene_id in prolog_gene_ids]
+        query = f"maplist(gene_name, {gene_entities}, X)".replace("'", "")
+        prolog_gene_names = execute_gene_query.submit(query, hypothesis_id).result()
+        for gene_id_node, prolog_name, node in zip(
+            prolog_gene_ids, prolog_gene_names, prolog_gene_nodes
+        ):
+            node["name"] = (
+                enrichr.to_symbol(prolog_name)
+                if prolog_name
+                else enrichr.to_symbol(node.get("name") or gene_id_node)
+            )
 
     phenotype_result = execute_phenotype_query.submit(phenotype, hypothesis_id).result()
     phenotype_id = phenotype_result[0] if isinstance(phenotype_result, list) and phenotype_result else phenotype_result
@@ -115,15 +137,22 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
     nodes.append({"id": phenotype_id, "type": "phenotype", "name": phenotype})
     edges.append({"source": go_id, "target": phenotype_id, "label": "involved_in"})
     for gene_id, gene_name in zip(coexpressed_gene_ids, coexpressed_gene_names):
-        nodes.append({"id": gene_id, "type": "gene", "name": gene_name})
+        symbol = enrichr.to_symbol(gene_name)
+        nodes.append({"id": gene_id, "type": "gene", "name": symbol})
         edges.append({"source": gene_id, "target": go_id, "label": "enriched_in"})
-        edges.append({"source": causal_gene_id, "target": gene_id, "label": "coexpressed_with"})
+        edges.append({
+            "source": causal_gene_ensembl,
+            "target": gene_id,
+            "label": "coexpressed_with",
+        })
 
     final_causal_graph = {"nodes": nodes, "edges": edges, "probability": graph_prob}
 
     summary = summarize_graph.submit({"nodes": nodes, "edges": edges}, hypothesis_id).result()
 
-    create_hypothesis.submit(enrich_id, go_id, variant_id, phenotype, causal_gene_name, final_causal_graph,
-                     summary, current_user_id, hypothesis_id).result()
+    create_hypothesis.submit(
+        enrich_id, go_id, variant_id, phenotype, causal_gene_symbol, final_causal_graph,
+        summary, current_user_id, hypothesis_id
+    ).result()
 
     return {"summary": summary, "graph": final_causal_graph}, 201

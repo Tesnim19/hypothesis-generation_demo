@@ -1,10 +1,16 @@
-from typing import List
+import copy
 import pickle
+import re
+from typing import List, Optional
+
 import gseapy as gp
-from src.config import Config
-from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
 import pandas as pd
 from loguru import logger
+
+from src.config import Config
+from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
+
+_ENSG_RE = re.compile(r"^ENSG\d+$", re.IGNORECASE)
 
 
 class Enrich:
@@ -33,6 +39,45 @@ class Enrich:
         with open(fallback_path, "rb") as f:
             return pickle.load(f)
     
+    @staticmethod
+    def is_ensembl_id(gene: str) -> bool:
+        return bool(gene and _ENSG_RE.match(str(gene).strip()))
+
+    @staticmethod
+    def _normalize_gene_token(gene: str) -> str:
+        return str(gene).strip().strip("'\"")
+
+    def to_symbol(self, gene: str) -> str:
+        """Resolve an Ensembl ID or gene name to an HGNC symbol (uppercase)."""
+        if not gene:
+            return gene
+        token = self._normalize_gene_token(gene)
+        if self.is_ensembl_id(token):
+            symbol = self.ensembl_hgnc_map.get(token.upper())
+            if symbol:
+                return symbol.upper()
+            return token.upper()
+        return token.upper()
+
+    def to_ensembl_id(self, gene: str) -> Optional[str]:
+        """Resolve a gene symbol or Ensembl ID to a lowercase Ensembl ID."""
+        if not gene:
+            return None
+        token = self._normalize_gene_token(gene)
+        if self.is_ensembl_id(token):
+            return token.lower()
+        ensembl_id = self.hgnc_ensembl_map.get(token.upper())
+        return ensembl_id.lower() if ensembl_id else None
+
+    def annotate_graph_gene_names(self, graph: dict) -> dict:
+        """Return a graph copy with gene node names set to HGNC symbols (ids unchanged)."""
+        resolved = copy.deepcopy(graph)
+        for node in resolved.get("nodes", []):
+            if node.get("type") != "gene":
+                continue
+            node["name"] = self.to_symbol(node.get("name") or node.get("id", ""))
+        return resolved
+
     def get_hgnc_syms(self, ensg_ids):
         hgnc_symbols = []
         for g in ensg_ids:
@@ -112,9 +157,17 @@ class Enrich:
         """
         library = "GO_Biological_Process_2023"
         organism = "Human"
+        causal_gene_symbol = self.to_symbol(relevant_gene)
+        ensembl_gene = self.to_ensembl_id(relevant_gene)
+        if ensembl_gene is None:
+            ensembl_gene = relevant_gene
+            logger.warning(
+                f"Could not map '{relevant_gene}' to Ensembl ID; "
+                "coexpression queries may fail"
+            )
 
         coexpression_result = self.get_coexpression_net(
-            relevant_gene, tissue_name, coexpression_data=coexpression_data
+            ensembl_gene, tissue_name, coexpression_data=coexpression_data
         )
         
         # Handle different return types (tuple for tissue-specific, list for fallback)
@@ -132,16 +185,19 @@ class Enrich:
                 background_genes_ensembl = all_tissue_genes
             
             background_genes = self.get_hgnc_syms(background_genes_ensembl)
-            logger.info(f"Running tissue-specific enrichment for {relevant_gene} in {tissue_name}")
+            logger.info(
+                f"Running tissue-specific enrichment for {causal_gene_symbol} "
+                f"in {tissue_name}"
+            )
             logger.info(f"Using tissue-specific background: {len(background_genes)} genes from CellxGene analysis")
             logger.info(f"Converted {len(gene_list_ensembl)} Ensembl IDs to {len(gene_list)} HGNC symbols")
         else:
             # Fallback case - no tissue specified or fallback data used (already HGNC symbols)
             gene_list = coexpression_result
             background_genes = self._load_fallback_background_data()
-            logger.info(f"Running standard enrichment for {relevant_gene}")
+            logger.info(f"Running standard enrichment for {causal_gene_symbol}")
         
-        logger.info(f"Relevant Gene: {relevant_gene}")
+        logger.info(f"Relevant Gene: {causal_gene_symbol}")
         logger.info(f"Gene list sample: {gene_list[:5] if gene_list else []}")
         logger.info(f"Total coexpressed genes: {len(gene_list) if gene_list else 0}")
         

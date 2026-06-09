@@ -85,15 +85,12 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
             variant_nodes = [n for n in graph.get("nodes", []) if n.get("type") == "snp"]
 
             gene_id, gene_name = extract_causal_gene_from_graph(graph, variant_nodes)
-
-            # Use extracted gene or fail
-            extracted_gene = gene_name or gene_id
-            if not extracted_gene:
+            if not (gene_id or gene_name):
                 error_msg = f"No causal gene found in graph {idx+1}/{len(graphs_with_prob)} (prob={prob:.3f}). Graph may contain no genes or no direct SNP-gene connections."
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
-            this_causal_gene = extracted_gene
+            this_causal_gene = enrichr.to_symbol(gene_name or gene_id)
             logger.info(f"Graph {idx+1}: Extracted causal gene '{this_causal_gene}' (prob={prob:.3f})")
             graph_genes.append((idx, this_causal_gene))
 
@@ -147,8 +144,9 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 )
 
                 if selected_tissue:
+                    ensembl_gene = enrichr.to_ensembl_id(this_causal_gene) or this_causal_gene
                     coexpression_data = get_coexpression_matrix_for_tissue.submit(
-                        this_causal_gene, selected_tissue, k=500
+                        ensembl_gene, selected_tissue, k=500
                     ).result()
                     enrich_tbl = enrichr.run(
                         this_causal_gene, tissue_name=selected_tissue,
@@ -202,11 +200,12 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 })
 
             # Create enrichment for this graph
+            resolved_graph = enrichr.annotate_graph_gene_names(graph)
             enrich_id = create_enrich_data.submit(
                 current_user_id, project_id, variant,
                 phenotype, this_causal_gene, relevant_gos, 
                 {
-                    "graph": graph,
+                    "graph": resolved_graph,
                     "graph_index": original_i,
                     "total_graphs": len(graphs_list),
                     **enrichment_run_meta,
