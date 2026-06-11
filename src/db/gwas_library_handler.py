@@ -36,7 +36,7 @@ class SampleSizeResolution:
         """N passed to harmonization when the file lacks a per-variant N column."""
         if self.value is not None:
             return self.value
-        return GWASLibraryHandler.UKB_NEALE_BOTH_SEXES_FALLBACK
+        return GWASLibraryHandler.DEFAULT_SAMPLE_SIZE_FALLBACK
 
     def to_api_dict(self) -> dict:
         return {
@@ -52,30 +52,7 @@ class SampleSizeResolution:
 class GWASLibraryHandler(BaseHandler):
     """Handler for GWAS library collection"""
 
-    # Neale lab UK Biobank round 2 totals (reference only when DB row lacks default_sample_size).
-    UKB_NEALE_BOTH_SEXES_FALLBACK = 361_194
-
-    @staticmethod
-    def _normalize_sex(sex: Optional[str]) -> str:
-        return (sex or "both_sexes").strip().lower().replace(" ", "_")
-
-    @classmethod
-    def sex_stratified_neale_reference_n(cls, sex: Optional[str]) -> int:
-        s = cls._normalize_sex(sex)
-        if s in ("males", "male"):
-            return 168_962
-        if s in ("females", "female"):
-            return 194_174
-        return 361_194
-
-    @classmethod
-    def _sex_display_label(cls, sex: Optional[str]) -> str:
-        s = cls._normalize_sex(sex)
-        if s in ("males", "male"):
-            return "male"
-        if s in ("females", "female"):
-            return "female"
-        return "both sexes"
+    DEFAULT_SAMPLE_SIZE_FALLBACK = 10_000
 
     @staticmethod
     def sample_size_fields_for_library_entry(
@@ -118,26 +95,30 @@ class GWASLibraryHandler(BaseHandler):
                 )
             if entry.get("default_sample_size") is not None:
                 value = int(entry["default_sample_size"])
+                message = (
+                    f"No verified sample size found. Using library default sample "
+                    f"size (N={value:,})."
+                )
             else:
-                value = cls.sex_stratified_neale_reference_n(entry.get("sex"))
-            sex_label = cls._sex_display_label(entry.get("sex"))
+                value = cls.DEFAULT_SAMPLE_SIZE_FALLBACK
+                message = (
+                    f"No verified sample size found. Using default sample size "
+                    f"(N={value:,})."
+                )
             return SampleSizeResolution(
                 value=value,
                 source="library_default",
                 is_user_provided=False,
-                message=(
-                    f"No verified sample size found. Using UK Biobank Neale round 2 "
-                    f"reference for {sex_label} ({value:,})."
-                ),
+                message=message,
             )
-        value = cls.UKB_NEALE_BOTH_SEXES_FALLBACK
+        value = cls.DEFAULT_SAMPLE_SIZE_FALLBACK
         return SampleSizeResolution(
             value=value,
             source="upload_default",
             is_user_provided=False,
             message=(
-                f"No sample size provided. Using UK Biobank Neale round 2 both-sexes "
-                f"reference (N={value:,}) when your file lacks an N column."
+                f"No sample size provided. Using default sample size (N={value:,}) "
+                f"when your file lacks an N column."
             ),
         )
 
@@ -167,8 +148,8 @@ class GWASLibraryHandler(BaseHandler):
     ) -> int:
         """
         N passed to harmonization / LDSC: explicit form value, else verified library
-        sample_size, else default_sample_size (Neale sex-stratified reference), else
-        inferred from sex, else global fallback.
+        sample_size, else default_sample_size from library metadata, else global
+        fallback (10,000).
         """
         return cls.resolve_sample_size_info(entry, form_sample_size).pipeline_value
 
@@ -480,7 +461,7 @@ class GWASLibraryHandler(BaseHandler):
                 entry.setdefault('last_accessed', None)
                 entry.setdefault(
                     'default_sample_size',
-                    self.sex_stratified_neale_reference_n(entry.get('sex')),
+                    self.DEFAULT_SAMPLE_SIZE_FALLBACK,
                 )
                 entry.setdefault('genome_build', None)
                 # Repopulate: clear stale sample_size when parser omits it (no CSV / no scrape).
