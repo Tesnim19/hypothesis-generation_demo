@@ -19,23 +19,39 @@ Expected manifest format (TSV):
 import csv
 import re
 import os
+import time
+
+import requests
 from loguru import logger
 from typing import List, Dict, Optional
-from urllib.parse import urlparse
+
+# Neale lab UK Biobank round 2 — reference totals by sex (not field-level N).
+UKB_NEALE_ROUND2_N_BY_SEX = {
+    "both_sexes": 361_194,
+    "male": 168_962,
+    "female": 194_174,
+}
 
 
 class GWASManifestParser:
     """Parser for UK Biobank GWAS manifest files"""
     
-    def __init__(self, manifest_path: str):
+    def __init__(
+        self,
+        manifest_path: str,
+        *,
+        showcase_request_delay_sec: float = 0.0,
+    ):
         """
-        Initialize the parser
-        
         Args:
-            manifest_path (str): Path to the manifest TSV file
+            manifest_path: Path to the manifest TSV/CSV file.
+            showcase_request_delay_sec: Sleep this many seconds before each *uncached*
+                showcase HTTP request (reduces rate limiting). 0 disables.
         """
         self.manifest_path = manifest_path
-        
+        self.showcase_request_delay_sec = float(showcase_request_delay_sec)
+        self._showcase_n_cache: dict[str, Optional[int]] = {}
+
         if not os.path.exists(manifest_path):
             raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
     
@@ -119,7 +135,7 @@ class GWASManifestParser:
         description = description.strip()
         
         # Create display name (shorter version for UI)
-        display_name = self._create_display_name(description, phenotype_code)
+        display_name = self._create_display_name(description)
         
         # Extract sex category
         sex = (
@@ -135,7 +151,11 @@ class GWASManifestParser:
             sex = 'male'
         elif sex == 'females':
             sex = 'female'
-        
+
+        default_sample_size = UKB_NEALE_ROUND2_N_BY_SEX.get(
+            sex, UKB_NEALE_ROUND2_N_BY_SEX["both_sexes"]
+        )
+
         # Extract UK Biobank showcase link
         showcase_link = (
             normalized_row.get('uk_biobank_data_showcase_link') or 
@@ -207,7 +227,15 @@ class GWASManifestParser:
             ''
         )
         sample_size = self._parse_sample_size(sample_size_raw)
-        
+
+        if sample_size is None and showcase_link:
+            scraped = self._fetch_n_from_showcase(showcase_link)
+            if scraped is not None:
+                sample_size = scraped
+                logger.info(
+                    f"[Showcase] sample_size={sample_size} from {showcase_link}"
+                )
+
         genome_build = (
             normalized_row.get('ref_genome') or
             normalized_row.get('genome_build') or
@@ -233,6 +261,7 @@ class GWASManifestParser:
             'dropbox_url': dropbox_url,
             'md5': md5,
             'source': 'UK Biobank',
+            'default_sample_size': default_sample_size,
         }
         
         if file_size:
@@ -343,7 +372,33 @@ class GWASManifestParser:
         # This is difficult without actually querying the server
         # Return None for now - size will be updated on download
         return None
-    
+
+    def _fetch_n_from_showcase(self, showcase_url: str) -> Optional[int]:
+        if showcase_url in self._showcase_n_cache:
+            return self._showcase_n_cache[showcase_url]
+
+        result: Optional[int] = None
+        try:
+            if self.showcase_request_delay_sec > 0:
+                time.sleep(self.showcase_request_delay_sec)
+            response = requests.get(showcase_url, timeout=10)
+            response.raise_for_status()
+            html = response.text
+            for pattern in (
+                r"(\d[\d,]+)\s*participants",
+                r"N\s*=\s*([\d,]+)",
+                r"sample\s+size[^>]*?(\d[\d,]+)",
+            ):
+                match = re.search(pattern, html, re.IGNORECASE)
+                if match:
+                    result = int(match.group(1).replace(",", ""))
+                    break
+        except Exception as e:
+            logger.debug(f"[Showcase] Could not fetch N from {showcase_url}: {e}")
+
+        self._showcase_n_cache[showcase_url] = result
+        return result
+
     def validate_entries(self, entries: List[Dict]) -> tuple:
         """
         Validate parsed entries
@@ -404,17 +459,12 @@ class GWASManifestParser:
         return valid_entries, invalid_entries, report
 
 
-def parse_manifest_file(manifest_path: str) -> List[Dict]:
-    """
-    Convenience function to parse a manifest file
-    
-    Args:
-        manifest_path (str): Path to manifest file
-    
-    Returns:
-        List[Dict]: List of parsed GWAS entries
-    """
-    parser = GWASManifestParser(manifest_path)
+def parse_manifest_file(
+    manifest_path: str, *, showcase_request_delay_sec: float = 0.0
+) -> List[Dict]:
+    parser = GWASManifestParser(
+        manifest_path, showcase_request_delay_sec=showcase_request_delay_sec
+    )
     return parser.parse()
 
 

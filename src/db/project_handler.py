@@ -120,6 +120,23 @@ class ProjectHandler(BaseHandler):
     def _delete_project_data(self, user_id, project_id):
         """Delete all data associated with a project"""
         try:
+            # 0. Cancel any running Prefect flow before wiping data 
+            state = self.load_analysis_state(user_id, project_id)
+            if state and state.get("flow_run_id") and state.get("status") == "Running":
+                prefect_url = os.getenv("PREFECT_API_URL", "http://prefect-service:4200/api")
+                try:
+                    resp = _req.post(
+                        f"{prefect_url}/flow_runs/{state['flow_run_id']}/set_state",
+                        json={"state": {"type": "CANCELLED"}, "force": True},
+                        timeout=3,
+                    )
+                    if resp.status_code in (200, 201):
+                        logger.info(f"Cancelled Prefect flow run {state['flow_run_id']} for project {project_id}")
+                    else:
+                        logger.warning(f"Could not cancel flow run {state['flow_run_id']}: {resp.status_code}")
+                except Exception as cancel_e:
+                    logger.warning(f"Failed to cancel Prefect flow run for {project_id}: {cancel_e}")
+
             # 1. Delete credible sets
             credible_sets_result = self.credible_sets_collection.delete_many({
                 'user_id': user_id,

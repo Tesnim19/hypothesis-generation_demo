@@ -8,6 +8,7 @@ from loguru import logger
 import pandas as pd
 import numpy as np
 import gzip
+import shlex
 import subprocess
 import tempfile
 import shutil
@@ -292,83 +293,115 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
         harmonized_file_path = harmonized_output_path
             
         # Load harmonized data
-        logger.info("[HARMONIZE] Loading harmonized SSF data")
-        
-        # Read gzipped TSV with harmonized columns
-        harmonized_df = pd.read_csv(harmonized_file_path, sep='\t', compression='gzip', low_memory=False)
-        logger.info(f"[HARMONIZE] Loaded {harmonized_df.shape[0]} variants with {harmonized_df.shape[1]} columns")
-        logger.info(f"[HARMONIZE] Available columns: {list(harmonized_df.columns)}")
-        
-        # Validate required columns
-        required_cols = ['chromosome', 'base_pair_location', 'effect_allele', 'other_allele', 
-                        'beta', 'standard_error', 'p_value']
-        missing_cols = [col for col in required_cols if col not in harmonized_df.columns]
+        # Read only 1 row — enough to validate columns and check the first value.
+        # Never load the full 20M-row file into memory.
+        peek = pd.read_csv(harmonized_file_path, sep='\t', compression='gzip',
+                           low_memory=False, nrows=1)
+        logger.info(f"[HARMONIZE] Available columns: {list(peek.columns)}")
+
+        required_cols = ['chromosome', 'base_pair_location', 'effect_allele', 'other_allele',
+                         'beta', 'standard_error', 'p_value']
+        missing_cols = [col for col in required_cols if col not in peek.columns]
         if missing_cols:
             raise ValueError(f"Missing required columns in harmonized output: {missing_cols}")
-        
-        # Add N column if not present (required for downstream analysis)
-        n_was_added = False
-        if 'N' not in harmonized_df.columns:
-            if sample_size is None:
-                raise ValueError(
-                    "[HARMONIZE] Sample size (N) not found in input file and not provided as parameter. "
-                    "Please provide sample_size parameter or ensure input file has N column."
-                )
-            logger.info(f"[HARMONIZE] Adding sample size N={sample_size} from parameter")
-            harmonized_df['N'] = sample_size
-            n_was_added = True
-        else:
-            logger.info(f"[HARMONIZE] Using sample size from input file: N={harmonized_df['N'].iloc[0]}")
-        
-        # Set variant_id as index
-        needs_resave = False
-        if 'variant_id' in harmonized_df.columns:
-            harmonized_df.set_index('variant_id', inplace=True)
-            if '_' in harmonized_df.index[0]:
-                harmonized_df.index = harmonized_df.index.str.replace('_', ':', regex=False)
-                logger.info(f"[HARMONIZE] Converted variant_id format from underscores to colons (e.g., {harmonized_df.index[0]})")
-                needs_resave = True
-            else:
-                logger.info(f"[HARMONIZE] variant_id already in colon format (e.g., {harmonized_df.index[0]})")
-        else:
-            # Create variant_id if not present (already in colon format)
-            harmonized_df['variant_id'] = (
-                harmonized_df['chromosome'].astype(str) + ':' +
-                harmonized_df['base_pair_location'].astype(str) + ':' +
-                harmonized_df['other_allele'] + ':' +
-                harmonized_df['effect_allele']
+
+        needs_n       = 'N' not in peek.columns
+        needs_vid_fix = 'variant_id' in peek.columns and '_' in str(peek['variant_id'].iloc[0])
+        needs_vid_create = 'variant_id' not in peek.columns
+
+        if needs_n and sample_size is None:
+            raise ValueError(
+                "[HARMONIZE] Sample size (N) not found in input file and not provided as parameter. "
+                "Please provide sample_size parameter or ensure input file has N column."
             )
-            harmonized_df.set_index('variant_id', inplace=True)
-            logger.info(f"[HARMONIZE] Created variant_id in colon format (e.g., {harmonized_df.index[0]})")
-            needs_resave = True
-        
-        # Save the updated DataFrame back to file if N was added or format was converted
-        if n_was_added or needs_resave:
+        if not needs_n:
+            logger.info(f"[HARMONIZE] Using sample size from input file: N={peek['N'].iloc[0]}")
+
+        del peek
+        gc.collect()
+
+        needs_resave = needs_n or needs_vid_fix or needs_vid_create
+        if needs_resave:
             reasons = []
-            if n_was_added:
-                reasons.append("N column added")
-            if needs_resave:
-                reasons.append("variant_id format converted to colons")
-            logger.info(f"[HARMONIZE] Saving updated harmonized file ({', '.join(reasons)}) to: {harmonized_file_path}")
-            harmonized_df.to_csv(harmonized_file_path, sep='\t', compression='gzip', index=True)
-            logger.info(f"[HARMONIZE] Updated file saved successfully")
-        
-        # Calculate processing time
+            if needs_n:
+                reasons.append(f"N={sample_size} added")
+            if needs_vid_fix:
+                reasons.append("variant_id underscores→colons")
+            if needs_vid_create:
+                reasons.append("variant_id created")
+            logger.info(f"[HARMONIZE] Streaming post-process ({', '.join(reasons)}): {harmonized_file_path}")
+
+            tmp_out = harmonized_file_path + ".tmp.gz"
+            # Build the awk program that handles all three transformations in one pass.
+            awk_prog = r"""
+BEGIN { FS=OFS="\t" }
+{ gsub(/\r/, "") }
+NR==1 {
+    for (i=1; i<=NF; i++) {
+        col[tolower($i)] = i
+        header[i] = $i
+    }
+    has_n       = ("n" in col)
+    has_vid     = ("variant_id" in col)
+    has_chr     = ("chromosome" in col)
+    has_pos     = ("base_pair_location" in col)
+    has_ea      = ("effect_allele" in col)
+    has_oa      = ("other_allele" in col)
+
+    out = $0
+    if (!has_n)   out = out OFS "N"
+    if (!has_vid) out = out OFS "variant_id"
+    print out
+    next
+}
+{
+    vid_idx = col["variant_id"]
+    if (has_vid) {
+        if ($vid_idx ~ /^rs[0-9]/) {
+            # rsID — rebuild as chr:pos:oa:ea to match bim format
+            $vid_idx = $col["chromosome"] ":" $col["base_pair_location"] ":" $col["other_allele"] ":" $col["effect_allele"]
+        } else {
+            gsub(/_/, ":", $vid_idx)
+        }
+    } else {
+        chr = $col["chromosome"]; pos = $col["base_pair_location"]
+        oa  = $col["other_allele"]; ea  = $col["effect_allele"]
+        new_vid = chr ":" pos ":" oa ":" ea
+    }
+    out = $0
+    if (!has_n)   out = out OFS N_VAL
+    if (!has_vid) out = out OFS new_vid
+    print out
+}
+"""
+            awk_cmd = (
+                f"bgzip -dc {shlex.quote(harmonized_file_path)} | "
+                f"awk -v N_VAL={int(sample_size) if needs_n else 0} {shlex.quote(awk_prog)} | "
+                f"bgzip > {shlex.quote(tmp_out)}"
+            )
+            ret = subprocess.run(awk_cmd, shell=True, capture_output=True, text=True)
+            if ret.returncode != 0:
+                logger.error(f"[HARMONIZE] awk streaming failed: {ret.stderr}")
+                raise RuntimeError(f"Post-processing stream failed: {ret.stderr}")
+            os.replace(tmp_out, harmonized_file_path)
+            logger.info(f"[HARMONIZE] Streaming post-process complete → {harmonized_file_path}")
+
         elapsed_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[HARMONIZE] Processing completed in {elapsed_time:.2f} seconds")
-        
+
         # Upload to MinIO
         if storage and user_id and project_id:
             harmonized_filename = os.path.basename(harmonized_file_path)
             object_key = f"harmonized/{user_id}/{project_id}/{harmonized_filename}"
-            
+
             upload_success = storage.upload_file(harmonized_file_path, object_key)
             if upload_success:
                 logger.info(f"[HARMONIZE] Uploaded to MinIO: s3://hypothesis/{object_key}")
             else:
                 logger.warning(f"[HARMONIZE] Failed to upload to MinIO, file remains local only")
 
-        return harmonized_df, harmonized_file_path
+        # Return only the file path — callers load what they need with usecols.
+        return harmonized_file_path
         
     except subprocess.TimeoutExpired:
         logger.error(f"[HARMONIZE] Harmonization timeout after {timeout_seconds} seconds")
@@ -402,16 +435,45 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
 
 @task()
 def filter_significant_variants(harmonized_df, output_dir, p_threshold=5e-8):
-    """Filter significant variants from harmonized sumstats."""
+    """Filter significant variants from harmonized sumstats.
+
+    *harmonized_df* may be either a pandas DataFrame (legacy callers) or a
+    file path string returned by harmonize_sumstats_with_nextflow. 
+    """
     logger.info(f"[FILTER] Filtering variants with p_value < {p_threshold}")
+
+    if isinstance(harmonized_df, str):
+        needed = [
+            'variant_id', 'chromosome', 'base_pair_location', 'p_value',
+            'effect_allele', 'other_allele', 'beta', 'standard_error',
+            'effect_allele_frequency', 'N',
+        ]
+        path = harmonized_df
+        header = pd.read_csv(path, sep='\t', compression='gzip', nrows=0, low_memory=False)
+        load_cols = [c for c in needed if c in header.columns]
+        for opt in ('rsid', 'RS_ID'):
+            if opt in header.columns and opt not in load_cols:
+                load_cols.append(opt)
+        missing_required = [c for c in needed if c not in header.columns]
+        if missing_required:
+            raise ValueError(
+                f"[FILTER] Harmonized file missing required columns: {missing_required}. "
+                f"Have: {list(header.columns)}"
+            )
+        harmonized_df = pd.read_csv(
+            path, sep='\t', compression='gzip', low_memory=False, usecols=load_cols
+        )
+        if 'variant_id' in harmonized_df.columns:
+            harmonized_df.set_index('variant_id', inplace=True)
+        logger.info(f"[FILTER] Loaded {len(harmonized_df):,} variants from file (usecols)")
 
     # Support both old (P) and new (p_value) column names
     p_col = 'p_value' if 'p_value' in harmonized_df.columns else 'P'
-    
+
     significant_df = harmonized_df[harmonized_df[p_col] < p_threshold].copy()
     sig_output_path = os.path.join(output_dir, "significant_variants.tsv")
     significant_df.to_csv(sig_output_path, sep='\t', index=True)
-    
+
     return significant_df, sig_output_path
 
 

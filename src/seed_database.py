@@ -4,8 +4,12 @@ Database seeding script for GWAS library and phenotypes
 
 This script runs on container startup to populate the database with
 initial data if collections are empty.
+
+GWAS boot modes (GWAS_LIBRARY_BOOT_MODE): auto (default), refresh, incremental.
+See GWAS_SHOWCASE_DELAY_SEC for UKB showcase throttling.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -16,6 +20,27 @@ sys.path.insert(0, str(_root))
 
 from src.db import GWASLibraryHandler, PhenotypeHandler
 from scripts.gwas_manifest_parser import GWASManifestParser
+
+_VALID_GWAS_BOOT_MODES = frozenset({"auto", "refresh", "incremental"})
+
+
+def _parse_gwas_library_boot_mode() -> str:
+    raw = (os.getenv("GWAS_LIBRARY_BOOT_MODE") or "auto").strip().lower()
+    if raw not in _VALID_GWAS_BOOT_MODES:
+        logger.warning(
+            f"Invalid GWAS_LIBRARY_BOOT_MODE={raw!r}; using 'auto'. "
+            f"Valid: {sorted(_VALID_GWAS_BOOT_MODES)}"
+        )
+        return "auto"
+    return raw
+
+
+def _parse_showcase_delay_sec() -> float:
+    try:
+        return float(os.getenv("GWAS_SHOWCASE_DELAY_SEC", "0"))
+    except (TypeError, ValueError):
+        logger.warning("Invalid GWAS_SHOWCASE_DELAY_SEC; using 0")
+        return 0.0
 
 
 def check_if_should_seed():
@@ -29,16 +54,27 @@ def check_if_should_seed():
     return True
 
 
-def seed_gwas_library(handler: GWASLibraryHandler, manifest_path: str) -> bool:
+def seed_gwas_library(
+    handler: GWASLibraryHandler,
+    manifest_path: str,
+    *,
+    boot_mode: str = "auto",
+    showcase_delay_sec: float = 0.0,
+) -> bool:
     """
     Seed the GWAS library collection from a manifest file
     """
     try:
-        # Check if collection is already populated
         count = handler.get_entry_count()
-        
-        if count > 0:
-            logger.info(f"GWAS library already populated with {count} entries. Skipping.")
+        logger.info(
+            f"GWAS library boot_mode={boot_mode!r}, showcase_delay_sec={showcase_delay_sec}, "
+            f"current_entries={count}"
+        )
+
+        if boot_mode == "auto" and count > 0:
+            logger.info(
+                f"GWAS library already populated with {count} entries. Skipping (auto mode)."
+            )
             return True
         
         # Check if manifest file exists
@@ -47,34 +83,42 @@ def seed_gwas_library(handler: GWASLibraryHandler, manifest_path: str) -> bool:
             logger.warning("GWAS library will remain empty.")
             logger.warning("To populate, provide a manifest file and set GWAS_MANIFEST_PATH")
             return False
-        
-        logger.info(f"Seeding GWAS library from manifest: {manifest_path}")
-        
-        # Parse manifest
-        parser = GWASManifestParser(manifest_path)
+
+        skip_existing = boot_mode == "incremental"
+        logger.info(
+            f"Seeding GWAS library from manifest: {manifest_path} "
+            f"(skip_existing={skip_existing})"
+        )
+
+        parser = GWASManifestParser(
+            manifest_path, showcase_request_delay_sec=showcase_delay_sec
+        )
         entries = parser.parse()
-        
+
         logger.info(f"Parsed {len(entries)} entries from manifest")
-        
-        # Validate entries
-        valid_entries, invalid_entries, report = parser.validate_entries(entries)
-        
+
+        valid_entries, _, report = parser.validate_entries(entries)
+
         logger.info(f"Valid entries: {report['valid_entries']}")
         logger.info(f"Invalid entries: {report['invalid_entries']}")
-        
-        if report['valid_entries'] == 0:
-            logger.error("No valid entries found in manifest. GWAS library will remain empty.")
+
+        if report["valid_entries"] == 0:
+            logger.error(
+                "No valid entries found in manifest. GWAS library will remain empty."
+            )
             return False
-        
-        # Insert into database
-        result = handler.bulk_create_gwas_entries(valid_entries)
-        
-        logger.info(f"GWAS library seeded successfully!")
+
+        result = handler.bulk_create_gwas_entries(
+            valid_entries, skip_existing=skip_existing
+        )
+
+        logger.info("GWAS library seed/refresh step finished.")
         logger.info(f"Inserted: {result['inserted_count']}")
-        logger.info(f"Skipped: {result['skipped_count']}")
-        
+        logger.info(f"Updated: {result['updated_count']}")
+        logger.info(f"Skipped (already existed): {result['skipped_existing_count']}")
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Error seeding GWAS library: {e}")
         return False
@@ -101,8 +145,6 @@ def seed_phenotypes(handler: PhenotypeHandler, phenotypes_json_path: str) -> boo
         logger.info(f"Seeding phenotypes from: {phenotypes_json_path}")
         
         # Load phenotypes from JSON file
-        import json
-        
         with open(phenotypes_json_path, 'r', encoding='utf-8') as f:
             phenotypes_data = json.load(f)
         
@@ -190,8 +232,16 @@ def main():
         '/app/data/gwas_manifest.tsv'
     )
     
+    gwas_boot_mode = _parse_gwas_library_boot_mode()
+    showcase_delay = _parse_showcase_delay_sec()
+
     logger.info("1. GWAS LIBRARY")
-    gwas_success = seed_gwas_library(gwas_handler, gwas_manifest_path)
+    gwas_success = seed_gwas_library(
+        gwas_handler,
+        gwas_manifest_path,
+        boot_mode=gwas_boot_mode,
+        showcase_delay_sec=showcase_delay,
+    )
     
     # Seed phenotypes
     phenotypes_json_path = os.getenv(

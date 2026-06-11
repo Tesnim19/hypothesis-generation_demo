@@ -30,6 +30,7 @@ class PhenotypeHandler(BaseHandler):
                         'created_at': datetime.now(timezone.utc)
                     }
                     new_phenotypes.append(phenotype_doc)
+                    existing_ids.add(phenotype['id'])
                 else:
                     skipped_count += 1
             

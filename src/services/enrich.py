@@ -1,10 +1,16 @@
-from typing import List, Optional
+import copy
 import pickle
+import re
+from typing import List, Optional
+
 import gseapy as gp
-from src.config import Config, create_dependencies
-from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
 import pandas as pd
 from loguru import logger
+
+from src.config import Config
+from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
+
+_ENSG_RE = re.compile(r"^ENSG\d+$", re.IGNORECASE)
 
 
 class Enrich:
@@ -33,24 +39,44 @@ class Enrich:
         with open(fallback_path, "rb") as f:
             return pickle.load(f)
     
-    def get_tissue_uberon_id(self, user_id: str, project_id: str, tissue_name: str) -> Optional[str]:
-        """
-        Retrieve UBERON ID from database for a given tissue name (public, for flow use).
-        """
-        deps = create_dependencies(self.config)
-        gene_expression = deps['gene_expression']
-        
-        # Retrieve tissue mapping from database
-        tissue_mapping = gene_expression.get_tissue_mapping(user_id, project_id, tissue_name)
-        
-        if not tissue_mapping:
+    @staticmethod
+    def is_ensembl_id(gene: str) -> bool:
+        return bool(gene and _ENSG_RE.match(str(gene).strip()))
+
+    @staticmethod
+    def _normalize_gene_token(gene: str) -> str:
+        return str(gene).strip().strip("'\"")
+
+    def to_symbol(self, gene: str) -> str:
+        """Resolve an Ensembl ID or gene name to an HGNC symbol (uppercase)."""
+        if not gene:
+            return gene
+        token = self._normalize_gene_token(gene)
+        if self.is_ensembl_id(token):
+            symbol = self.ensembl_hgnc_map.get(token.upper())
+            if symbol:
+                return symbol.upper()
+            return token.upper()
+        return token.upper()
+
+    def to_ensembl_id(self, gene: str) -> Optional[str]:
+        """Resolve a gene symbol or Ensembl ID to a lowercase Ensembl ID."""
+        if not gene:
             return None
-        
-        # Extract UBERON ID from database record
-        tissue_uberon_id = (tissue_mapping.get('cellxgene_descendant_uberon_id') or 
-                           tissue_mapping.get('cellxgene_parent_uberon_id'))
-        
-        return tissue_uberon_id
+        token = self._normalize_gene_token(gene)
+        if self.is_ensembl_id(token):
+            return token.lower()
+        ensembl_id = self.hgnc_ensembl_map.get(token.upper())
+        return ensembl_id.lower() if ensembl_id else None
+
+    def annotate_graph_gene_names(self, graph: dict) -> dict:
+        """Return a graph copy with gene node names set to HGNC symbols (ids unchanged)."""
+        resolved = copy.deepcopy(graph)
+        for node in resolved.get("nodes", []):
+            if node.get("type") != "gene":
+                continue
+            node["name"] = self.to_symbol(node.get("name") or node.get("id", ""))
+        return resolved
 
     def get_hgnc_syms(self, ensg_ids):
         hgnc_symbols = []
@@ -72,33 +98,19 @@ class Enrich:
 
         return ensembl_ids
 
-    def get_coexpression_net(self, relevant_gene, tissue_name=None, cell_type=None, k=500, user_id=None, project_id=None, coexpression_data=None):
+    def get_coexpression_net(self, relevant_gene, tissue_name=None, k=500, coexpression_data=None):
         """
-        Given a gene, tissue and cell_type, return the top correlated genes using CellxGene API.
-        If coexpression_data is provided (top_positive_tuples, top_negative_tuples, all_genes), use it
-        instead of computing (allows Dask-offloaded pre-computation).
+        Return top correlated genes for a gene using CellxGene.
         """
         if coexpression_data is not None:
             top_positive_tuples, top_negative_tuples, all_genes = coexpression_data
         elif not tissue_name:
             return self._load_fallback_coexpression_data()
-        elif not user_id or not project_id:
-            logger.warning(f"user_id and project_id required for tissue-specific analysis, falling back to hardcoded data")
-            return self._load_fallback_coexpression_data()
         else:
             try:
-                # Get UBERON ID from database
-                tissue_uberon_id = self.get_tissue_uberon_id(user_id, project_id, tissue_name)
-                
-                if not tissue_uberon_id:
-                    logger.warning(f"No UBERON ID found for tissue '{tissue_name}', falling back to hardcoded data")
-                    return self._load_fallback_coexpression_data()
-                
-                logger.info(f"Using tissue mapping from database: {tissue_name} -> {tissue_uberon_id}")
-                
-                # Run tissue-specific coexpression analysis using UBERON ID (inline - not Dask)
-                top_positive_tuples, top_negative_tuples, all_genes = get_coexpression_matrix_for_tissue(
-                    relevant_gene, tissue_uberon_id, cell_type, k=k
+                logger.info(f"[Enrich] Inline coexpression query for '{relevant_gene}' in '{tissue_name}'")
+                top_positive_tuples, top_negative_tuples, all_genes = get_coexpression_matrix_for_tissue.fn(
+                    relevant_gene, tissue_name, k=k
                 )
             except Exception as e:
                 logger.error(f"Error running CellxGene coexpression analysis: {e}")
@@ -138,18 +150,24 @@ class Enrich:
         res = res[["ID", "Term", "Desc", "Adjusted P-value", "Genes"]].copy()        
         return res
 
-    def run(self, relevant_gene, tissue_name=None, user_id=None, project_id=None, coexpression_data=None):
+    def run(self, relevant_gene, tissue_name=None, coexpression_data=None):
         """
         Given a gene, return the enriched GO terms based on its co-expression network.
         If coexpression_data is provided (from Dask task), use it instead of computing.
         """
         library = "GO_Biological_Process_2023"
         organism = "Human"
-        
-        # Get coexpressed genes (or use pre-computed from Dask)
+        causal_gene_symbol = self.to_symbol(relevant_gene)
+        ensembl_gene = self.to_ensembl_id(relevant_gene)
+        if ensembl_gene is None:
+            ensembl_gene = relevant_gene
+            logger.warning(
+                f"Could not map '{relevant_gene}' to Ensembl ID; "
+                "coexpression queries may fail"
+            )
+
         coexpression_result = self.get_coexpression_net(
-            relevant_gene, tissue_name, user_id=user_id, project_id=project_id,
-            coexpression_data=coexpression_data
+            ensembl_gene, tissue_name, coexpression_data=coexpression_data
         )
         
         # Handle different return types (tuple for tissue-specific, list for fallback)
@@ -167,16 +185,19 @@ class Enrich:
                 background_genes_ensembl = all_tissue_genes
             
             background_genes = self.get_hgnc_syms(background_genes_ensembl)
-            logger.info(f"Running tissue-specific enrichment for {relevant_gene} in {tissue_name}")
+            logger.info(
+                f"Running tissue-specific enrichment for {causal_gene_symbol} "
+                f"in {tissue_name}"
+            )
             logger.info(f"Using tissue-specific background: {len(background_genes)} genes from CellxGene analysis")
             logger.info(f"Converted {len(gene_list_ensembl)} Ensembl IDs to {len(gene_list)} HGNC symbols")
         else:
             # Fallback case - no tissue specified or fallback data used (already HGNC symbols)
             gene_list = coexpression_result
             background_genes = self._load_fallback_background_data()
-            logger.info(f"Running standard enrichment for {relevant_gene}")
+            logger.info(f"Running standard enrichment for {causal_gene_symbol}")
         
-        logger.info(f"Relevant Gene: {relevant_gene}")
+        logger.info(f"Relevant Gene: {causal_gene_symbol}")
         logger.info(f"Gene list sample: {gene_list[:5] if gene_list else []}")
         logger.info(f"Total coexpressed genes: {len(gene_list) if gene_list else 0}")
         
