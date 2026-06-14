@@ -237,12 +237,6 @@ async def post_analysis_pipeline(
                 detail="sample_size must be an integer when provided",
             )
 
-        projects = _deps["projects"]
-        files = _deps["files"]
-        config = _deps["config"]
-        storage = _deps.get("storage")
-        gwas_library = _deps.get("gwas_library")
-
         gwas_entry = None
         file_id_param: str | None = form.get("gwas_file") if not is_uploaded else None
 
