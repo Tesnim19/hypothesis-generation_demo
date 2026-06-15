@@ -19,7 +19,6 @@ from src.socketio_instance import sio
 from src.services.socketio_relay import relay_subscribe_forever
 from src.services.status_tracker import StatusTracker
 from src.api import router
-from src.api.dependencies import init_deps
 from src.services.mail import init_mail
 
 

@@ -28,6 +28,46 @@ from src.tasks import (
 )
 
 
+def _send_pipeline_notification(
+    user_email: str | None,
+    project_name: str | None,
+    project_id: str,
+    *,
+    success: bool,
+    detail: str | None = None,
+) -> None:
+    """Send a success or failure email. Never raises."""
+    if not user_email:
+        logger.info("[PIPELINE] No user_email provided — skipping notification")
+        return
+
+    display_name = project_name or project_id
+    if success:
+        subject = "Your analysis is complete"
+        body = (
+            f"Your analysis for project '{display_name}' has completed successfully.\n\n"
+            "You can now view your results in the platform."
+        )
+        ok_log = f"Completion email sent to {user_email}"
+        err_log = "Could not send completion email"
+    else:
+        subject = "Your analysis failed"
+        reason = detail or "An error occurred during analysis."
+        body = (
+            f"Your analysis for project '{display_name}' did not complete successfully.\n\n"
+            f"Details: {reason}\n\n"
+            "Please try again or contact support if the problem persists."
+        )
+        ok_log = f"Failure notification email sent to {user_email}"
+        err_log = "Could not send failure notification email"
+
+    try:
+        asyncio.run(send_email(subject=subject, recipients=[user_email], body=body))
+        logger.info(f"[PIPELINE] {ok_log}")
+    except Exception as mail_e:
+        logger.error(f"[PIPELINE] {err_log}: {mail_e}")
+
+
 ### Analysis Pipeline Flow
 @flow(log_prints=True,
     persist_result=False,
@@ -173,6 +213,10 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 "message": "COJO analysis failed - no independent signals found",
             }
             save_analysis_state_task.submit(user_id, project_id, failed_state).result()
+            _send_pipeline_notification(
+                user_email, project_name, project_id,
+                success=False, detail=failed_state["message"],
+            )
             return None
 
         # Update analysis state after COJO
@@ -298,24 +342,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             }
             save_analysis_state_task.submit(user_id, project_id, completed_state).result()
 
-            # Send completion email if we have an address
-            if user_email:
-                display_name = project_name or project_id
-                try:
-                    asyncio.run(send_email(
-                        subject="Your analysis is complete",
-                        recipients=[user_email],
-                        body=(
-                            f"Your analysis for project '{display_name}' has completed successfully.\n\n"
-                            "You can now view your results in the platform."
-                        ),
-                    ))
-                    logger.info(f"[PIPELINE] Completion email sent to {user_email}")
-                except Exception as mail_e:
-                    # Email failure must never fail the pipeline
-                    logger.error(f"[PIPELINE] Could not send completion email: {mail_e}")
-            else:
-                logger.info("[PIPELINE] No user_email provided — skipping completion notification")
+            _send_pipeline_notification(user_email, project_name, project_id, success=True)
 
             logger.info(f"[PIPELINE] Analysis completed successfully!")
             logger.info(f"[PIPELINE] - Total variants: {total_variants}")
@@ -355,4 +382,8 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             save_analysis_state_task.submit(user_id, project_id, failed_state).result()
         except Exception as state_e:
             logger.error(f"[PIPELINE] Failed to save error state: {str(state_e)}")
+        _send_pipeline_notification(
+            user_email, project_name, project_id,
+            success=False, detail=str(e),
+        )
         raise
