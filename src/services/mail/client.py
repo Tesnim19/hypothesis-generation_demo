@@ -5,13 +5,14 @@ import os
 from fastapi_mail import ConnectionConfig, FastMail, MessageSchema
 from loguru import logger
 
+_fast_mail: FastMail | None = None
+
 
 def _build_fast_mail() -> FastMail | None:
-    """Build a FastMail instance from environment variables. Returns None if MAIL_SERVER is not set."""
     mail_server = os.getenv("MAIL_SERVER", "")
     if not mail_server:
         return None
-    cfg = ConnectionConfig(
+    return FastMail(ConnectionConfig(
         MAIL_USERNAME=os.getenv("MAIL_USERNAME", ""),
         MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", ""),
         MAIL_FROM=os.getenv("MAIL_FROM", ""),
@@ -20,13 +21,7 @@ def _build_fast_mail() -> FastMail | None:
         MAIL_STARTTLS=os.getenv("MAIL_TLS", "true").lower() == "true",
         MAIL_SSL_TLS=os.getenv("MAIL_SSL", "false").lower() == "true",
         USE_CREDENTIALS=True,
-    )
-    return FastMail(cfg)
-
-
-# Module-level instance — set by init_mail() in the API process.
-# Worker processes that never call init_mail() fall back to _build_fast_mail().
-_fast_mail: FastMail | None = None
+    ))
 
 
 def init_mail(
@@ -42,7 +37,7 @@ def init_mail(
     if not mail_server:
         logger.warning("init_mail called with empty MAIL_SERVER — email disabled")
         return
-    cfg = ConnectionConfig(
+    _fast_mail = FastMail(ConnectionConfig(
         MAIL_USERNAME=mail_username,
         MAIL_PASSWORD=mail_password,
         MAIL_FROM=mail_from,
@@ -51,19 +46,18 @@ def init_mail(
         MAIL_STARTTLS=mail_tls,
         MAIL_SSL_TLS=mail_ssl,
         USE_CREDENTIALS=True,
-    )
-    _fast_mail = FastMail(cfg)
+    ))
     logger.info("Mail service initialized")
 
 
-async def send_email(subject: str, recipients: list[str], body: str) -> None:
-    """
-    Send a plain-text email.
-
-    Safe to call from both the API process (where init_mail was called)
-    and from Prefect/Dask worker processes (where it was not — falls back
-    to building FastMail from env vars on demand).
-    """
+async def send_email(
+    subject: str,
+    recipients: list[str],
+    body: str,
+    subtype: str = "html",
+) -> None:
+    """Send an email from the API process or a Prefect/Dask worker.
+    Falls back to building FastMail from env vars if init_mail was never called."""
     if not recipients:
         logger.warning("send_email called with empty recipients list — skipping")
         return
@@ -74,13 +68,12 @@ async def send_email(subject: str, recipients: list[str], body: str) -> None:
         return
 
     try:
-        msg = MessageSchema(
+        await fm.send_message(MessageSchema(
             subject=subject,
             recipients=recipients,
             body=body,
-            subtype="plain",
-        )
-        await fm.send_message(msg)
+            subtype=subtype,
+        ))
         logger.info("Email sent to {} | subject: {}", recipients, subject)
     except Exception as exc:
         logger.error("Failed to send email to {}: {}", recipients, exc)
