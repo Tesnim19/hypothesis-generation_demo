@@ -23,10 +23,10 @@ from src.api.dependencies import (
     get_project_handler,
     get_storage,
 )
-from src.api.auth import get_current_user_id
 from src.config import Config
 from src.db import (
     AnalysisHandler,
+    DemoTemplateHandler,
     EnrichmentHandler,
     FileHandler,
     GeneExpressionHandler,
@@ -36,6 +36,12 @@ from src.db import (
 )
 from src.tasks.project import count_gwas_records, get_project_with_full_data
 from src.api.auth import get_current_user_id, get_current_user_email
+from src.api.dependencies import get_demo_template_handler
+from src.services.demo_projects import (
+    apply_demo_flags_to_owned_project,
+    build_demo_template_summaries,
+)
+from src.services.project_access import resolve_project_access
 from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
     allowed_file,
@@ -60,9 +66,23 @@ async def get_projects(
     enrichment: EnrichmentHandler = Depends(get_enrichment_handler),
     gene_expression: GeneExpressionHandler = Depends(get_gene_expression_handler),
     files: FileHandler = Depends(get_file_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
 
     if id:
+        access = resolve_project_access(demo_templates, current_user_id, id)
+        demo_flags = None
+        if access.template:
+            fork_id = demo_templates.get_user_fork(current_user_id, id)
+            demo_flags = {
+                "is_demo": True,
+                "source_template_slug": access.template["slug"],
+                "has_forked": bool(fork_id),
+                "forked_project_id": fork_id,
+            }
+            if access.is_demo_read:
+                demo_flags["display_name"] = access.template["display_name"]
+
         response_data, status_code = get_project_with_full_data(
             projects,
             analysis,
@@ -71,6 +91,8 @@ async def get_projects(
             current_user_id,
             id,
             gene_expression_handler=gene_expression,
+            data_user_id=access.owner_user_id,
+            demo_flags=demo_flags,
         )
         if status_code == 200:
             response_data = serialize_datetime_fields(response_data)
@@ -136,7 +158,25 @@ async def get_projects(
             logger.warning(f"Could not count hypotheses for {project['id']}: {hyp_e}")
 
         enhanced["hypothesis_count"] = hypothesis_count
+        enhanced.setdefault("is_demo", False)
+        enhanced = apply_demo_flags_to_owned_project(
+            enhanced,
+            current_user_id=current_user_id,
+            demo_templates=demo_templates,
+        )
         enhanced_projects.append(enhanced)
+
+    existing_ids = {project["id"] for project in enhanced_projects}
+    demo_entries = build_demo_template_summaries(
+        current_user_id=current_user_id,
+        demo_templates=demo_templates,
+        projects=projects,
+        analysis=analysis,
+        hypotheses=hypotheses,
+        files=files,
+        existing_project_ids=existing_ids,
+    )
+    enhanced_projects = demo_entries + enhanced_projects
 
     return {"projects": serialize_datetime_fields(enhanced_projects)}
 
@@ -146,9 +186,12 @@ async def delete_project(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
     projects: ProjectHandler = Depends(get_project_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
     if not id:
         raise HTTPException(status_code=400, detail="Project ID is required")
+    if demo_templates.is_registered_template_project(id):
+        raise HTTPException(status_code=403, detail="Demo template projects cannot be deleted")
     result = projects.delete_project(current_user_id, id)
     if result is False:
         raise HTTPException(status_code=500, detail="Failed to delete project")
@@ -162,6 +205,7 @@ async def bulk_delete_projects(
     data: dict = Body(...),
     current_user_id: str = Depends(get_current_user_id),
     projects: ProjectHandler = Depends(get_project_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
     project_ids = data.get("project_ids")
 
@@ -174,6 +218,15 @@ async def bulk_delete_projects(
     if not project_ids:
         raise HTTPException(
             status_code=400, detail="project_ids list cannot be empty"
+        )
+
+    protected = [
+        pid for pid in project_ids if demo_templates.is_registered_template_project(pid)
+    ]
+    if protected:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Demo template projects cannot be deleted: {protected}",
         )
 
     result = projects.bulk_delete_projects(current_user_id, project_ids)
