@@ -18,8 +18,9 @@ from loguru import logger
 _root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_root))
 
-from src.db import GWASLibraryHandler, PhenotypeHandler
+from src.db import GWASLibraryHandler, PhenotypeHandler, DemoTemplateHandler
 from scripts.gwas_manifest_parser import GWASManifestParser
+from src.services.storage import create_minio_client_from_env
 
 _VALID_GWAS_BOOT_MODES = frozenset({"auto", "refresh", "incremental"})
 
@@ -202,6 +203,31 @@ def seed_phenotypes(handler: PhenotypeHandler, phenotypes_json_path: str) -> boo
         return False
 
 
+def seed_demo_seeds(handler: DemoTemplateHandler, storage) -> bool:
+    """Import demo seed bundles from MinIO (demo-seeds-v2/)."""
+    if storage is None:
+        logger.warning(
+            "MinIO not configured; skipping demo seed import. "
+            "Set MINIO_* env vars to enable automatic demo seed seeding."
+        )
+        return False
+
+    try:
+        results = handler.ensure_seeds_from_minio(storage)
+        logger.info(
+            "Demo seeds step finished: "
+            f"imported={results['imported']} skipped={results['skipped']} "
+            f"failed={len(results['failed'])}"
+        )
+        if results["failed"]:
+            for failure in results["failed"]:
+                logger.error(f"Demo seed import failed: {failure}")
+        return len(results["failed"]) == 0
+    except Exception as exc:
+        logger.error(f"Error seeding demo projects: {exc}")
+        return False
+
+
 def main():
     """Main seeding function"""
     logger.info("DATABASE SEEDING STARTED")
@@ -222,6 +248,8 @@ def main():
     try:
         gwas_handler = GWASLibraryHandler(mongodb_uri, db_name)
         phenotype_handler = PhenotypeHandler(mongodb_uri, db_name)
+        demo_template_handler = DemoTemplateHandler(mongodb_uri, db_name)
+        storage = create_minio_client_from_env()
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {e}")
         return 1
@@ -252,11 +280,15 @@ def main():
     logger.info("2. PHENOTYPES")
     phenotype_success = seed_phenotypes(phenotype_handler, phenotypes_json_path)
 
+    logger.info("3. DEMO SEEDS")
+    demo_success = seed_demo_seeds(demo_template_handler, storage)
+
     
     # Summary
     logger.info("DATABASE SEEDING COMPLETED")
     logger.info(f"   GWAS Library: {'✓ SUCCESS' if gwas_success else 'SKIPPED/FAILED'}")
     logger.info(f"   Phenotypes:   {'✓ SUCCESS' if phenotype_success else 'SKIPPED/FAILED'}")
+    logger.info(f"   Demo Seeds:   {'✓ SUCCESS' if demo_success else 'SKIPPED/FAILED'}")
     
     # Return 0 even if some seeding failed (non-critical)
     return 0
