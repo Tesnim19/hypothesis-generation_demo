@@ -14,6 +14,7 @@ from src.db import (
     SummaryHandler,
     TaskHandler,
     UserHandler,
+    DemoTemplateHandler,
 )
 from src.services.llm import LLM
 from src.services.prolog import PrologQuery
@@ -89,3 +90,7 @@ def get_phenotype_handler() -> PhenotypeHandler:
 
 def get_gwas_library_handler() -> GWASLibraryHandler:
     return _container.gwas_library_handler()
+
+
+def get_demo_template_handler() -> DemoTemplateHandler:
+    return _container.demo_template_handler()

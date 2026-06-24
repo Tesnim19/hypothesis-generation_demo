@@ -1,9 +1,9 @@
 from bson.objectid import ObjectId
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 import json
 import requests as _req
-from datetime import timedelta
+from uuid import uuid4
 
 from loguru import logger
 from .base_handler import BaseHandler
@@ -86,6 +86,12 @@ class ProjectHandler(BaseHandler):
                     
                     if not project:
                         errors.append(f"Project {project_id} not found or access denied")
+                        continue
+
+                    if project.get("is_template") or project.get("is_demo"):
+                        errors.append(
+                            f"Project {project_id} is a demo template and cannot be deleted"
+                        )
                         continue
                     
                     # Delete all associated data
@@ -324,3 +330,133 @@ class ProjectHandler(BaseHandler):
                 pass
 
         return state
+
+    def fork_project_from_template(
+        self,
+        template_user_id: str,
+        template_project_id: str,
+        target_user_id: str,
+        *,
+        new_name: str | None = None,
+        template_slug: str | None = None,
+    ) -> str:
+        """Copy a demo template project into the target user's account."""
+        source = self.projects_collection.find_one(
+            {"_id": ObjectId(template_project_id), "user_id": template_user_id}
+        )
+        if not source:
+            raise ValueError(
+                f"Template project {template_project_id} not found for user {template_user_id}"
+            )
+
+        now = datetime.now(timezone.utc)
+        new_id = ObjectId()
+        new_project_id = str(new_id)
+
+        gwas_file_id = source.get("gwas_file_id")
+        if gwas_file_id:
+            file_meta = self.file_metadata_collection.find_one(
+                {"_id": ObjectId(gwas_file_id)}
+            )
+            if file_meta and file_meta.get("user_id") != target_user_id:
+                cloned_file = {k: v for k, v in file_meta.items() if k != "_id"}
+                cloned_file["user_id"] = target_user_id
+                cloned_file["upload_date"] = now
+                gwas_file_id = str(
+                    self.file_metadata_collection.insert_one(cloned_file).inserted_id
+                )
+
+        new_project = {k: v for k, v in source.items() if k != "_id"}
+        new_project.update(
+            {
+                "_id": new_id,
+                "user_id": target_user_id,
+                "gwas_file_id": gwas_file_id,
+                "name": new_name or f"{source.get('name', 'Project')} (from sample)",
+                "is_template": False,
+                "source_template_id": template_project_id,
+                "source_template_slug": template_slug,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        self.projects_collection.insert_one(new_project)
+
+        cs_docs = list(
+            self.credible_sets_collection.find(
+                {"user_id": template_user_id, "project_id": template_project_id}
+            )
+        )
+        for doc in cs_docs:
+            doc.pop("_id", None)
+            doc["user_id"] = target_user_id
+            doc["project_id"] = new_project_id
+        if cs_docs:
+            self.credible_sets_collection.insert_many(cs_docs)
+
+        ar_docs = list(
+            self.analysis_results_collection.find(
+                {"user_id": template_user_id, "project_id": template_project_id}
+            )
+        )
+        for doc in ar_docs:
+            doc.pop("_id", None)
+            doc["user_id"] = target_user_id
+            doc["project_id"] = new_project_id
+        if ar_docs:
+            self.analysis_results_collection.insert_many(ar_docs)
+
+        runs = list(
+            self.db["gene_expression_runs"].find(
+                {"user_id": template_user_id, "project_id": template_project_id}
+            )
+        )
+        run_id_map: dict[str, str] = {}
+        for run in runs:
+            old_run_id = run["id"]
+            new_run_id = str(uuid4())
+            run_id_map[old_run_id] = new_run_id
+            run.pop("_id", None)
+            run["id"] = new_run_id
+            run["user_id"] = target_user_id
+            run["project_id"] = new_project_id
+            run["created_at"] = now
+            run["updated_at"] = now
+        if runs:
+            self.db["gene_expression_runs"].insert_many(runs)
+
+        if run_id_map:
+            old_run_ids = list(run_id_map.keys())
+            ldsc_docs = list(
+                self.db["ldsc_results"].find({"analysis_run_id": {"$in": old_run_ids}})
+            )
+            for doc in ldsc_docs:
+                doc.pop("_id", None)
+                doc["id"] = str(uuid4())
+                doc["analysis_run_id"] = run_id_map[doc["analysis_run_id"]]
+                doc["created_at"] = now
+            if ldsc_docs:
+                self.db["ldsc_results"].insert_many(ldsc_docs)
+
+            mapping_docs = list(
+                self.db["tissue_mappings"].find({"analysis_run_id": {"$in": old_run_ids}})
+            )
+            for doc in mapping_docs:
+                doc.pop("_id", None)
+                doc["id"] = str(uuid4())
+                doc["analysis_run_id"] = run_id_map[doc["analysis_run_id"]]
+                doc["created_at"] = now
+            if mapping_docs:
+                self.db["tissue_mappings"].insert_many(mapping_docs)
+
+        source_state_path = self.get_analysis_state_path(template_user_id, template_project_id)
+        if os.path.exists(source_state_path):
+            with open(source_state_path, "r", encoding="utf-8") as handle:
+                state_data = json.load(handle)
+            self.save_analysis_state(target_user_id, new_project_id, state_data)
+
+        logger.info(
+            f"Forked demo template {template_project_id} to user {target_user_id} "
+            f"as project {new_project_id}"
+        )
+        return new_project_id
