@@ -2,6 +2,8 @@
 MinIO Storage Client for handling file uploads and downloads
 """
 import os
+from io import BytesIO
+
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
@@ -53,11 +55,23 @@ class MinIOStorage:
             logger.error(f"[MinIO] Unexpected error uploading {object_key}: {e}")
             return False
     
-    def upload_fileobj(self, file_obj: BinaryIO, object_key: str, bucket: Optional[str] = None) -> bool:
+    def upload_fileobj(
+        self,
+        file_obj: BinaryIO,
+        object_key: str,
+        bucket: Optional[str] = None,
+        content_type: Optional[str] = None,
+    ) -> bool:
         target_bucket = bucket or self.bucket
         
         try:
-            self.client.upload_fileobj(file_obj, target_bucket, object_key)
+            extra_args = {"ContentType": content_type} if content_type else None
+            if extra_args:
+                self.client.upload_fileobj(
+                    file_obj, target_bucket, object_key, ExtraArgs=extra_args
+                )
+            else:
+                self.client.upload_fileobj(file_obj, target_bucket, object_key)
             logger.info(f"[MinIO] Uploaded file object to s3://{target_bucket}/{object_key}")
             return True
         except ClientError as e:
@@ -66,6 +80,21 @@ class MinIOStorage:
         except Exception as e:
             logger.error(f"[MinIO] Unexpected error uploading {object_key}: {e}")
             return False
+
+    def upload_string(
+        self,
+        data: str,
+        object_key: str,
+        bucket: Optional[str] = None,
+        content_type: str = "application/json",
+    ) -> bool:
+        payload = data.encode("utf-8")
+        return self.upload_fileobj(
+            BytesIO(payload),
+            object_key,
+            bucket=bucket,
+            content_type=content_type,
+        )
     
     def download_file(self, object_key: str, local_path: str, bucket: Optional[str] = None) -> bool:
         target_bucket = bucket or self.bucket
@@ -85,6 +114,39 @@ class MinIOStorage:
             logger.error(f"[MinIO] Unexpected error downloading {object_key}: {e}")
             return False
     
+    def download_string(self, object_key: str, bucket: Optional[str] = None) -> Optional[str]:
+        target_bucket = bucket or self.bucket
+        buffer = BytesIO()
+        try:
+            self.client.download_fileobj(target_bucket, object_key, buffer)
+            return buffer.getvalue().decode("utf-8")
+        except ClientError as e:
+            logger.error(f"[MinIO] Download failed for {object_key}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"[MinIO] Unexpected error downloading {object_key}: {e}")
+            return None
+
+    def list_child_prefixes(
+        self, prefix: str, bucket: Optional[str] = None
+    ) -> list[str]:
+        """Return immediate child folder names under prefix (e.g. slug names)."""
+        target_bucket = bucket or self.bucket
+        normalized = prefix if prefix.endswith("/") else f"{prefix}/"
+        child_names: list[str] = []
+        try:
+            paginator = self.client.get_paginator("list_objects_v2")
+            for page in paginator.paginate(
+                Bucket=target_bucket, Prefix=normalized, Delimiter="/"
+            ):
+                for entry in page.get("CommonPrefixes", []):
+                    child = entry.get("Prefix", "").rstrip("/").split("/")[-1]
+                    if child:
+                        child_names.append(child)
+        except ClientError as e:
+            logger.error(f"[MinIO] List failed for prefix {prefix}: {e}")
+        return sorted(set(child_names))
+
     def exists(self, object_key: str, bucket: Optional[str] = None) -> bool:
         target_bucket = bucket or self.bucket
         
