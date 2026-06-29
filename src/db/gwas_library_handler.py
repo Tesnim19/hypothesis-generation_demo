@@ -181,6 +181,9 @@ class GWASLibraryHandler(BaseHandler):
             
             # Index on sex for filtering
             self.collection.create_index('sex')
+
+            # Index on source for filtering (UK Biobank vs FinnGen)
+            self.collection.create_index('source')
             
             # Index on downloaded status (cached in MinIO)
             self.collection.create_index('downloaded')
@@ -238,6 +241,7 @@ class GWASLibraryHandler(BaseHandler):
         self, 
         search_term: Optional[str] = None,
         sex_filter: Optional[str] = None,
+        source_filter: Optional[str] = None,
         limit: int = 100,
         skip: int = 0
     ) -> List[Dict]:
@@ -247,6 +251,7 @@ class GWASLibraryHandler(BaseHandler):
         Args:
             search_term (str, optional): Substring search on file_id, filename, display_name, description, phenotype_code
             sex_filter (str, optional): Filter by sex ('both_sexes', 'male', 'female')
+            source_filter (str, optional): Filter by data source ('UK Biobank', 'FinnGen')
             limit (int): Maximum number of entries to return
             skip (int): Number of entries to skip (for pagination)
             
@@ -262,6 +267,9 @@ class GWASLibraryHandler(BaseHandler):
 
             if sex_filter:
                 query['sex'] = sex_filter
+
+            if source_filter:
+                query['source'] = source_filter
 
             # Execute query with pagination
             cursor = self.collection.find(query).skip(skip).limit(limit)
@@ -287,7 +295,8 @@ class GWASLibraryHandler(BaseHandler):
     def get_entry_count(
         self,
         search_term: Optional[str] = None,
-        sex_filter: Optional[str] = None
+        sex_filter: Optional[str] = None,
+        source_filter: Optional[str] = None,
     ) -> int:
         """
         Get count of GWAS entries matching filters
@@ -295,6 +304,7 @@ class GWASLibraryHandler(BaseHandler):
         Args:
             search_term (str, optional): Search term
             sex_filter (str, optional): Filter by sex
+            source_filter (str, optional): Filter by data source
             
         Returns:
             int: Count of matching entries
@@ -308,11 +318,35 @@ class GWASLibraryHandler(BaseHandler):
             if sex_filter:
                 query['sex'] = sex_filter
 
+            if source_filter:
+                query['source'] = source_filter
+
             return self.collection.count_documents(query)
             
         except Exception as e:
             logger.error(f"Error counting GWAS entries: {e}")
             return 0
+
+    def get_source_counts(self) -> List[Dict]:
+        """
+        Return entry counts grouped by source for library tab UI.
+
+        Returns:
+            list: [{"name": "UK Biobank", "count": N}, ...]
+        """
+        try:
+            pipeline = [
+                {"$group": {"_id": "$source", "count": {"$sum": 1}}},
+                {"$sort": {"_id": 1}},
+            ]
+            results = []
+            for doc in self.collection.aggregate(pipeline):
+                name = doc["_id"] or "Unknown"
+                results.append({"name": name, "count": doc["count"]})
+            return results
+        except Exception as e:
+            logger.error(f"Error getting source counts: {e}")
+            return []
     
     def update_gwas_entry(self, file_id: str, update_data: Dict) -> bool:
         """
