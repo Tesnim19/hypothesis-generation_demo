@@ -17,99 +17,19 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d · %H:%M UTC")
 
 
-def _build_html(
-    headline: str,
-    top_bar_color: str,
-    first_name: str,
-    intro: str,
-    project_name: str,
-    badge_style: str,
-    status_label: str,
-    time_label: str,
-    timestamp: str,
-    extra_block: str,
-    cta_block: str,
-    footnote: str,
-) -> str:
-    return (
-        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
-        '<body style="margin:0;padding:0;background:#f4f4f7;'
-        'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">'
-        '<table width="100%" cellpadding="0" cellspacing="0" '
-        'style="background:#f4f4f7;padding:32px 16px;">'
-        '<tr><td align="center">'
-        '<table width="620" cellpadding="0" cellspacing="0" '
-        'style="background:#ffffff;border:0.5px solid #e2e2e6;border-radius:12px;'
-        'overflow:hidden;max-width:620px;width:100%;">'
+_BASE_URL = "https://dev.rejuve.bio/assets/email"
 
-        f'<tr><td style="height:5px;background:{top_bar_color};font-size:0;line-height:0;">&nbsp;</td></tr>'
+_ICON_SUCCESS = (
+    f'<img src="{_BASE_URL}/dna-complete.png" '
+    'width="160" height="160" alt="" '
+    'style="display:block;margin:0 auto;" />'
+)
 
-        '<tr><td style="padding:24px 32px 20px;border-bottom:0.5px solid #e2e2e6;">'
-        '<p style="margin:0 0 6px;font-size:11px;letter-spacing:0.12em;font-weight:500;color:#5a4fcf;">REJUVE BIOTECH</p>'
-        f'<p style="margin:0;font-size:22px;font-weight:500;color:#111111;letter-spacing:-0.01em;">{headline}</p>'
-        '</td></tr>'
-
-        '<tr><td style="padding:24px 32px;">'
-        f'<p style="margin:0 0 10px;font-size:14px;color:#111111;line-height:1.65;">Hi {first_name},</p>'
-        f'<p style="margin:0 0 20px;font-size:14px;color:#555555;line-height:1.65;">{intro}</p>'
-
-        '<table width="100%" cellpadding="0" cellspacing="0" '
-        'style="background:#f8f8fa;border:0.5px solid #e2e2e6;border-radius:8px;margin-bottom:20px;">'
-
-        '<tr><td style="padding:10px 16px;border-bottom:0.5px solid #e2e2e6;">'
-        '<table width="100%"><tr>'
-        '<td style="font-size:12px;color:#777777;">Project</td>'
-        f'<td align="right" style="font-size:12px;color:#111111;font-weight:500;">{project_name}</td>'
-        '</tr></table></td></tr>'
-
-        '<tr><td style="padding:10px 16px;border-bottom:0.5px solid #e2e2e6;">'
-        '<table width="100%"><tr>'
-        '<td style="font-size:12px;color:#777777;">Status</td>'
-        f'<td align="right"><span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:6px;{badge_style}">{status_label}</span></td>'
-        '</tr></table></td></tr>'
-
-        '<tr><td style="padding:10px 16px;">'
-        '<table width="100%"><tr>'
-        f'<td style="font-size:12px;color:#777777;">{time_label}</td>'
-        f'<td align="right" style="font-size:12px;color:#111111;">{timestamp}</td>'
-        '</tr></table></td></tr>'
-
-        '</table>'
-
-        f'{extra_block}'
-        f'{cta_block}'
-
-        f'<p style="margin:0;font-size:12px;color:#999999;line-height:1.6;">{footnote}</p>'
-        '</td></tr>'
-
-        '<tr><td style="border-top:0.5px solid #e2e2e6;padding:12px 32px;background:#f8f8fa;">'
-        '<table width="100%"><tr>'
-        '<td style="font-size:11px;color:#999999;">Rejuve Biotech · Hypothesis Generation</td>'
-        '<td align="right" style="font-size:11px;color:#999999;">© 2026</td>'
-        '</tr></table></td></tr>'
-
-        '</table></td></tr></table></body></html>'
-    )
-
-
-def _cta(url: str, label: str) -> str:
-    return (
-        f'<a href="{url}" style="display:inline-block;background:#5a4fcf;color:#ffffff;'
-        'text-decoration:none;padding:10px 22px;border-radius:8px;'
-        f'font-size:13px;font-weight:500;margin-bottom:20px;">{label}</a>'
-    )
-
-
-def _message_block(message: str) -> str:
-    return (
-        '<table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:20px;">'
-        '<tr><td style="border-left:3px solid #e24b4a;padding:14px 18px;background:#fff8f8;border-radius:0 6px 6px 0;">'
-        '<p style="margin:0 0 4px;font-size:11px;font-weight:600;color:#a32d2d;'
-        'text-transform:uppercase;letter-spacing:0.08em;">What went wrong</p>'
-        f'<p style="margin:0;font-size:13px;color:#333333;line-height:1.65;">{message}</p>'
-        '</td></tr></table>'
-    )
+_ICON_FAILED = (
+    f'<img src="{_BASE_URL}/dna-failed.png" '
+    'width="160" height="160" alt="" '
+    'style="display:block;margin:0 auto;" />'
+)
 
 
 def _get_user_friendly_error(raw: str | None) -> str:
@@ -164,36 +84,53 @@ def build_complete_email(
     result_url = f"{app_base_url.rstrip('/')}/hypothesis/{project_id}"
     ts = _now_utc()
 
-    html = _build_html(
-        headline="Analysis complete",
-        top_bar_color="#5a4fcf",
-        first_name=first_name,
-        intro=(
-            f"Your analysis for project <strong style='font-weight:500;color:#111111;'>"
-            f"{project_name}</strong> has finished running successfully. "
-            "Your results are ready to review."
-        ),
-        project_name=project_name,
-        badge_style="background:#eaf3de;color:#3b6d11;",
-        status_label="Completed",
-        time_label="Finished at",
-        timestamp=ts,
-        extra_block="",
-        cta_block=_cta(result_url, "View results →"),
-        footnote=(
-            "You're receiving this because you triggered an analysis run on the "
-            "Hypothesis Generation platform. If you didn't expect this, you can ignore it."
-        ),
+    html = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;padding:0;background:#ffffff;'
+        'font-family:Inter,-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">'
+
+        '<table width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;padding:48px 24px;">'
+        '<tr><td align="center">'
+        '<table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;text-align:center;">'
+
+        '<tr><td align="center" style="padding-bottom:32px;">'
+        + _ICON_SUCCESS +
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:16px;">'
+        '<h1 style="margin:0;font-size:32px;font-weight:800;color:#4a4a4a;letter-spacing:-0.02em;">Analysis Complete</h1>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:12px;">'
+        f'<p style="margin:0 auto;font-size:20px;line-height:1.45;color:#818181;max-width:540px;">'
+        f'Your analysis for project <strong style="color:#4a4a4a;font-weight:600;">{project_name}</strong> '
+        'has finished running successfully. Your results are ready to view.</p>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:32px;">'
+        f'<p style="margin:0;font-size:14px;font-weight:600;color:#a1a1a1;">Finished at {ts}</p>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:48px;">'
+        f'<a href="{result_url}" style="display:inline-block;background:#151515;color:#ffffff;'
+        'text-decoration:none;padding:15px 28px;border-radius:8px;'
+        'font-size:18px;font-weight:700;">View Result →</a>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="border-top:1px solid #f0f0f0;padding-top:24px;">'
+        '<p style="margin:0;font-size:12px;color:#cccccc;">Rejuve Biotech · Hypothesis Generation Platform</p>'
+        '</td></tr>'
+
+        '</table></td></tr></table>'
+        '</body></html>'
     )
 
     plain = (
-        f"REJUVE BIOTECH — Analysis complete\n"
+        f"REJUVE BIOTECH — Analysis Complete\n"
         f"{'─' * 40}\n\n"
-        f"Hi {first_name},\n\n"
         f"Your analysis for '{project_name}' completed successfully.\n\n"
-        f"Project : {project_name}\n"
-        f"Status  : Completed\n"
-        f"Time    : {ts}\n\n"
+        f"Finished at : {ts}\n"
         f"View results: {result_url}\n\n"
         "Rejuve Biotech · Hypothesis Generation Platform"
     )
@@ -215,33 +152,57 @@ def build_failed_email(
     ts = _now_utc()
     friendly = _get_user_friendly_error(error)
 
-    html = _build_html(
-        headline="Analysis failed",
-        top_bar_color="#e24b4a",
-        first_name=first_name,
-        intro=(
-            f"Unfortunately the analysis for project <strong style='font-weight:500;color:#111111;'>"
-            f"{project_name}</strong> did not complete successfully."
-        ),
-        project_name=project_name,
-        badge_style="background:#fcebeb;color:#a32d2d;",
-        status_label="Failed",
-        time_label="Failed at",
-        timestamp=ts,
-        extra_block=_message_block(friendly),
-        cta_block="",
-        footnote="Please retry the analysis or contact your administrator if the issue persists.",
+    html = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"></head>'
+        '<body style="margin:0;padding:0;background:#ffffff;'
+        'font-family:Inter,-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;">'
+
+        '<table width="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;padding:48px 24px;">'
+        '<tr><td align="center">'
+        '<table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;text-align:center;">'
+
+        '<tr><td align="center" style="padding-bottom:32px;">'
+        + _ICON_FAILED +
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:16px;">'
+        '<h1 style="margin:0;font-size:32px;font-weight:800;color:#4a4a4a;letter-spacing:-0.02em;">Analysis failed</h1>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:12px;">'
+        f'<p style="margin:0 auto;font-size:20px;line-height:1.45;color:#818181;max-width:540px;">'
+        f'Unfortunately your analysis for project <strong style="color:#4a4a4a;font-weight:600;">{project_name}</strong> '
+        'did not complete successfully.</p>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="padding-bottom:32px;">'
+        f'<p style="margin:0;font-size:14px;font-weight:600;color:#a1a1a1;">Failed at {ts}</p>'
+        '</td></tr>'
+
+        '<tr><td align="left" style="padding-bottom:40px;">'
+        '<table width="100%" cellpadding="0" cellspacing="0" '
+        'style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;">'
+        '<tr><td style="padding:20px 22px;text-align:left;">'
+        '<p style="margin:0 0 8px;font-size:16px;font-weight:800;color:#991b1b;">What went wrong</p>'
+        f'<p style="margin:0;font-size:15px;line-height:1.55;color:#7f1d1d;">{friendly}</p>'
+        '</td></tr></table>'
+        '</td></tr>'
+
+        '<tr><td align="center" style="border-top:1px solid #f0f0f0;padding-top:24px;">'
+        '<p style="margin:0;font-size:12px;color:#cccccc;">Rejuve Biotech · Hypothesis Generation Platform</p>'
+        '</td></tr>'
+
+        '</table></td></tr></table>'
+        '</body></html>'
     )
 
     plain = (
         f"REJUVE BIOTECH — Analysis failed\n"
         f"{'─' * 40}\n\n"
-        f"Hi {first_name},\n\n"
         f"The analysis for project '{project_name}' did not complete.\n\n"
-        f"Project : {project_name}\n"
-        f"Status  : Failed\n"
-        f"Time    : {ts}\n"
-        f"Details : {friendly}\n\n"
+        f"Failed at : {ts}\n"
+        f"Details   : {friendly}\n\n"
         "Please retry or contact your administrator.\n\n"
         "Rejuve Biotech · Hypothesis Generation Platform"
     )
