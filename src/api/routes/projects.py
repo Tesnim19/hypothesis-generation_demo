@@ -35,6 +35,7 @@ from src.db import (
     ProjectHandler,
 )
 from src.tasks.project import count_gwas_records, get_project_with_full_data
+from src.api.auth import get_current_user_id, get_current_user_email
 from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
     allowed_file,
@@ -208,6 +209,7 @@ async def post_analysis_pipeline(
     config: Config = Depends(get_config),
     storage=Depends(get_storage),
     gwas_library: GWASLibraryHandler = Depends(get_gwas_library_handler),
+    current_user_email: str | None = Depends(get_current_user_email),
 ):
     try:
         form = await request.form()
@@ -535,6 +537,7 @@ async def post_analysis_pipeline(
             population=population,
             ref_genome=ref_genome,
             analysis_parameters=analysis_parameters,
+            user_email=current_user_email,
         )
 
         metadata_dir = os.path.join("data", "metadata", str(current_user_id))
@@ -588,6 +591,8 @@ async def post_analysis_pipeline(
                 file_source_download_url=_source_download_url,
                 file_minio_cache_key=_minio_cache_key,
                 file_gwas_library_id=_gwas_library_id,
+                user_email=current_user_email,      
+                project_name=project_name,          
             ),
         )
 

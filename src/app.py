@@ -19,6 +19,9 @@ from src.socketio_instance import sio
 from src.services.socketio_relay import relay_subscribe_forever
 from src.services.status_tracker import StatusTracker
 from src.api import router
+from src.services.mail import init_mail
+
+
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -59,6 +62,20 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
 
         status_tracker = StatusTracker()
         status_tracker.initialize(container.task_handler(), redis_url=config.redis_url)
+        if config.mail_server:
+            init_mail(
+                mail_username=config.mail_username,
+                mail_password=config.mail_password,
+                mail_from=config.mail_from,
+                mail_server=config.mail_server,
+                mail_port=config.mail_port,
+                mail_tls=config.mail_tls,
+                mail_ssl=config.mail_ssl,
+            )
+            logger.info("Mail service initialized")
+        else:
+            logger.warning("MAIL_SERVER not set - email notifications disabled")
+
 
         relay_task: asyncio.Task[None] | None = None
         if config.redis_url:

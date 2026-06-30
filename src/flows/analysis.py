@@ -7,6 +7,8 @@ from loguru import logger
 from prefect import flow
 from prefect.runtime import flow_run as _prefect_flow_run
 from prefect_dask import DaskTaskRunner
+from src.utils import get_deps
+from src.services.mail import send_pipeline_notification
 
 from src.config import Config
 from src.tasks import (
@@ -25,7 +27,7 @@ from src.tasks import (
 )
 
 
-### Analysis Pipeline Flow
+
 @flow(log_prints=True,
     persist_result=False,
     task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
@@ -34,6 +36,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                            population="EUR", batch_size=5, max_workers=3,
                            maf_threshold=0.01, seed=42, window=2000, L=-1,
                            coverage=0.95, min_abs_corr=0.5, sample_size=None,
+                           user_email: str | None = None, project_name: str | None = None,
                            file_metadata_id=None, file_needs_processing=False,
                            file_storage_key=None, file_id_new=None,
                            file_source_minio_path=None, file_source_download_url=None,
@@ -169,6 +172,10 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 "message": "COJO analysis failed - no independent signals found",
             }
             save_analysis_state_task.submit(user_id, project_id, failed_state).result()
+            send_pipeline_notification(
+                user_email, project_name, project_id,
+                success=False, detail=failed_state["message"],
+            )
             return None
 
         # Update analysis state after COJO
@@ -294,6 +301,8 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             }
             save_analysis_state_task.submit(user_id, project_id, completed_state).result()
 
+            send_pipeline_notification(user_email, project_name, project_id, success=True)
+
             logger.info(f"[PIPELINE] Analysis completed successfully!")
             logger.info(f"[PIPELINE] - Total variants: {total_variants}")
             logger.info(f"[PIPELINE] - High-confidence variants (PIP > 0.5): {high_pip_variants}")
@@ -332,4 +341,8 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             save_analysis_state_task.submit(user_id, project_id, failed_state).result()
         except Exception as state_e:
             logger.error(f"[PIPELINE] Failed to save error state: {str(state_e)}")
+        send_pipeline_notification(
+            user_email, project_name, project_id,
+            success=False, detail=str(e),
+        )
         raise
