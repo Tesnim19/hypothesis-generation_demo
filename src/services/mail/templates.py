@@ -46,8 +46,9 @@ def _get_user_friendly_error(raw: str | None) -> str:
 
     if "harmoniz" in msg or "nextflow" in msg:
         return (
-            "The pipeline failed during GWAS harmonization. "
-            "Please check that your input file is correctly formatted and try again."
+            "The harmonization step did not complete. "
+            "This may be a temporary resource constraint issue. Please try again later. "
+            "If the problem persists, contact your support team."
         )
     if "filter" in msg or "significant" in msg:
         return (
