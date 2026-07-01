@@ -20,14 +20,20 @@ def _now_utc() -> str:
 _BASE_URL = "https://dev.rejuve.bio/assets/email"
 
 _ICON_SUCCESS = (
-    f'<img src="{_BASE_URL}/dna-complete.png" '
-    'width="160" height="160" alt="" '
+    f'<img src="{_BASE_URL}/dna-completed.png" '
+    'width="140" height="140" alt="" '
     'style="display:block;margin:0 auto;" />'
 )
 
 _ICON_FAILED = (
     f'<img src="{_BASE_URL}/dna-failed.png" '
-    'width="160" height="160" alt="" '
+    'width="140" height="140" alt="" '
+    'style="display:block;margin:0 auto;" />'
+)
+
+_LOGO = (
+    f'<img src="{_BASE_URL}/rejuve-logo.png" '
+    'width="160" alt="Rejuve Biotech" '
     'style="display:block;margin:0 auto;" />'
 )
 
@@ -94,12 +100,16 @@ def build_complete_email(
         '<tr><td align="center">'
         '<table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;text-align:center;">'
 
+        '<tr><td align="center" style="padding-bottom:28px;">'
+        + _LOGO +
+        '</td></tr>'
+
         '<tr><td align="center" style="padding-bottom:32px;">'
         + _ICON_SUCCESS +
         '</td></tr>'
 
         '<tr><td align="center" style="padding-bottom:16px;">'
-        '<h1 style="margin:0;font-size:32px;font-weight:800;color:#4a4a4a;letter-spacing:-0.02em;">Analysis Complete</h1>'
+        '<h1 style="margin:0;font-size:26px;font-weight:800;color:#4a4a4a;letter-spacing:-0.02em;">Analysis Complete</h1>'
         '</td></tr>'
 
         '<tr><td align="center" style="padding-bottom:12px;">'
@@ -162,12 +172,16 @@ def build_failed_email(
         '<tr><td align="center">'
         '<table width="620" cellpadding="0" cellspacing="0" style="max-width:620px;width:100%;text-align:center;">'
 
+        '<tr><td align="center" style="padding-bottom:28px;">'
+        + _LOGO +
+        '</td></tr>'
+
         '<tr><td align="center" style="padding-bottom:32px;">'
         + _ICON_FAILED +
         '</td></tr>'
 
         '<tr><td align="center" style="padding-bottom:16px;">'
-        '<h1 style="margin:0;font-size:32px;font-weight:800;color:#4a4a4a;letter-spacing:-0.02em;">Analysis failed</h1>'
+        '<h1 style="margin:0;font-size:26px;font-weight:800;color:#4a4a4a;letter-spacing:-0.02em;">Analysis failed</h1>'
         '</td></tr>'
 
         '<tr><td align="center" style="padding-bottom:12px;">'
