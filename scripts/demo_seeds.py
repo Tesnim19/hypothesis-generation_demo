@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""
-Manage shared demo projects via MinIO seed bundles (demo-seeds-v2/).
-
-Typical workflow for a new demo:
-    1. Run analysis (+ optional hypothesis) on a dev project via the UI
-    2. python scripts/demo_seeds.py register --project-id <id> --slug obesity \\
-           --display-name "Sample: Obesity"
-    3. python scripts/demo_seeds.py export --slug obesity
-
-Other environments import automatically on startup (seed_database.py) or manually:
-    python scripts/demo_seeds.py sync
-    python scripts/demo_seeds.py import --slug obesity [--force]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -53,7 +39,6 @@ def _get_storage():
             "MINIO_SECRET_KEY, and optionally MINIO_BUCKET."
         )
     return storage
-
 
 def cmd_list(args: argparse.Namespace) -> int:
     handler = _get_handler()
@@ -106,14 +91,12 @@ def cmd_import(args: argparse.Namespace) -> int:
     print(json.dumps(result, indent=2, default=str))
     return 0
 
-
 def cmd_sync(args: argparse.Namespace) -> int:
     handler = _get_handler()
     storage = _get_storage()
     results = handler.ensure_seeds_from_minio(storage)
     print(json.dumps(results, indent=2, default=str))
     return 0 if not results["failed"] else 1
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage demo project seeds in MinIO.")
@@ -156,9 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Import any MinIO demo seed bundles missing locally",
     )
     sync_parser.set_defaults(func=cmd_sync)
-
     return parser
-
 
 def main() -> int:
     _load_env()

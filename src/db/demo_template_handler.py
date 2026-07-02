@@ -19,6 +19,29 @@ DEMO_OWNER_USER_ID = "__demo__"
 SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 LDSC_COMPLETED_STATUSES = frozenset({"ldsc_tissue_completed", "completed"})
 
+_PROJECT_SCOPED_COLLECTIONS = [
+    ("credible_sets.json", "credible_sets_collection", {"type": "credible_set"}),
+    ("analysis_results.json", "analysis_results_collection", {}),
+    ("gene_expression_runs.json", "gene_expression_runs_collection", {}),
+    ("hypotheses.json", "hypotheses_collection", {}),
+    ("enrich.json", "enrich_collection", {}),
+    ("tissue_selections.json", "tissue_selections_collection", {}),
+]
+
+_DELETABLE_PROJECT_COLLECTIONS = (
+    "credible_sets_collection",
+    "analysis_results_collection",
+    "gene_expression_runs_collection",
+    "hypotheses_collection",
+    "enrich_collection",
+    "tissue_selections_collection",
+)
+
+_RUN_SCOPED_COLLECTIONS = (
+    ("ldsc_results.json", "ldsc_results_collection"),
+    ("tissue_mappings.json", "tissue_mappings_collection"),
+)
+
 
 class DemoTemplateError(Exception):
     """Raised when demo seed validation or I/O fails."""
@@ -267,50 +290,31 @@ class DemoTemplateHandler(BaseHandler):
         }
 
     def _load_project_scoped_docs(self, user_id: str, project_id: str) -> dict[str, list[dict]]:
-        gene_expression_runs = list(
-            self.gene_expression_runs_collection.find(
-                {"user_id": user_id, "project_id": project_id}
+        result: dict[str, list[dict]] = {}
+        run_ids: list[str] = []
+
+        for filename, attr, extra in _PROJECT_SCOPED_COLLECTIONS:
+            docs = list(
+                getattr(self, attr).find(
+                    {"user_id": user_id, "project_id": project_id, **extra}
+                )
             )
-        )
-        run_ids = [run["id"] for run in gene_expression_runs if run.get("id")]
-        ldsc_results: list[dict] = []
-        tissue_mappings: list[dict] = []
+            result[filename] = docs
+            if filename == "gene_expression_runs.json":
+                run_ids = [doc["id"] for doc in docs if doc.get("id")]
+
         if run_ids:
-            ldsc_results = list(
+            result["ldsc_results.json"] = list(
                 self.ldsc_results_collection.find({"analysis_run_id": {"$in": run_ids}})
             )
-            tissue_mappings = list(
+            result["tissue_mappings.json"] = list(
                 self.tissue_mappings_collection.find({"analysis_run_id": {"$in": run_ids}})
             )
+        else:
+            result["ldsc_results.json"] = []
+            result["tissue_mappings.json"] = []
 
-        return {
-            "credible_sets.json": list(
-                self.credible_sets_collection.find(
-                    {"user_id": user_id, "project_id": project_id, "type": "credible_set"}
-                )
-            ),
-            "analysis_results.json": list(
-                self.analysis_results_collection.find(
-                    {"user_id": user_id, "project_id": project_id}
-                )
-            ),
-            "gene_expression_runs.json": gene_expression_runs,
-            "ldsc_results.json": ldsc_results,
-            "tissue_mappings.json": tissue_mappings,
-            "hypotheses.json": list(
-                self.hypotheses_collection.find(
-                    {"user_id": user_id, "project_id": project_id}
-                )
-            ),
-            "enrich.json": list(
-                self.enrich_collection.find({"user_id": user_id, "project_id": project_id})
-            ),
-            "tissue_selections.json": list(
-                self.tissue_selections_collection.find(
-                    {"user_id": user_id, "project_id": project_id}
-                )
-            ),
-        }
+        return result
 
     def collect_seed_bundle(self, slug: str, *, seed_version: int = 1) -> dict[str, Any]:
         """Collect a demo seed bundle from live MongoDB, normalized to __demo__ owner."""
@@ -422,46 +426,29 @@ class DemoTemplateHandler(BaseHandler):
     ) -> list[dict] | dict | None:
         if docs is None:
             return None
-        if isinstance(docs, dict):
-            rewritten = cls._rewrite_user_scoped_strings(docs, source_user_id, demo_user_id)
-            if rewritten.get("user_id") == source_user_id:
-                rewritten["user_id"] = demo_user_id
-            return rewritten
 
-        rewritten_docs: list[dict] = []
-        for doc in docs:
-            item = cls._rewrite_user_scoped_strings(doc, source_user_id, demo_user_id)
+        is_single = isinstance(docs, dict)
+        items = [docs] if is_single else docs
+        out: list[dict] = []
+        for item in items:
+            item = cls._rewrite_user_scoped_strings(item, source_user_id, demo_user_id)
             if item.get("user_id") == source_user_id:
                 item["user_id"] = demo_user_id
-            rewritten_docs.append(item)
-        return rewritten_docs
+            out.append(item)
+        return out[0] if is_single else out
 
     def export_seed_to_minio(self, slug: str, storage, *, seed_version: int = 1) -> dict:
         bundle = self.collect_seed_bundle(slug, seed_version=seed_version)
         prefix = self.seed_minio_prefix(slug)
-        uploaded_keys: list[str] = []
 
-        manifest_key = f"{prefix}/manifest.json"
-        if not storage.upload_string(
-            self._serialize_bundle_value(bundle["manifest"]),
-            manifest_key,
-        ):
-            raise DemoTemplateError(f"Failed to upload {manifest_key} to MinIO")
-        uploaded_keys.append(manifest_key)
+        uploads: dict[str, Any] = {"manifest.json": bundle["manifest"]}
+        uploads.update({f"mongo/{k}": v for k, v in bundle["mongo"].items()})
+        uploads.update({f"files/{k}": v for k, v in bundle["files"].items()})
 
-        for filename, docs in bundle["mongo"].items():
-            object_key = f"{prefix}/mongo/{filename}"
-            payload = self._serialize_bundle_value(docs)
-            if not storage.upload_string(payload, object_key):
-                raise DemoTemplateError(f"Failed to upload {object_key} to MinIO")
-            uploaded_keys.append(object_key)
-
-        for filename, content in bundle["files"].items():
-            object_key = f"{prefix}/files/{filename}"
-            payload = self._serialize_bundle_value(content)
-            if not storage.upload_string(payload, object_key):
-                raise DemoTemplateError(f"Failed to upload {object_key} to MinIO")
-            uploaded_keys.append(object_key)
+        for filename, content in uploads.items():
+            key = f"{prefix}/{filename}"
+            if not storage.upload_string(self._serialize_bundle_value(content), key):
+                raise DemoTemplateError(f"Failed to upload {key} to MinIO")
 
         now = datetime.now(timezone.utc)
         self.demo_templates_collection.update_one(
@@ -480,14 +467,14 @@ class DemoTemplateHandler(BaseHandler):
         bucket = storage.bucket
         logger.info(
             f"Exported demo seed slug={slug} to s3://{bucket}/{prefix}/ "
-            f"({len(uploaded_keys)} objects)"
+            f"({len(uploads)} objects)"
         )
         return {
             "slug": slug,
             "minio_prefix": prefix,
             "bucket": bucket,
-            "object_count": len(uploaded_keys),
-            "manifest_key": manifest_key,
+            "object_count": len(uploads),
+            "manifest_key": f"{prefix}/manifest.json",
             "counts": bundle["manifest"]["counts"],
             "seed_version": seed_version,
             "demo_owner_id": DEMO_OWNER_USER_ID,
@@ -529,15 +516,10 @@ class DemoTemplateHandler(BaseHandler):
                 {"analysis_run_id": {"$in": legacy_run_ids}}
             )
 
-        for collection in (
-            self.credible_sets_collection,
-            self.analysis_results_collection,
-            self.gene_expression_runs_collection,
-            self.hypotheses_collection,
-            self.enrich_collection,
-            self.tissue_selections_collection,
-        ):
-            collection.delete_many({"user_id": legacy_user_id, "project_id": project_id})
+        for attr in _DELETABLE_PROJECT_COLLECTIONS:
+            getattr(self, attr).delete_many(
+                {"user_id": legacy_user_id, "project_id": project_id}
+            )
 
         legacy_state_path = self.get_analysis_state_path(legacy_user_id, project_id)
         if os.path.exists(legacy_state_path):
@@ -619,21 +601,15 @@ class DemoTemplateHandler(BaseHandler):
         for doc in file_docs or []:
             self.file_metadata_collection.replace_one({"_id": doc["_id"]}, doc, upsert=True)
 
-        project_scoped = {
-            "credible_sets.json": self.credible_sets_collection,
-            "analysis_results.json": self.analysis_results_collection,
-            "gene_expression_runs.json": self.gene_expression_runs_collection,
-            "hypotheses.json": self.hypotheses_collection,
-            "enrich.json": self.enrich_collection,
-            "tissue_selections.json": self.tissue_selections_collection,
-        }
         run_ids: list[str] = []
-        for filename, collection in project_scoped.items():
+        for filename, attr, _extra in _PROJECT_SCOPED_COLLECTIONS:
+            collection = getattr(self, attr)
             object_key = f"{prefix}/mongo/{filename}"
-            if not storage.exists(object_key):
-                docs = []
-            else:
-                docs = self._download_bundle_part(storage, object_key)
+            docs = (
+                self._download_bundle_part(storage, object_key)
+                if storage.exists(object_key)
+                else []
+            )
             if not isinstance(docs, list):
                 raise DemoTemplateError(f"Expected list in {object_key}")
             collection.delete_many({"user_id": user_id, "project_id": project_id})
@@ -645,14 +621,11 @@ class DemoTemplateHandler(BaseHandler):
         if run_ids:
             self.ldsc_results_collection.delete_many({"analysis_run_id": {"$in": run_ids}})
             self.tissue_mappings_collection.delete_many({"analysis_run_id": {"$in": run_ids}})
-        ldsc_docs = self._download_bundle_part(storage, f"{prefix}/mongo/ldsc_results.json")
-        mapping_docs = self._download_bundle_part(
-            storage, f"{prefix}/mongo/tissue_mappings.json"
-        )
-        if ldsc_docs:
-            self.ldsc_results_collection.insert_many(ldsc_docs)
-        if mapping_docs:
-            self.tissue_mappings_collection.insert_many(mapping_docs)
+
+        for filename, attr in _RUN_SCOPED_COLLECTIONS:
+            docs = self._download_bundle_part(storage, f"{prefix}/mongo/{filename}")
+            if docs:
+                getattr(self, attr).insert_many(docs)
 
         analysis_state = self._download_bundle_part(
             storage, f"{prefix}/files/analysis_state.json"
