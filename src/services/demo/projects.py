@@ -11,7 +11,7 @@ from src.db import (
     HypothesisHandler,
     ProjectHandler,
 )
-from src.services.demo.access import resolve_project_access
+from src.services.demo.access import resolve_project_access_or_none
 from src.utils import get_population_label, normalize_status_responses, project_running_task
 
 
@@ -38,8 +38,10 @@ def resolve_hypothesis_data_user_id(
     if not project_id:
         return None
 
-    access = resolve_project_access(demo_templates, current_user_id, project_id)
-    if hypothesis.get("user_id") != access.owner_user_id:
+    access = resolve_project_access_or_none(
+        demo_templates, current_user_id, project_id
+    )
+    if not access or hypothesis.get("user_id") != access.owner_user_id:
         return None
     return access.owner_user_id
 

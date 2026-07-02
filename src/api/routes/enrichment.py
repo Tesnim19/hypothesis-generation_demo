@@ -22,7 +22,11 @@ from src.db import (
     HypothesisHandler,
     ProjectHandler,
 )
-from src.services.demo import resolve_fork_project_id, resolve_project_access
+from src.services.demo import (
+    resolve_fork_project_id,
+    resolve_project_access,
+    resolve_project_access_or_none,
+)
 from src.run_deployment import invoke_enrichment_deployment
 from src.utils import serialize_datetime_fields
 
@@ -43,10 +47,10 @@ async def get_enrich(
         if not enrich:
             enrich = enrichment.get_enrich(enrich_id=id)
             if enrich and enrich.get("project_id"):
-                access = resolve_project_access(
+                access = resolve_project_access_or_none(
                     demo_templates, current_user_id, enrich["project_id"]
                 )
-                if enrich.get("user_id") != access.owner_user_id:
+                if not access or enrich.get("user_id") != access.owner_user_id:
                     enrich = None
         if not enrich:
             raise HTTPException(status_code=404, detail="Enrich not found or access denied.")
