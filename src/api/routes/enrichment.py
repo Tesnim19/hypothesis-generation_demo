@@ -47,10 +47,7 @@ async def get_enrich(
                 access = resolve_project_access(
                     demo_templates, current_user_id, enrich["project_id"]
                 )
-                if (
-                    enrich.get("user_id") != access.owner_user_id
-                    or not access.is_demo_read
-                ):
+                if enrich.get("user_id") != access.owner_user_id:
                     enrich = None
         if not enrich:
             raise HTTPException(status_code=404, detail="Enrich not found or access denied.")
