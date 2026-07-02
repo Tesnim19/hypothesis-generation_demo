@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 import os
 import json
 import requests as _req
+from typing import Callable
 from uuid import uuid4
 
 from loguru import logger
@@ -331,6 +332,31 @@ class ProjectHandler(BaseHandler):
 
         return state
 
+    def _copy_collection_docs(
+        self,
+        collection,
+        query: dict,
+        target_user_id: str | None = None,
+        new_project_id: str | None = None,
+        *,
+        extra_fields: dict | None = None,
+        transform: Callable[[dict], None] | None = None,
+    ) -> list[dict]:
+        docs = list(collection.find(query))
+        for doc in docs:
+            doc.pop("_id", None)
+            if target_user_id is not None:
+                doc["user_id"] = target_user_id
+            if new_project_id is not None:
+                doc["project_id"] = new_project_id
+            if extra_fields:
+                doc.update(extra_fields)
+            if transform:
+                transform(doc)
+        if docs:
+            collection.insert_many(docs)
+        return docs
+
     def fork_project_from_template(
         self,
         template_user_id: str,
@@ -382,72 +408,57 @@ class ProjectHandler(BaseHandler):
         )
         self.projects_collection.insert_one(new_project)
 
-        cs_docs = list(
-            self.credible_sets_collection.find(
-                {"user_id": template_user_id, "project_id": template_project_id}
-            )
+        project_query = {"user_id": template_user_id, "project_id": template_project_id}
+        self._copy_collection_docs(
+            self.credible_sets_collection,
+            project_query,
+            target_user_id,
+            new_project_id,
         )
-        for doc in cs_docs:
-            doc.pop("_id", None)
-            doc["user_id"] = target_user_id
-            doc["project_id"] = new_project_id
-        if cs_docs:
-            self.credible_sets_collection.insert_many(cs_docs)
+        self._copy_collection_docs(
+            self.analysis_results_collection,
+            project_query,
+            target_user_id,
+            new_project_id,
+        )
 
-        ar_docs = list(
-            self.analysis_results_collection.find(
-                {"user_id": template_user_id, "project_id": template_project_id}
-            )
-        )
-        for doc in ar_docs:
-            doc.pop("_id", None)
-            doc["user_id"] = target_user_id
-            doc["project_id"] = new_project_id
-        if ar_docs:
-            self.analysis_results_collection.insert_many(ar_docs)
-
-        runs = list(
-            self.db["gene_expression_runs"].find(
-                {"user_id": template_user_id, "project_id": template_project_id}
-            )
-        )
         run_id_map: dict[str, str] = {}
-        for run in runs:
-            old_run_id = run["id"]
+
+        def _remap_run(doc: dict) -> None:
+            old_run_id = doc["id"]
             new_run_id = str(uuid4())
             run_id_map[old_run_id] = new_run_id
-            run.pop("_id", None)
-            run["id"] = new_run_id
-            run["user_id"] = target_user_id
-            run["project_id"] = new_project_id
-            run["created_at"] = now
-            run["updated_at"] = now
-        if runs:
-            self.db["gene_expression_runs"].insert_many(runs)
+            doc["id"] = new_run_id
+            doc["user_id"] = target_user_id
+            doc["project_id"] = new_project_id
+            doc["created_at"] = now
+            doc["updated_at"] = now
+
+        self._copy_collection_docs(
+            self.db["gene_expression_runs"],
+            project_query,
+            transform=_remap_run,
+        )
 
         if run_id_map:
             old_run_ids = list(run_id_map.keys())
-            ldsc_docs = list(
-                self.db["ldsc_results"].find({"analysis_run_id": {"$in": old_run_ids}})
-            )
-            for doc in ldsc_docs:
-                doc.pop("_id", None)
-                doc["id"] = str(uuid4())
-                doc["analysis_run_id"] = run_id_map[doc["analysis_run_id"]]
-                doc["created_at"] = now
-            if ldsc_docs:
-                self.db["ldsc_results"].insert_many(ldsc_docs)
 
-            mapping_docs = list(
-                self.db["tissue_mappings"].find({"analysis_run_id": {"$in": old_run_ids}})
-            )
-            for doc in mapping_docs:
-                doc.pop("_id", None)
+            def _remap_run_scoped(doc: dict) -> None:
                 doc["id"] = str(uuid4())
                 doc["analysis_run_id"] = run_id_map[doc["analysis_run_id"]]
                 doc["created_at"] = now
-            if mapping_docs:
-                self.db["tissue_mappings"].insert_many(mapping_docs)
+
+            run_scoped_query = {"analysis_run_id": {"$in": old_run_ids}}
+            self._copy_collection_docs(
+                self.db["ldsc_results"],
+                run_scoped_query,
+                transform=_remap_run_scoped,
+            )
+            self._copy_collection_docs(
+                self.db["tissue_mappings"],
+                run_scoped_query,
+                transform=_remap_run_scoped,
+            )
 
         source_state_path = self.get_analysis_state_path(template_user_id, template_project_id)
         if os.path.exists(source_state_path):

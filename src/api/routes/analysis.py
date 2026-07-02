@@ -6,7 +6,7 @@ from loguru import logger
 from src.api.dependencies import get_analysis_handler, get_demo_template_handler
 from src.api.auth import get_current_user_id
 from src.db import AnalysisHandler, DemoTemplateHandler
-from src.services.project_access import resolve_project_access
+from src.services.demo import resolve_project_access
 from src.utils import convert_variants_to_object_array, serialize_datetime_fields
 
 router = APIRouter()

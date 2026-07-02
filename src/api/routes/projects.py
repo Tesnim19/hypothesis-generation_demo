@@ -37,11 +37,11 @@ from src.db import (
 from src.tasks.project import count_gwas_records, get_project_with_full_data
 from src.api.auth import get_current_user_id, get_current_user_email
 from src.api.dependencies import get_demo_template_handler
-from src.services.demo_projects import (
+from src.services.demo import (
     apply_demo_flags_to_owned_project,
     build_demo_template_summaries,
+    resolve_project_access,
 )
-from src.services.project_access import resolve_project_access
 from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
     allowed_file,

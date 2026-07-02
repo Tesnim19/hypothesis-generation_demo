@@ -21,7 +21,7 @@ from src.db import (
     GeneExpressionHandler,
     HypothesisHandler,
 )
-from src.services.demo_projects import resolve_hypothesis_data_user_id
+from src.services.demo import resolve_hypothesis_data_user_id
 from src.services.llm import LLM
 from src.run_deployment import invoke_hypothesis_deployment
 from src.services.status_tracker import TaskState, status_tracker

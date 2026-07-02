@@ -11,7 +11,7 @@ from src.db import (
     HypothesisHandler,
     ProjectHandler,
 )
-from src.services.project_access import resolve_project_access
+from src.services.demo.access import resolve_project_access
 from src.utils import get_population_label, normalize_status_responses, project_running_task
 
 

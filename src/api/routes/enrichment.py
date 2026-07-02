@@ -22,8 +22,7 @@ from src.db import (
     HypothesisHandler,
     ProjectHandler,
 )
-from src.services.demo_projects import resolve_fork_project_id
-from src.services.project_access import resolve_project_access
+from src.services.demo import resolve_fork_project_id, resolve_project_access
 from src.run_deployment import invoke_enrichment_deployment
 from src.utils import serialize_datetime_fields
 
