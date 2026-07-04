@@ -37,7 +37,8 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                            file_metadata_id=None, file_needs_processing=False,
                            file_storage_key=None, file_id_new=None,
                            file_source_minio_path=None, file_source_download_url=None,
-                           file_minio_cache_key=None, file_gwas_library_id=None):
+                           file_minio_cache_key=None, file_gwas_library_id=None,
+                           opentargets_study_id=None):
     """
     Complete analysis pipeline flow using Prefect for orchestration
     but multiprocessing for fine-mapping batches (R safety)
@@ -194,6 +195,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             batch_data = (batch, f"batch_{i}", sumstats_temp_file, {
                 'user_id': user_id,
                 'project_id': project_id,
+                'opentargets_study_id': opentargets_study_id,
                 'finemap_params': {
                     'seed': seed,
                     'window': window,
