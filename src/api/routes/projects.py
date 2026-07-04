@@ -555,6 +555,11 @@ async def post_analysis_pipeline(
                 file_source_download_url=_source_download_url,
                 file_minio_cache_key=_minio_cache_key,
                 file_gwas_library_id=_gwas_library_id,
+                opentargets_study_id=(
+                    gwas_entry.get("phenotype_code")
+                    if gwas_entry and gwas_entry.get("phenotype_code") not in (None, "", "N/A")
+                    else None
+                ),
             ),
         )
 
