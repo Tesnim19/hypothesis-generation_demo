@@ -1080,10 +1080,12 @@ def finemap_region_batch_worker(batch_data):
 
     user_id = None
     project_id = None
-    
+    opentargets_study_id = None
+
     if additional_params:
         user_id = additional_params.get('user_id', None)
         project_id = additional_params.get('project_id', None)
+        opentargets_study_id = additional_params.get('opentargets_study_id', None)
         finemap_params = additional_params.get('finemap_params', {})
         
         # Extract parameters
@@ -1157,10 +1159,42 @@ def finemap_region_batch_worker(batch_data):
         logger.info(f"[BATCH-{batch_id}] Processing region {region_idx+1}/{len(region_batch)}: {region_id}")
         
         try:
-            
+            # ── OpenTargets pre-computed credible sets check ──────────────────
+            if opentargets_study_id and analysis_handler and user_id and project_id:
+                try:
+                    from src.db.credible_sets_handler import (
+                        CredibleSetsHandler, convert_ot_row_to_credible_set,
+                    )
+                    ot_handler = CredibleSetsHandler()
+                    ot_cs_rows = ot_handler.get_credible_sets_for_region(
+                        study_id=opentargets_study_id,
+                        chromosome=str(region['chr']),
+                        position_start=region['position'] - window * 1000,
+                        position_end=region['position'] + window * 1000,
+                    )
+                    ot_handler.close()
+
+                    if ot_cs_rows:
+                        logger.info(
+                            f"[BATCH-{batch_id}] OpenTargets: found {len(ot_cs_rows)} "
+                            f"credible set(s) for {region_id} — skipping SuSiE"
+                        )
+                        for ot_row in ot_cs_rows:
+                            cs = convert_ot_row_to_credible_set(ot_row, coverage=coverage)
+                            cs["completed_at"] = datetime.now().isoformat()
+                            analysis_handler.save_credible_set(user_id, project_id, cs)
+                        successful_regions += 1
+                        continue  # skip SuSiE for this region
+                except Exception as ot_exc:
+                    logger.warning(
+                        f"[BATCH-{batch_id}] OpenTargets lookup failed for {region_id} "
+                        f"({ot_exc}) — falling back to SuSiE"
+                    )
+            # ─────────────────────────────────────────────────────────────────
+
             # Use the shared R session with proper context management
             logger.info(f"[BATCH-{batch_id}] Running fine-mapping for {region_id} with shared R session")
-            
+
             # Call finemap_region directly without additional conversion context
             # The function handles its own conversion context internally
             try:
