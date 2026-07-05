@@ -21,9 +21,9 @@ from urllib.parse import urlparse
 
 from loguru import logger
 
-FINNGEN_R12_COHORT_SIZE = 500_348
 FINNGEN_SOURCE = "FinnGen"
 FINNGEN_GENOME_BUILD = "GRCh38"
+MISSING_VALUE = "N/A"
 
 
 def create_display_name(description: str, max_len: int = 60) -> str:
@@ -136,15 +136,15 @@ class FinnGenManifestParser:
             "phenotype_code": phenocode,
             "display_name": create_display_name(description),
             "description": description,
-            "sex": "both_sexes",
+            "sex": MISSING_VALUE,
             "filename": filename,
             "aws_url": download_url,
             "wget_command": "",
             "dropbox_url": "",
             "md5": "",
             "source": FINNGEN_SOURCE,
-            "default_sample_size": FINNGEN_R12_COHORT_SIZE,
             "genome_build": FINNGEN_GENOME_BUILD,
+            "default_sample_size": MISSING_VALUE,
         }
 
         if category:
