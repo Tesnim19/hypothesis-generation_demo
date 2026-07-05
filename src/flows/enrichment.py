@@ -17,6 +17,7 @@ from src.tasks import (
     extract_causal_gene_from_graph,
     get_coexpression_matrix_for_tissue,
 )
+from src.services.go_semantic_search import maybe_save_enrich_snapshot, snapshot_enabled
 from src.utils import emit_task_update
 
 
@@ -143,25 +144,54 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                     progress=45 + (idx * 15 // len(graphs_with_prob))
                 )
 
+                enrich_tbl_all = None
                 if selected_tissue:
                     ensembl_gene = enrichr.to_ensembl_id(this_causal_gene) or this_causal_gene
                     coexpression_data = get_coexpression_matrix_for_tissue.submit(
                         ensembl_gene, selected_tissue, k=500
                     ).result()
-                    enrich_tbl = enrichr.run(
-                        this_causal_gene, tissue_name=selected_tissue,
-                        coexpression_data=coexpression_data
-                    )
+                    if snapshot_enabled():
+                        enrich_tbl, enrich_tbl_all = enrichr.run_with_tables(
+                            this_causal_gene, tissue_name=selected_tissue,
+                            coexpression_data=coexpression_data
+                        )
+                    else:
+                        enrich_tbl = enrichr.run(
+                            this_causal_gene, tissue_name=selected_tissue,
+                            coexpression_data=coexpression_data
+                        )
                     if enrich_tbl is None or len(enrich_tbl) == 0:
                         logger.warning(
                             f"Tissue '{selected_tissue}' produced no enrichment for {this_causal_gene}; "
                             f"retrying with non–tissue-specific enrichment (fallback reference network)."
                         )
-                        enrich_tbl = enrichr.run(this_causal_gene)
+                        if snapshot_enabled():
+                            enrich_tbl, enrich_tbl_all = enrichr.run_with_tables(this_causal_gene)
+                        else:
+                            enrich_tbl = enrichr.run(this_causal_gene)
                         enrichment_run_meta["non_tissue_specific_fallback"] = True
                         enrichment_run_meta["effective_enrichment_mode"] = "non_tissue_fallback_from_tissue"
                 else:
-                    enrich_tbl = enrichr.run(this_causal_gene)
+                    if snapshot_enabled():
+                        enrich_tbl, enrich_tbl_all = enrichr.run_with_tables(this_causal_gene)
+                    else:
+                        enrich_tbl = enrichr.run(this_causal_gene)
+
+                if idx == 0 and (
+                    (enrich_tbl is not None and len(enrich_tbl) > 0)
+                    or (enrich_tbl_all is not None and len(enrich_tbl_all) > 0)
+                ):
+                    maybe_save_enrich_snapshot(
+                        enrich_tbl,
+                        enrich_tbl_all=enrich_tbl_all,
+                        phenotype=phenotype,
+                        variant=variant,
+                        causal_gene=this_causal_gene,
+                        tissue=selected_tissue,
+                        project_id=project_id,
+                        hypothesis_id=hypothesis_id,
+                        meta=enrichment_run_meta,
+                    )
 
                 # Check if enrichment table is empty
                 if enrich_tbl is None or len(enrich_tbl) == 0:

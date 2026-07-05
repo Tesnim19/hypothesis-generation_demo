@@ -126,16 +126,20 @@ class Enrich:
         return top_positive_genes, all_genes
 
 
-    def _process_enrichment_results(self, res: pd.DataFrame) -> pd.DataFrame:
+    def _process_enrichment_results(
+        self, res: pd.DataFrame, p_threshold: float | None = 0.05
+    ) -> pd.DataFrame:
         """
-        Process and filter enrichment results from gseapy.
+        Process enrichment results from gseapy.
+        p_threshold=None keeps all rows returned by enrichr.
         """
-        res = res.copy()  # Avoid SettingWithCopyWarning
+        res = res.copy()
         res.drop("Gene_set", axis=1, inplace=True)
         res.insert(1, "ID", res["Term"].apply(
             lambda x: x.split("(")[1].split(")")[0]))
         res["Term"] = res["Term"].apply(lambda x: x.split("(")[0])
-        res = res[res["Adjusted P-value"] < 0.05].copy()
+        if p_threshold is not None:
+            res = res[res["Adjusted P-value"] < p_threshold].copy()
         desc = []
         for _, row in res.iterrows():
             go_id = row["ID"]
@@ -147,14 +151,9 @@ class Enrich:
                 logger.warning(f"Couldn't find term {go_id}, {go_name} in go_map")
                 desc.append("NA")
         res["Desc"] = desc
-        res = res[["ID", "Term", "Desc", "Adjusted P-value", "Genes"]].copy()        
-        return res
+        return res[["ID", "Term", "Desc", "Adjusted P-value", "Genes"]].copy()
 
-    def run(self, relevant_gene, tissue_name=None, coexpression_data=None):
-        """
-        Given a gene, return the enriched GO terms based on its co-expression network.
-        If coexpression_data is provided (from Dask task), use it instead of computing.
-        """
+    def _run_enrichr(self, relevant_gene, tissue_name=None, coexpression_data=None):
         library = "GO_Biological_Process_2023"
         organism = "Human"
         causal_gene_symbol = self.to_symbol(relevant_gene)
@@ -169,46 +168,75 @@ class Enrich:
         coexpression_result = self.get_coexpression_net(
             ensembl_gene, tissue_name, coexpression_data=coexpression_data
         )
-        
-        # Handle different return types (tuple for tissue-specific, list for fallback)
+
         if isinstance(coexpression_result, tuple):
             gene_list_ensembl, all_tissue_genes = coexpression_result
-            # Convert Ensembl IDs to HGNC symbols for both gene list and background
             gene_list = self.get_hgnc_syms(gene_list_ensembl)
-            
-            # Using background size (5000 genes) instead of all tissue genes
             max_background_size = 5000
             if len(all_tissue_genes) > max_background_size:
-                logger.info(f"Limiting background from {len(all_tissue_genes)} to {max_background_size} genes for better enrichment signal")
+                logger.info(
+                    f"Limiting background from {len(all_tissue_genes)} to "
+                    f"{max_background_size} genes for better enrichment signal"
+                )
                 background_genes_ensembl = all_tissue_genes[:max_background_size]
             else:
                 background_genes_ensembl = all_tissue_genes
-            
             background_genes = self.get_hgnc_syms(background_genes_ensembl)
             logger.info(
                 f"Running tissue-specific enrichment for {causal_gene_symbol} "
                 f"in {tissue_name}"
             )
-            logger.info(f"Using tissue-specific background: {len(background_genes)} genes from CellxGene analysis")
-            logger.info(f"Converted {len(gene_list_ensembl)} Ensembl IDs to {len(gene_list)} HGNC symbols")
+            logger.info(
+                f"Using tissue-specific background: {len(background_genes)} genes "
+                "from CellxGene analysis"
+            )
+            logger.info(
+                f"Converted {len(gene_list_ensembl)} Ensembl IDs to "
+                f"{len(gene_list)} HGNC symbols"
+            )
         else:
-            # Fallback case - no tissue specified or fallback data used (already HGNC symbols)
             gene_list = coexpression_result
             background_genes = self._load_fallback_background_data()
             logger.info(f"Running standard enrichment for {causal_gene_symbol}")
-        
+
         logger.info(f"Relevant Gene: {causal_gene_symbol}")
         logger.info(f"Gene list sample: {gene_list[:5] if gene_list else []}")
         logger.info(f"Total coexpressed genes: {len(gene_list) if gene_list else 0}")
-        
+
         if not gene_list:
             logger.warning("No coexpressed genes found, returning empty results")
+            return None
+
+        return gp.enrichr(
+            gene_list=gene_list,
+            gene_sets=library,
+            background=background_genes,
+            organism=organism,
+            outdir=None,
+        ).results
+
+    def run(self, relevant_gene, tissue_name=None, coexpression_data=None):
+        """
+        Given a gene, return the enriched GO terms based on its co-expression network.
+        If coexpression_data is provided (from Dask task), use it instead of computing.
+        """
+        raw = self._run_enrichr(relevant_gene, tissue_name, coexpression_data)
+        if raw is None:
             return pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes"])
-        
-        res = gp.enrichr(gene_list=gene_list,
-                         gene_sets=library,
-                         background=background_genes,
-                         organism=organism,
-                         outdir=None).results
-        
-        return self._process_enrichment_results(res)
+        return self._process_enrichment_results(raw)
+
+    def run_with_tables(self, relevant_gene, tissue_name=None, coexpression_data=None):
+        """
+        Like run(), but also returns the full parsed enrichr table (no p-value filter).
+        """
+        empty = pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes"])
+        raw = self._run_enrichr(relevant_gene, tissue_name, coexpression_data)
+        if raw is None:
+            return empty, empty
+        filtered = self._process_enrichment_results(raw, p_threshold=0.05)
+        all_terms = self._process_enrichment_results(raw, p_threshold=None)
+        logger.info(
+            f"Enrichr returned {len(all_terms)} GO terms; "
+            f"{len(filtered)} pass adj p < 0.05"
+        )
+        return filtered, all_terms
