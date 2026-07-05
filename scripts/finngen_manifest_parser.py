@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+from io import StringIO
 from typing import Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -73,17 +74,29 @@ def _parse_int(raw: str) -> Optional[int]:
 class FinnGenManifestParser:
     """Parser for FinnGen GWAS manifest files."""
 
-    def __init__(self, manifest_path: str):
+    def __init__(
+        self,
+        manifest_path: str,
+        *,
+        manifest_text: Optional[str] = None,
+    ):
         self.manifest_path = manifest_path
-        if not os.path.exists(manifest_path):
+        self.manifest_text = manifest_text
+        if manifest_text is None and not os.path.exists(manifest_path):
             raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
 
     def parse(self) -> List[Dict]:
         entries: List[Dict] = []
 
-        with open(self.manifest_path, "r", encoding="utf-8") as f:
+        if self.manifest_text is not None:
+            sample = self.manifest_text[:1024]
+            f = StringIO(self.manifest_text)
+        else:
+            f = open(self.manifest_path, "r", encoding="utf-8")
             sample = f.read(1024)
             f.seek(0)
+
+        try:
             delimiter = "\t" if "\t" in sample else ","
             reader = csv.DictReader(f, delimiter=delimiter)
 
@@ -99,6 +112,9 @@ class FinnGenManifestParser:
                         entries.append(entry)
                 except Exception as exc:
                     logger.warning(f"Error parsing FinnGen row {row_num}: {exc}")
+        finally:
+            if self.manifest_text is None:
+                f.close()
 
         logger.info(f"Parsed {len(entries)} FinnGen GWAS entries from manifest")
         return entries

@@ -236,6 +236,7 @@ jobs:
 
         # --- Seeding paths ---
         GWAS_MANIFEST_PATH=/app/data/Manifest_201807.csv
+        FINNGEN_MANIFEST_PATH=/app/data/finngen_R12_manifest.tsv
         PHENOTYPES_JSON_PATH=/app/data/gwas_catalog_phenotypes.json
         EOF
 
