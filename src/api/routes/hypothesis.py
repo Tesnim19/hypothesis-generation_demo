@@ -8,13 +8,20 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from src.api.dependencies import (
+    get_demo_template_handler,
     get_enrichment_handler,
     get_gene_expression_handler,
     get_hypothesis_handler,
     get_llm,
 )
 from src.api.auth import get_current_user_id
-from src.db import EnrichmentHandler, GeneExpressionHandler, HypothesisHandler
+from src.db import (
+    DemoTemplateHandler,
+    EnrichmentHandler,
+    GeneExpressionHandler,
+    HypothesisHandler,
+)
+from src.services.demo import resolve_hypothesis_data_user_id
 from src.services.llm import LLM
 from src.run_deployment import invoke_hypothesis_deployment
 from src.services.status_tracker import TaskState, status_tracker
@@ -45,10 +52,19 @@ async def get_hypothesis(
     hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
     enrichment: EnrichmentHandler = Depends(get_enrichment_handler),
     gene_expression: GeneExpressionHandler = Depends(get_gene_expression_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
 
     if id:
-        hypothesis = hypotheses.get_hypotheses(current_user_id, id)
+        data_user_id = resolve_hypothesis_data_user_id(
+            demo_templates, hypotheses, current_user_id, id
+        )
+        if not data_user_id:
+            raise HTTPException(
+                status_code=404, detail="Hypothesis not found or access denied."
+            )
+
+        hypothesis = hypotheses.get_hypotheses(data_user_id, id)
         if not hypothesis:
             raise HTTPException(
                 status_code=404, detail="Hypothesis not found or access denied."
@@ -64,14 +80,14 @@ async def get_hypothesis(
         pending_tasks = [t for t in task_history if t.get("state") == TaskState.STARTED.value]
         last_pending_task = [pending_tasks[-1]] if pending_tasks else []
 
-        confidence = extract_probability(hypothesis, enrichment, current_user_id)
+        confidence = extract_probability(hypothesis, enrichment, data_user_id)
         related_hypotheses = get_related_hypotheses(
-            hypothesis, hypotheses, enrichment, current_user_id
+            hypothesis, hypotheses, enrichment, data_user_id
         )
 
         if is_complete:
             enrich_id = hypothesis.get("enrich_id")
-            enrich_data = enrichment.get_enrich(current_user_id, enrich_id)
+            enrich_data = enrichment.get_enrich(data_user_id, enrich_id)
             if isinstance(enrich_data, dict):
                 enrich_data.pop("causal_graph", None)
 
@@ -108,7 +124,7 @@ async def get_hypothesis(
                     project_id = hypothesis.get("project_id")
                     if variant_id and project_id:
                         tissue_selection = gene_expression.get_tissue_selection(
-                            current_user_id, project_id, variant_id
+                            data_user_id, project_id, variant_id
                         )
                         if tissue_selection:
                             selected_tissue = tissue_selection.get("tissue_name")
@@ -141,7 +157,7 @@ async def get_hypothesis(
         if "enrich_id" in hypothesis and hypothesis.get("enrich_id") is not None:
             enrich_id = hypothesis.get("enrich_id")
             status_data["enrich_id"] = enrich_id
-            enrich_data = enrichment.get_enrich(current_user_id, enrich_id)
+            enrich_data = enrichment.get_enrich(data_user_id, enrich_id)
             if isinstance(enrich_data, dict):
                 enrich_data.pop("causal_graph", None)
             status_data["result"] = enrich_data
@@ -166,7 +182,7 @@ async def get_hypothesis(
                 project_id = hypothesis.get("project_id")
                 if variant_id and project_id:
                     tissue_selection = gene_expression.get_tissue_selection(
-                        current_user_id, project_id, variant_id
+                        data_user_id, project_id, variant_id
                     )
                     if tissue_selection:
                         selected_tissue = tissue_selection.get("tissue_name")

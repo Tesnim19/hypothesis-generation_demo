@@ -14,6 +14,7 @@ from .base_handler import BaseHandler
 from .gene_expression_handler import GeneExpressionHandler
 from .phenotype_handler import PhenotypeHandler
 from .gwas_library_handler import GWASLibraryHandler
+from .demo_template_handler import DemoTemplateHandler
 
 
 
@@ -29,6 +30,6 @@ __all__ = [
     'BaseHandler',
     'GeneExpressionHandler',
     'PhenotypeHandler',
-    'GWASLibraryHandler'
-
+    'GWASLibraryHandler',
+    'DemoTemplateHandler',
 ]

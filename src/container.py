@@ -18,6 +18,7 @@ from src.db import (
     GeneExpressionHandler,
     GWASLibraryHandler,
     PhenotypeHandler,
+    DemoTemplateHandler,
 )
 
 
@@ -82,4 +83,7 @@ class Container(containers.DeclarativeContainer):
     )
     gwas_library_handler = providers.ThreadSafeSingleton(
         GWASLibraryHandler, config.provided.mongodb_uri, config.provided.db_name
+    )
+    demo_template_handler = providers.ThreadSafeSingleton(
+        DemoTemplateHandler, config.provided.mongodb_uri, config.provided.db_name
     )
