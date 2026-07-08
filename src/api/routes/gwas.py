@@ -29,10 +29,25 @@ def _download_to_path_sync(url: str, path: str) -> int:
     return os.path.getsize(path)
 
 
+@router.get("/gwas-files/sources")
+async def get_gwas_file_sources(
+    gwas_library: GWASLibraryHandler = Depends(get_gwas_library_handler),
+):
+    try:
+        sources = gwas_library.get_source_counts()
+        return {"sources": sources}
+    except Exception as exc:
+        logger.error(f"Error fetching GWAS source counts: {exc}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to fetch GWAS sources: {exc}"
+        )
+
+
 @router.get("/gwas-files")
 async def get_gwas_files(
     search: str | None = Query(None),
     sex: str | None = Query(None),
+    source: str | None = Query(None),
     limit: int | None = Query(None),
     skip: int = Query(0),
     gwas_library: GWASLibraryHandler = Depends(get_gwas_library_handler),
@@ -42,7 +57,7 @@ async def get_gwas_files(
             limit = 100
 
         entries = gwas_library.get_all_gwas_entries(
-            search_term=search, sex_filter=sex, limit=limit, skip=skip
+            search_term=search, sex_filter=sex, source_filter=source, limit=limit, skip=skip
         )
 
         gwas_files: list[dict] = []
@@ -68,13 +83,17 @@ async def get_gwas_files(
                     entry, resolution
                 ),
             }
+            if entry.get("category"):
+                gwas_file_entry["category"] = entry.get("category")
             if entry.get("file_size"):
                 gwas_file_entry["file_size_mb"] = round(
                     entry["file_size"] / (1024 * 1024), 2
                 )
             gwas_files.append(gwas_file_entry)
 
-        total_count = gwas_library.get_entry_count(search_term=search, sex_filter=sex)
+        total_count = gwas_library.get_entry_count(
+            search_term=search, sex_filter=sex, source_filter=source
+        )
         return {
             "gwas_files": gwas_files,
             "total_files": total_count,

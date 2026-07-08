@@ -1,25 +1,39 @@
 """
-Parser for UK Biobank GWAS manifest files
+Parser for UK Biobank GWAS manifest files (Neale lab round 2).
 
 This module parses manifest files from UK Biobank GWAS results and
 extracts metadata for storage in the GWAS library collection.
 
-Expected manifest format (TSV):
-- Phenotype Code
-- Phenotype Description  
+Expected manifest format (CSV):
+- Phenotype Code              — UKB field ID (e.g. 100010)
+- Phenotype Description       — trait label
 - UK Biobank Data Showcase Link
-- Sex
-- File
-- wget command
-- AWS File
-- Dropbox File
-- md5s
+- Sex                         — both_sexes | male | female
+- File                        — summary-stat filename
+- wget command / AWS File / Dropbox File / md5s
+
+Note: UK Biobank manifests have no category column (unlike FinnGen).
+
+Sample input row (comma-separated):
+    Phenotype Code,Phenotype Description,UK Biobank Data Showcase Link,Sex,File,...
+    100010,Portion size,http://biobank.ctsu.ox.ac.uk/crystal/field.cgi?id=100010,both_sexes,100010.gwas.imputed_v3.both_sexes.tsv.bgz,...
+
+Sample parsed entry (subset):
+    {
+        "phenotype_code": "100010",
+        "description": "Portion size",
+        "sex": "both_sexes",
+        "source": "UK Biobank",
+        "aws_url": "https://broad-ukb-sumstats-us-east-1.s3.amazonaws.com/round2/additive-tsvs/100010.gwas.imputed_v3.both_sexes.tsv.bgz",
+        ...
+    }
 """
 
 import csv
-import re
 import os
+import re
 import time
+from io import StringIO
 
 import requests
 from loguru import logger
@@ -40,19 +54,23 @@ class GWASManifestParser:
         self,
         manifest_path: str,
         *,
+        manifest_text: Optional[str] = None,
         showcase_request_delay_sec: float = 0.0,
     ):
         """
         Args:
-            manifest_path: Path to the manifest TSV/CSV file.
+            manifest_path: Path to the manifest TSV/CSV file (used for logging and
+                showcase resolution when manifest_text is not provided).
+            manifest_text: Optional in-memory manifest body (e.g. loaded from MinIO).
             showcase_request_delay_sec: Sleep this many seconds before each *uncached*
                 showcase HTTP request (reduces rate limiting). 0 disables.
         """
         self.manifest_path = manifest_path
+        self.manifest_text = manifest_text
         self.showcase_request_delay_sec = float(showcase_request_delay_sec)
         self._showcase_n_cache: dict[str, Optional[int]] = {}
 
-        if not os.path.exists(manifest_path):
+        if manifest_text is None and not os.path.exists(manifest_path):
             raise FileNotFoundError(f"Manifest file not found: {manifest_path}")
     
     def parse(self) -> List[Dict]:
@@ -63,23 +81,26 @@ class GWASManifestParser:
             List[Dict]: List of dictionaries containing GWAS metadata
         """
         entries = []
-        
+
         try:
-            with open(self.manifest_path, 'r', encoding='utf-8') as f:
-                # Try to detect delimiter (tab or comma)
+            if self.manifest_text is not None:
+                sample = self.manifest_text[:1024]
+                f = StringIO(self.manifest_text)
+            else:
+                f = open(self.manifest_path, "r", encoding="utf-8")
                 sample = f.read(1024)
                 f.seek(0)
-                
-                delimiter = '\t' if '\t' in sample else ','
+
+            try:
+                delimiter = "\t" if "\t" in sample else ","
                 reader = csv.DictReader(f, delimiter=delimiter)
-                
-                # Normalize header names (handle different variations)
+
                 headers = reader.fieldnames
                 if not headers:
                     raise ValueError("Manifest file has no headers")
-                
+
                 logger.info(f"Found headers: {headers}")
-                
+
                 for row_num, row in enumerate(reader, start=2):
                     try:
                         entry = self._parse_row(row)
@@ -88,10 +109,13 @@ class GWASManifestParser:
                     except Exception as e:
                         logger.warning(f"Error parsing row {row_num}: {e}")
                         continue
-            
+            finally:
+                if self.manifest_text is None:
+                    f.close()
+
             logger.info(f"Successfully parsed {len(entries)} GWAS entries from manifest")
             return entries
-            
+
         except Exception as e:
             logger.error(f"Error reading manifest file: {e}")
             raise
