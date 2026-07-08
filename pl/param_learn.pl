@@ -2,44 +2,16 @@
 :- use_module(library(janus)).
 :- use_module(library(clpfd)).
 :- use_module(library(auc)).
-:- use_module(library(liftcover)).
 :- use_module(library(plstat)).
 :- use_module(library(http/json)).
-:- discontiguous relevant_gene/3.
-:- discontiguous neg/1.
-:- multifile relevant_gene/3.
-:- multifile neg/1.
-:- dynamic relevant_gene/3.
-:- dynamic neg/1.
-:- dynamic fold/2.
-:- lift.
 
-:- set_lift(verbosity, 3).
-:- set_lift(iter, -1).
-:- set_lift(random_restarts_number , 5).
-:- set_lift(neg_ex, given).
-:- set_lift(eps, 0.001).
-:- set_lift(threads, 20).
-
-:- begin_in.
-
-
-relevant_gene(G, S): 0.25 :- regulatory_effect(S, G).
-
-relevant_gene(G, S): 0.25 :- eqtl_association(S, G).
-relevant_gene(G, S): 0.25 :- activity_by_contact(S, G).
-
-relevant_gene(G, S): 0.25 :- pgboost(S, G).
-relevant_gene(G, S): 0.25 :- in_tad_with(S, G).
-% relevant_gene(G, S): 0.25 :- regulatory_effect(S, G), eqtl_association(S, G).
-% relevant_gene(G, S): 0.25 :- activity_by_contact(S, G), eqtl_association(S, G).
-% relevant_gene(G, S): 0.25 :- pgboost(S, G), regulatory_effect(S, G).
-
-:- end_in.
+:- include('train_rules.pl').
 
 run_param(_, _, [], [], [], [], [], [], [], []).
 run_param(Dir, Program, [Fold|RestFold], [LPH|LPT],
          [AROCH|AROCT], [APRH|ARPT], [ROCH|ROCT], [PRH|PRT], [Res|RRest], [Confs|ConfsRest]) :-
+  get_time(FoldStart),
+  format('Starting fold ~w at ~6f~n', [Fold, FoldStart]),
   load_train_fold(Dir, Fold, TrainFold),
   load_test_fold(Dir, Fold, TestFold),
   append(TrainFold, TestFold, AllF),
@@ -82,15 +54,21 @@ run_param(Dir, Program, [Fold|RestFold], [LPH|LPT],
   maplist(res_to_label_score, Res, LabelScores),
   py_call(inference_util:sklearn_roc_auc(LabelScores), AROCH),
   py_call(inference_util:sklearn_pr_auc(LabelScores), APRH),
+  format('Fold ~w metrics: AROC=~6f AUPRC=~6f~n', [Fold, AROCH, APRH]),
   retract_all(ModelsRef),
   retract_all([TrainFoldRef]),
   retract_all([TestFoldRef]),
   retract_all([AllFRef]),
   retract_all([ProgRef]),
+  get_time(FoldEnd),
+  FoldDuration is FoldEnd - FoldStart,
+  format('Finished fold ~w in ~2f seconds~n', [Fold, FoldDuration]),
   run_param(Dir, Program, RestFold, LPT, AROCT, ARPT,
    ROCT, PRT, RRest, ConfsRest).
 
 run_param_learning(Dir, NumFolds, AUCROC, AUCPR, M_AUCROC, S_AUCROC, M_AUCPR, S_AUCPR, Threshold, Results) :-
+  get_time(TotalStart),
+  format('Starting run_param_learning at ~6f~n', [TotalStart]),
   init_py,
   py_version,
   NFolds is NumFolds - 1,
@@ -121,7 +99,10 @@ run_param_learning(Dir, NumFolds, AUCROC, AUCPR, M_AUCROC, S_AUCROC, M_AUCPR, S_
   confusion_table(Results, Threshold, Dir, 0),
   format(atom(RocPath), '~w/charts/roc_plot.png', [Dir]),
   format(atom(PrPath), '~w/charts/pr_plot.png', [Dir]),
-  py_call(inference_util:plot_curves(ROC, PR, RocPath, PrPath), _RetVal).
+  py_call(inference_util:plot_curves(ROC, PR, RocPath, PrPath), _RetVal),
+  get_time(TotalEnd),
+  TotalDuration is TotalEnd - TotalStart,
+  format('Total run_param_learning time: ~2f seconds~n', [TotalDuration]).
 
 % Convert test_prob_lift result pair to [Label, Score] for sklearn
 res_to_label_score(Prob - \+(_), [0, Prob]) :- !.
