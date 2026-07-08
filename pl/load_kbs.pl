@@ -27,6 +27,8 @@
 :- multifile bto/1.
 :- multifile motif/1.
 :- multifile tad/1.
+:- multifile ccre_module/2.
+
 
 % Edge predicates
 :- multifile transcribed_to/2.
@@ -63,6 +65,12 @@
 :- multifile in_dnase_I_hotspot/2.
 :- multifile histone_modification/2.
 :- multifile distance/2.
+<<<<<<< HEAD
+=======
+:- multifile pgboost/2.
+:- multifile development_stage/2.
+:- multifile accessible_in/2.
+>>>>>>> 3f6d4355 (Use postgresql backed knowledge base for inference)
 
 % Properties
 :- multifile chr/2.
@@ -94,6 +102,8 @@
 :- multifile maf/2.
 :- multifile p_value/2.
 :- multifile accession_d/2.
+:- multifile accession_e/2.
+:- multifile taxon_id/2.
 
 % Additional binary predicates
 :- multifile synonyms/2.

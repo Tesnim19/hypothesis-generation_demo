@@ -1,5 +1,5 @@
 settings:
-  prolog_base: /mnt/hdd_1/biocypher-kg/output/prolog_out_v4
+  prolog_base: /data1/biocypher-kg/output/hsa/prolog_out_v4
 
 kbs:
   # === Gencode ===
@@ -81,7 +81,7 @@ kbs:
     path: cell_ontology
     nodes: true
     edges: true
-    loaded: false
+    loaded: true
 
   experimental_factor_ontology:
     path: experimental_factor_ontology
@@ -112,7 +112,7 @@ kbs:
     path: tfbs
     nodes: true
     edges: true
-    loaded: true
+    loaded: false
 
   fabian:
     path: fabian
@@ -148,23 +148,47 @@ kbs:
     path: ccre/enhancer_ccre
     nodes: true
     edges: true
-    loaded: true
+    loaded: false
 
   ccre_promoter:
     path: ccre/promoter_ccre
     nodes: true
     edges: true
-    loaded: true
+    loaded: false
 
   catlas_ccre_enhancer:
     path: catlas_ccre/enhancer
     nodes: true
+    edges: false
+    loaded: true
+
+  catlas_ccre_enhancer_clo:
+    path: catlas_ccre/enhancer/clo
+    nodes: false
+    edges: true
+    loaded: true
+
+  catlas_ccre_enhancer_uberon:
+    path: catlas_ccre/enhancer/uberon
+    nodes: false
     edges: true
     loaded: true
 
   catlas_ccre_promoter:
     path: catlas_ccre/promoter
     nodes: true
+    edges: false
+    loaded: true
+
+  catlas_ccre_promoter_clo:
+    path: catlas_ccre/promoter/clo
+    nodes: false
+    edges: true
+    loaded: true
+
+  catlas_ccre_promoter_uberon:
+    path: catlas_ccre/promoter/uberon
+    nodes: false
     edges: true
     loaded: true
 
@@ -214,7 +238,7 @@ kbs:
     path: tf_snp
     nodes: false
     edges: true
-    loaded: true
+    loaded: false
 
   # === Expression ===
   gtex_eqtl:
@@ -233,7 +257,7 @@ kbs:
     path: bgee
     nodes: false
     edges: true
-    loaded: false
+    loaded: true
 
   coxpressdb:
     path: coxpressdb
