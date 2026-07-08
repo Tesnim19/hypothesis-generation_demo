@@ -1,19 +1,32 @@
 """
-Parser for UK Biobank GWAS manifest files
+Parser for UK Biobank GWAS manifest files (Neale lab round 2).
 
 This module parses manifest files from UK Biobank GWAS results and
 extracts metadata for storage in the GWAS library collection.
 
-Expected manifest format (TSV):
-- Phenotype Code
-- Phenotype Description  
+Expected manifest format (CSV):
+- Phenotype Code              — UKB field ID (e.g. 100010)
+- Phenotype Description       — trait label
 - UK Biobank Data Showcase Link
-- Sex
-- File
-- wget command
-- AWS File
-- Dropbox File
-- md5s
+- Sex                         — both_sexes | male | female
+- File                        — summary-stat filename
+- wget command / AWS File / Dropbox File / md5s
+
+Note: UK Biobank manifests have no category column (unlike FinnGen).
+
+Sample input row (comma-separated):
+    Phenotype Code,Phenotype Description,UK Biobank Data Showcase Link,Sex,File,...
+    100010,Portion size,http://biobank.ctsu.ox.ac.uk/crystal/field.cgi?id=100010,both_sexes,100010.gwas.imputed_v3.both_sexes.tsv.bgz,...
+
+Sample parsed entry (subset):
+    {
+        "phenotype_code": "100010",
+        "description": "Portion size",
+        "sex": "both_sexes",
+        "source": "UK Biobank",
+        "aws_url": "https://broad-ukb-sumstats-us-east-1.s3.amazonaws.com/round2/additive-tsvs/100010.gwas.imputed_v3.both_sexes.tsv.bgz",
+        ...
+    }
 """
 
 import csv

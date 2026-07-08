@@ -2,13 +2,29 @@
 Parser for FinnGen GWAS manifest files (R12 public release).
 
 Expected manifest format (TSV):
-- phenocode
-- phenotype
-- category
-- num_cases
-- num_controls
-- path_bucket
-- path_https
+- phenocode       — FinnGen phenotype identifier (e.g. K11_UC_STRICT2)
+- phenotype       — human-readable trait name
+- category        — ICD-10 chapter / FinnGen disease grouping for UI browse/filter
+                    (e.g. "XI Digestive", "I Certain infectious and parasitic diseases (AB1_)")
+- num_cases       — case count for this GWAS
+- num_controls    — control count for this GWAS
+- path_bucket     — gs:// URL to the summary-stat file in FinnGen's public bucket
+- path_https      — HTTPS download URL (preferred when present)
+
+Sample input row (tab-separated):
+    phenocode    phenotype              category                                          num_cases  num_controls  path_https
+    K11_UC_STRICT2  Ulcerative colitis strict  XI Digestive                                  7220       492160        https://storage.googleapis.com/finngen-public-data-r12/summary_stats/release/finngen_R12_K11_UC_STRICT2.gz
+
+Sample parsed entry (subset):
+    {
+        "phenotype_code": "K11_UC_STRICT2",
+        "description": "Ulcerative colitis strict",
+        "category": "XI Digestive",
+        "source": "FinnGen",
+        "sample_size": 499380,
+        "aws_url": "https://storage.googleapis.com/finngen-public-data-r12/.../finngen_R12_K11_UC_STRICT2.gz",
+        ...
+    }
 """
 
 from __future__ import annotations
