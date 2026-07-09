@@ -1,0 +1,2 @@
+Train chromosomes: ['16', '7']
+Test chromosomes: ['4']

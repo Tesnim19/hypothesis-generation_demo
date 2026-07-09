@@ -48,8 +48,9 @@ contains_var_or_hideme(Term) :-
 
 is_true_term(t(true, true, [])).
 
-flatten([], []).
+flatten([], []) :- !.
 flatten([L|Ls], Flat) :-
+    !,
     flatten(L, NewL),
     flatten(Ls, NewLs),
     append(NewL, NewLs, Flat).
@@ -58,13 +59,36 @@ flatten(L, [L]).
 
 
 extract_nodes_edges([], [], []).
+extract_nodes_edges([in_credible_set(Subject, Object, PIP)|TermsTail], [Subject, Object|NodesTail], [Edge|Edges]) :- !,
+    Edge = [label(in_credible_set), source(Subject), target(Object), pip(PIP)],
+    extract_nodes_edges(TermsTail, NodesTail, Edges).
+
+extract_nodes_edges([activity_by_contact(Subject, Object, Score)|TermsTail], [Subject, Object|NodesTail], [Edge|Edges]) :- !,
+    Edge = [label(activity_by_contact), source(Subject), target(Object), score(Score)],
+    extract_nodes_edges(TermsTail, NodesTail, Edges).
+
+extract_nodes_edges([coding_effect(Subject, Object, Effect)|TermsTail], [Subject, Object|NodesTail], [Edge|Edges]) :- !,
+    Edge = [label(coding_effect), source(Subject), target(Object), effect(Effect)],
+    extract_nodes_edges(TermsTail, NodesTail, Edges).
+
+extract_nodes_edges([tfbs_effect(Subject, Object, Score, Effect)|TermsTail], [Subject, Object|NodesTail], [Edge|Edges]) :- !,
+    Edge = [label(tfbs_effect), source(Subject), target(Object), score(Score), effect(Effect)],
+    extract_nodes_edges(TermsTail, NodesTail, Edges).
+
 extract_nodes_edges([Term|TermsTail], [Subject, Object|NodesTail], [Edge|Edges]) :-
     functor(Term, Relation, Arity), 
     Arity >= 2, 
     arg(1, Term, Subject),
     arg(2, Term, Object),
-    Edge = [label(Relation), source(Subject), target(Object)],
+    edge_label(Relation, Label),
+    Edge = [label(Label), source(Subject), target(Object)],
     extract_nodes_edges(TermsTail, NodesTail, Edges).
+
+edge_label(regulatory_effect_1, regulatory_effect) :- !.
+edge_label(regulatory_effect_2, regulatory_effect) :- !.
+edge_label(regulatory_effect_3, regulatory_effect) :- !.
+edge_label(regulatory_effect_4, regulatory_effect) :- !.
+edge_label(Relation, Relation).
 
 node_to_json([], []).
 node_to_json([Node|Nodes], [json([id=NodeId, type=Type])|NodesJSON]) :-
@@ -75,6 +99,38 @@ node_to_json([Node|Nodes], [json([id=NodeId, type=Type])|NodesJSON]) :-
 
 
 edge_to_json([], []).
+edge_to_json([[label(Relation), source(Subject), target(Object), pip(PIP)]|Edges],
+        [json([source=Source, target=Target,
+                      label=Relation, pip=PIP])|EdgesJSON]) :-
+
+    arg(1, Subject, Source),
+    arg(1, Object, Target),
+    edge_to_json(Edges, EdgesJSON).
+
+edge_to_json([[label(Relation), source(Subject), target(Object), score(Score)]|Edges],
+        [json([source=Source, target=Target,
+                      label=Relation, score=Score])|EdgesJSON]) :-
+
+    arg(1, Subject, Source),
+    arg(1, Object, Target),
+    edge_to_json(Edges, EdgesJSON).
+
+edge_to_json([[label(Relation), source(Subject), target(Object), effect(Effect)]|Edges],
+        [json([source=Source, target=Target,
+                      label=Relation, effect=Effect])|EdgesJSON]) :-
+
+    arg(1, Subject, Source),
+    arg(1, Object, Target),
+    edge_to_json(Edges, EdgesJSON).
+
+edge_to_json([[label(Relation), source(Subject), target(Object), score(Score), effect(Effect)]|Edges],
+        [json([source=Source, target=Target,
+                      label=Relation, score=Score, effect=Effect])|EdgesJSON]) :-
+
+    arg(1, Subject, Source),
+    arg(1, Object, Target),
+    edge_to_json(Edges, EdgesJSON).
+
 edge_to_json([[label(Relation), source(Subject), target(Object)]|Edges], 
             [json([source=Source, target=Target, 
                                 label=Relation])|EdgesJSON]) :-
@@ -108,4 +164,4 @@ json_proof_tree(Proof-Count, NumSamples, Graph) :-
   JsonGraph = json([nodes=Nodes, edges=Edges]),
   Prob is Count / NumSamples,
   UpdatedGraph = json([nodes=Nodes, edges=Edges, prob=json([value=Prob])]),
-  atom_json_term(Graph, UpdatedGraph, []).
+    atom_json_term(Graph, UpdatedGraph, []).
