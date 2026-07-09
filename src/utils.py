@@ -11,6 +11,23 @@ import uuid
 from dask.distributed import get_worker
 
 
+POPULATION_LABELS: dict[str, str] = {
+    "EUR": "European",
+    "AFR": "African",
+    "AMR": "Admixed American",
+    "EAS": "East Asian",
+    "SAS": "South Asian",
+}
+
+
+def get_population_label(code: str | None) -> str | None:
+    """Return the human-readable population name for a given population code.
+    """
+    if not code:
+        return None
+    return POPULATION_LABELS.get(str(code).upper(), code)
+
+
 def normalize_status_responses(raw: str | None) -> str:
     """Map stored status strings to Running, Failed, or Completed (API / sockets)."""
     if raw is None or not str(raw).strip():
@@ -48,6 +65,11 @@ def analysis_state_for_public_api(state: dict | None) -> dict:
             out["message"] = "Waiting to start analysis."
 
     return out
+
+
+def project_running_task(analysis_state: dict | None) -> str:
+    """User-facing analysis pipeline step for GET /projects (uses normalized message)."""
+    return analysis_state_for_public_api(analysis_state).get("message") or ""
 
 
 def public_task_history_entries(entries: list | None) -> list:
@@ -315,6 +337,46 @@ def convert_variants_to_object_array(variants_data):
         result.append(variant_obj)
     
     return result
+
+
+N_LIKE_COLUMNS = frozenset({"n", "sample_size", "neff"})
+
+
+def _normalize_gwas_col(name: str) -> str:
+    return name.strip().lower().replace(" ", "_")
+
+
+def gwas_header_columns(file_path: str) -> list[str] | None:
+    """Return column names from the first line of a GWAS file, or None on failure."""
+    import gzip
+
+    if not file_path or not os.path.exists(file_path):
+        return None
+    try:
+        if file_path.endswith((".gz", ".bgz")):
+            with gzip.open(file_path, "rt") as fh:
+                header = fh.readline()
+        else:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+                header = fh.readline()
+        if not header.strip():
+            return None
+        sep = "\t" if "\t" in header else ","
+        return [col.strip() for col in header.split(sep)]
+    except OSError:
+        return None
+
+
+def gwas_file_has_n_column(file_path: str) -> bool:
+    """True if the GWAS header contains N, sample_size, Neff, or similar."""
+    cols = gwas_header_columns(file_path)
+    if not cols:
+        return False
+    for col in cols:
+        norm = _normalize_gwas_col(col)
+        if norm in N_LIKE_COLUMNS or ("sample" in norm and "size" in norm):
+            return True
+    return False
 
 
 def get_deps():    

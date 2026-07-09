@@ -8,7 +8,9 @@ from src.utils import (
     analysis_state_for_public_api,
     emit_analysis_update,
     get_deps,
+    get_population_label,
     normalize_status_responses,
+    project_running_task,
 )
 
 
@@ -196,22 +198,32 @@ def count_gwas_records(file_path):
         return 0
 
 
-def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, enrichment_handler, user_id, project_id, gene_expression_handler=None):
+def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_handler, enrichment_handler, user_id, project_id, gene_expression_handler=None, data_user_id=None, demo_flags=None):
     """Get comprehensive project data including state, hypotheses, and credible sets"""
     try:
+        query_user_id = data_user_id or user_id
         # Get basic project info
-        project = projects_handler.get_projects(user_id, project_id)
+        project = projects_handler.get_projects(query_user_id, project_id)
         if not project:
             return {"error": "Project not found"}, 404
+
+        if demo_flags:
+            display_name = demo_flags.get("display_name")
+            if display_name:
+                project = {**project, "name": display_name}
         
         # Get credible sets with simplified metadata
         credible_sets_data = []
         total_credible_sets_count = 0
         total_variants_count = 0
-        analysis_parameters = project.get("analysis_parameters", {})
+        analysis_parameters = dict(project.get("analysis_parameters") or {})
+        if project.get("population") is not None:
+            analysis_parameters["population"] = get_population_label(project["population"])
+        if project.get("ref_genome") is not None:
+            analysis_parameters["ref_genome"] = project["ref_genome"]
         
         try:
-            credible_sets_data = analysis_handler.get_credible_sets_for_project(user_id, project_id)
+            credible_sets_data = analysis_handler.get_credible_sets_for_project(query_user_id, project_id)
             if credible_sets_data:
                 total_credible_sets_count = len(credible_sets_data)
                 total_variants_count = sum(cs.get("variants_count", 0) for cs in credible_sets_data)
@@ -222,7 +234,7 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
             credible_sets_data = []
         
         # Get analysis state
-        analysis_state = projects_handler.load_analysis_state(user_id, project_id)
+        analysis_state = projects_handler.load_analysis_state(query_user_id, project_id)
         if not analysis_state:
             # Infer status from whether results exist
             if credible_sets_data and len(credible_sets_data) > 0:
@@ -236,10 +248,10 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
                     "message": "Waiting to start analysis.",
                 }
         
-        # Get hypotheses for this project
+        # Get hypotheses for this project (use demo owner when viewing shared demos)
         project_hypotheses = []
         try:
-            all_hypotheses = hypotheses_handler.get_hypotheses(user_id)
+            all_hypotheses = hypotheses_handler.get_hypotheses(query_user_id)
             if isinstance(all_hypotheses, list):
                 project_hypotheses = []
                 for h in all_hypotheses:
@@ -254,7 +266,9 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
                         # If no probability in hypothesis, try to get from enrichment data
                         if probability is None and h.get("enrich_id"):
                             try:
-                                enrich_data = enrichment_handler.get_enrich(user_id, h["enrich_id"])
+                                enrich_data = enrichment_handler.get_enrich(
+                                    query_user_id, h["enrich_id"]
+                                )
                                 if enrich_data and enrich_data.get("causal_graph"):
                                     causal_graph = enrich_data["causal_graph"]
                                     if isinstance(causal_graph, dict) and causal_graph.get("graph"):
@@ -282,7 +296,7 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
                                 variant_id = h.get("variant_rsid") or h.get("variant") or h.get("variant_id")
                                 if variant_id:
                                     tissue_selection = gene_expression_handler.get_tissue_selection(
-                                        user_id, project_id, variant_id
+                                        query_user_id, project_id, variant_id
                                     )
                                     if tissue_selection:
                                         selected_tissue = tissue_selection.get('tissue_name')
@@ -303,7 +317,7 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
         ldsc_data = None
         if gene_expression_handler:
             try:
-                ldsc_data = gene_expression_handler.get_ldsc_results_for_project(user_id, project_id, limit=10, format='summary')
+                ldsc_data = gene_expression_handler.get_ldsc_results_for_project(query_user_id, project_id, limit=10, format='summary')
                 if ldsc_data:
                     logger.info(f"Retrieved LDSC summary from MongoDB for project {project_id}")
             except Exception as ldsc_e:
@@ -320,6 +334,8 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
             # Summary counts at top level
             "total_credible_sets_count": total_credible_sets_count,
             "total_variants_count": total_variants_count,
+
+            "running_task": project_running_task(analysis_state),
             
             # Analysis state and parameters  
             "analysis_state": analysis_state_for_public_api(analysis_state),
@@ -334,6 +350,11 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
         
         if ldsc_data:
             response["ldsc"] = ldsc_data
+
+        if demo_flags:
+            response.update(
+                {k: v for k, v in demo_flags.items() if k != "display_name"}
+            )
         
         return response, 200
         

@@ -264,7 +264,7 @@ def execute_phenotype_query(phenotype, hypothesis_id):
         logger.info("Executing Prolog query to retrieve phenotype id...")
         deps = get_deps()
         prolog_query = deps["prolog_query"]
-        result = prolog_query.execute_query(f"term_name(efo(X), {phenotype})")
+        result = prolog_query.execute_query(f"term_name(efo(X), '{phenotype}')")
 
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -364,9 +364,21 @@ def create_hypothesis(enrich_id, go_id, variant_id, phenotype, causal_gene, caus
         )
         hypothesis_history = status_tracker.get_history(hypothesis_id)
         logger.info("Updating hypothesis in the database...")
+        clean_history_followup = []
+        for task in hypothesis_history:
+            task_copy = task.copy()
+            task_copy.pop("details", None)
+            clean_history_followup.append(task_copy)
+
+        limited_history_followup = (
+            clean_history_followup[-50:]
+            if len(clean_history_followup) > 50
+            else clean_history_followup
+        )
+
         hypothesis_data = {
-                "task_history": hypothesis_history,
-            }
+            "task_history": limited_history_followup,
+        }
         hypotheses.update_hypothesis(hypothesis_id, hypothesis_data)
 
         return hypothesis_id

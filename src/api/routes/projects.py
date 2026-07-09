@@ -12,15 +12,44 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 from werkzeug.utils import secure_filename
 
-from src.api.dependencies import _deps
-from src.api.auth import get_current_user_id
+from src.api.dependencies import (
+    get_analysis_handler,
+    get_config,
+    get_enrichment_handler,
+    get_file_handler,
+    get_gene_expression_handler,
+    get_gwas_library_handler,
+    get_hypothesis_handler,
+    get_project_handler,
+    get_storage,
+)
+from src.config import Config
+from src.db import (
+    AnalysisHandler,
+    DemoTemplateHandler,
+    EnrichmentHandler,
+    FileHandler,
+    GeneExpressionHandler,
+    GWASLibraryHandler,
+    HypothesisHandler,
+    ProjectHandler,
+)
 from src.tasks.project import count_gwas_records, get_project_with_full_data
+from src.api.auth import get_current_user_id, get_current_user_email
+from src.api.dependencies import get_demo_template_handler
+from src.services.demo import (
+    apply_demo_flags_to_owned_project,
+    build_demo_template_summaries,
+    resolve_project_access,
+)
 from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
     allowed_file,
     compute_file_md5,
+    get_population_label,
     get_shared_temp_dir,
     normalize_status_responses,
+    project_running_task,
     serialize_datetime_fields,
 )
 
@@ -31,14 +60,29 @@ router = APIRouter()
 async def get_projects(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    projects: ProjectHandler = Depends(get_project_handler),
+    analysis: AnalysisHandler = Depends(get_analysis_handler),
+    hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
+    enrichment: EnrichmentHandler = Depends(get_enrichment_handler),
+    gene_expression: GeneExpressionHandler = Depends(get_gene_expression_handler),
+    files: FileHandler = Depends(get_file_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
-    projects = _deps["projects"]
-    analysis = _deps["analysis"]
-    hypotheses = _deps["hypotheses"]
-    enrichment = _deps["enrichment"]
-    gene_expression = _deps.get("gene_expression")
 
     if id:
+        access = resolve_project_access(demo_templates, current_user_id, id)
+        demo_flags = None
+        if access.template:
+            fork_id = demo_templates.get_user_fork(current_user_id, id)
+            demo_flags = {
+                "is_demo": True,
+                "source_template_slug": access.template["slug"],
+                "has_forked": bool(fork_id),
+                "forked_project_id": fork_id,
+            }
+            if access.is_demo_read:
+                demo_flags["display_name"] = access.template["display_name"]
+
         response_data, status_code = get_project_with_full_data(
             projects,
             analysis,
@@ -47,13 +91,14 @@ async def get_projects(
             current_user_id,
             id,
             gene_expression_handler=gene_expression,
+            data_user_id=access.owner_user_id,
+            demo_flags=demo_flags,
         )
         if status_code == 200:
             response_data = serialize_datetime_fields(response_data)
         return JSONResponse(content=response_data, status_code=status_code)
 
     raw_projects = projects.get_projects(current_user_id)
-    files = _deps["files"]
     enhanced_projects: list[dict] = []
 
     for project in raw_projects:
@@ -72,11 +117,15 @@ async def get_projects(
             analysis_state = projects.load_analysis_state(current_user_id, project["id"])
             raw = analysis_state.get("status") if analysis_state else None
             enhanced["status"] = normalize_status_responses(raw)
+            enhanced["running_task"] = project_running_task(analysis_state)
         except Exception as state_e:
             logger.warning(f"Could not load analysis state for project {project['id']}: {state_e}")
             enhanced["status"] = normalize_status_responses("Completed")
+            enhanced["running_task"] = project_running_task(
+                {"status": "Completed", "message": "Analysis completed successfully."}
+            )
 
-        enhanced["population"] = project.get("population")
+        enhanced["population"] = get_population_label(project.get("population"))
         enhanced["ref_genome"] = project.get("ref_genome")
 
         total_credible_sets = 0
@@ -109,7 +158,25 @@ async def get_projects(
             logger.warning(f"Could not count hypotheses for {project['id']}: {hyp_e}")
 
         enhanced["hypothesis_count"] = hypothesis_count
+        enhanced.setdefault("is_demo", False)
+        enhanced = apply_demo_flags_to_owned_project(
+            enhanced,
+            current_user_id=current_user_id,
+            demo_templates=demo_templates,
+        )
         enhanced_projects.append(enhanced)
+
+    existing_ids = {project["id"] for project in enhanced_projects}
+    demo_entries = build_demo_template_summaries(
+        current_user_id=current_user_id,
+        demo_templates=demo_templates,
+        projects=projects,
+        analysis=analysis,
+        hypotheses=hypotheses,
+        files=files,
+        existing_project_ids=existing_ids,
+    )
+    enhanced_projects = demo_entries + enhanced_projects
 
     return {"projects": serialize_datetime_fields(enhanced_projects)}
 
@@ -118,12 +185,17 @@ async def get_projects(
 async def delete_project(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    projects: ProjectHandler = Depends(get_project_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
     if not id:
         raise HTTPException(status_code=400, detail="Project ID is required")
-    projects = _deps["projects"]
-    success = projects.delete_project(current_user_id, id)
-    if success:
+    if demo_templates.is_registered_template_project(id):
+        raise HTTPException(status_code=403, detail="Demo template projects cannot be deleted")
+    result = projects.delete_project(current_user_id, id)
+    if result is False:
+        raise HTTPException(status_code=500, detail="Failed to delete project")
+    if isinstance(result, dict) and result.get("deleted_count", 0) > 0:
         return {"message": "Project deleted successfully"}
     raise HTTPException(status_code=404, detail="Project not found or access denied")
 
@@ -132,8 +204,9 @@ async def delete_project(
 async def bulk_delete_projects(
     data: dict = Body(...),
     current_user_id: str = Depends(get_current_user_id),
+    projects: ProjectHandler = Depends(get_project_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
-    projects = _deps["projects"]
     project_ids = data.get("project_ids")
 
     if not project_ids:
@@ -145,6 +218,15 @@ async def bulk_delete_projects(
     if not project_ids:
         raise HTTPException(
             status_code=400, detail="project_ids list cannot be empty"
+        )
+
+    protected = [
+        pid for pid in project_ids if demo_templates.is_registered_template_project(pid)
+    ]
+    if protected:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Demo template projects cannot be deleted: {protected}",
         )
 
     result = projects.bulk_delete_projects(current_user_id, project_ids)
@@ -175,6 +257,12 @@ async def bulk_delete_projects(
 async def post_analysis_pipeline(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
+    projects: ProjectHandler = Depends(get_project_handler),
+    files: FileHandler = Depends(get_file_handler),
+    config: Config = Depends(get_config),
+    storage=Depends(get_storage),
+    gwas_library: GWASLibraryHandler = Depends(get_gwas_library_handler),
+    current_user_email: str | None = Depends(get_current_user_email),
 ):
     try:
         form = await request.form()
@@ -193,13 +281,16 @@ async def post_analysis_pipeline(
         coverage: float = float(form.get("coverage", 0.95))
         min_abs_corr: float = float(form.get("min_abs_corr", 0.5))
         batch_size: int = int(form.get("batch_size", 5))
-        sample_size: int = int(form.get("sample_size", 10000))
-
-        projects = _deps["projects"]
-        files = _deps["files"]
-        config = _deps["config"]
-        storage = _deps.get("storage")
-        gwas_library = _deps.get("gwas_library")
+        _ss = form.get("sample_size")
+        try:
+            form_sample_size: int | None = (
+                int(_ss) if _ss not in (None, "") else None
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="sample_size must be an integer when provided",
+            )
 
         gwas_entry = None
         file_id_param: str | None = form.get("gwas_file") if not is_uploaded else None
@@ -470,6 +561,12 @@ async def post_analysis_pipeline(
                 source=source,
             )
 
+        sample_size_resolution = GWASLibraryHandler.resolve_sample_size_info(
+            gwas_entry if not is_uploaded else None,
+            form_sample_size,
+        )
+        sample_size_n = sample_size_resolution.pipeline_value
+
         analysis_parameters = {
             "maf_threshold": maf_threshold,
             "seed": seed,
@@ -479,6 +576,10 @@ async def post_analysis_pipeline(
             "min_abs_corr": min_abs_corr,
             "batch_size": batch_size,
             "max_workers": max_workers,
+            "sample_size": sample_size_n,
+            "sample_size_source": sample_size_resolution.source,
+            "sample_size_message": sample_size_resolution.message,
+            "sample_size_is_user_provided": sample_size_resolution.is_user_provided,
         }
 
         project_id = projects.create_project(
@@ -489,6 +590,7 @@ async def post_analysis_pipeline(
             population=population,
             ref_genome=ref_genome,
             analysis_parameters=analysis_parameters,
+            user_email=current_user_email,
         )
 
         metadata_dir = os.path.join("data", "metadata", str(current_user_id))
@@ -510,6 +612,12 @@ async def post_analysis_pipeline(
         total_time = (datetime.now() - start_time).total_seconds()
         logger.info(f"[API] Project {project_id} ready in {total_time:.1f}s, firing Prefect")
 
+        logger.info(
+            f"[API] Pipeline sample_size={sample_size_n} "
+            f"(source={sample_size_resolution.source}, form={form_sample_size}, "
+            f"library_entry={not is_uploaded and gwas_entry is not None})"
+        )
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None,
@@ -527,7 +635,7 @@ async def post_analysis_pipeline(
                 L=L,
                 coverage=coverage,
                 min_abs_corr=min_abs_corr,
-                sample_size=sample_size,
+                sample_size=sample_size_n,
                 file_metadata_id=file_metadata_id if _file_needs_processing else None,
                 file_needs_processing=_file_needs_processing,
                 file_storage_key=object_key if _file_needs_processing else None,
@@ -536,6 +644,8 @@ async def post_analysis_pipeline(
                 file_source_download_url=_source_download_url,
                 file_minio_cache_key=_minio_cache_key,
                 file_gwas_library_id=_gwas_library_id,
+                user_email=current_user_email,      
+                project_name=project_name,          
             ),
         )
 
@@ -544,6 +654,7 @@ async def post_analysis_pipeline(
             "project_id": project_id,
             "file_id": file_metadata_id,
             "message": "Analysis pipeline started successfully",
+            **sample_size_resolution.to_api_dict(),
         }
 
     except HTTPException:

@@ -52,9 +52,11 @@ dependencies = [
     "boto3>=1.35.0",
     "prefect-dask",
     "dask[distributed]",
-    "openpyxl>=3.1.5",
-    "duckdb>=1.5.2",
+    "statsmodels>=0.14.0",
+    "dependency-injector>=4.41",
+    "fastapi-mail>=1.4.0",
 ]
 
 [project.optional-dependencies]
 r-integration = ["rpy2>=3.5.0,<3.6.0"]
+dev = ["pytest>=8.0.0"]

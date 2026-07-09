@@ -261,7 +261,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6399:6379"
+      - "6309:6379"
     networks:
       - app_network
     healthcheck:

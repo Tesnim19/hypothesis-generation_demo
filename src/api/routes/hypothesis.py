@@ -7,8 +7,22 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from src.api.dependencies import _deps
+from src.api.dependencies import (
+    get_demo_template_handler,
+    get_enrichment_handler,
+    get_gene_expression_handler,
+    get_hypothesis_handler,
+    get_llm,
+)
 from src.api.auth import get_current_user_id
+from src.db import (
+    DemoTemplateHandler,
+    EnrichmentHandler,
+    GeneExpressionHandler,
+    HypothesisHandler,
+)
+from src.services.demo import resolve_hypothesis_data_user_id
+from src.services.llm import LLM
 from src.run_deployment import invoke_hypothesis_deployment
 from src.services.status_tracker import TaskState, status_tracker
 from src.tasks import extract_probability, get_related_hypotheses
@@ -35,13 +49,22 @@ def _response_from_hypothesis_document(hypothesis_id: str, doc: dict | None) -> 
 async def get_hypothesis(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
+    enrichment: EnrichmentHandler = Depends(get_enrichment_handler),
+    gene_expression: GeneExpressionHandler = Depends(get_gene_expression_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
-    hypotheses = _deps["hypotheses"]
-    enrichment = _deps["enrichment"]
-    gene_expression = _deps.get("gene_expression")
 
     if id:
-        hypothesis = hypotheses.get_hypotheses(current_user_id, id)
+        data_user_id = resolve_hypothesis_data_user_id(
+            demo_templates, hypotheses, current_user_id, id
+        )
+        if not data_user_id:
+            raise HTTPException(
+                status_code=404, detail="Hypothesis not found or access denied."
+            )
+
+        hypothesis = hypotheses.get_hypotheses(data_user_id, id)
         if not hypothesis:
             raise HTTPException(
                 status_code=404, detail="Hypothesis not found or access denied."
@@ -57,14 +80,14 @@ async def get_hypothesis(
         pending_tasks = [t for t in task_history if t.get("state") == TaskState.STARTED.value]
         last_pending_task = [pending_tasks[-1]] if pending_tasks else []
 
-        confidence = extract_probability(hypothesis, enrichment, current_user_id)
+        confidence = extract_probability(hypothesis, enrichment, data_user_id)
         related_hypotheses = get_related_hypotheses(
-            hypothesis, hypotheses, enrichment, current_user_id
+            hypothesis, hypotheses, enrichment, data_user_id
         )
 
         if is_complete:
             enrich_id = hypothesis.get("enrich_id")
-            enrich_data = enrichment.get_enrich(current_user_id, enrich_id)
+            enrich_data = enrichment.get_enrich(data_user_id, enrich_id)
             if isinstance(enrich_data, dict):
                 enrich_data.pop("causal_graph", None)
 
@@ -101,7 +124,7 @@ async def get_hypothesis(
                     project_id = hypothesis.get("project_id")
                     if variant_id and project_id:
                         tissue_selection = gene_expression.get_tissue_selection(
-                            current_user_id, project_id, variant_id
+                            data_user_id, project_id, variant_id
                         )
                         if tissue_selection:
                             selected_tissue = tissue_selection.get("tissue_name")
@@ -134,7 +157,7 @@ async def get_hypothesis(
         if "enrich_id" in hypothesis and hypothesis.get("enrich_id") is not None:
             enrich_id = hypothesis.get("enrich_id")
             status_data["enrich_id"] = enrich_id
-            enrich_data = enrichment.get_enrich(current_user_id, enrich_id)
+            enrich_data = enrichment.get_enrich(data_user_id, enrich_id)
             if isinstance(enrich_data, dict):
                 enrich_data.pop("causal_graph", None)
             status_data["result"] = enrich_data
@@ -159,7 +182,7 @@ async def get_hypothesis(
                 project_id = hypothesis.get("project_id")
                 if variant_id and project_id:
                     tissue_selection = gene_expression.get_tissue_selection(
-                        current_user_id, project_id, variant_id
+                        data_user_id, project_id, variant_id
                     )
                     if tissue_selection:
                         selected_tissue = tissue_selection.get("tissue_name")
@@ -202,9 +225,9 @@ async def post_hypothesis(
     id: str | None = Query(None, alias="id"),
     go: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
 ):
     """Generate hypothesis synchronously and return graph + summary immediately."""
-    hypotheses = _deps["hypotheses"]
     enrich_id = id
     go_id = go
 
@@ -306,8 +329,8 @@ async def post_hypothesis(
 async def delete_hypothesis(
     hypothesis_id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
+    hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
 ):
-    hypotheses = _deps["hypotheses"]
     if hypothesis_id:
         return hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
     raise HTTPException(status_code=400, detail="Hypothesis ID is required")
@@ -317,8 +340,8 @@ async def delete_hypothesis(
 async def bulk_delete_hypotheses(
     data: dict = Body(...),
     current_user_id: str = Depends(get_current_user_id),
+    hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
 ):
-    hypotheses = _deps["hypotheses"]
     hypothesis_ids = data.get("hypothesis_ids")
 
     if not hypothesis_ids:
@@ -340,13 +363,12 @@ async def bulk_delete_hypotheses(
 async def chat(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
+    hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
+    llm: LLM = Depends(get_llm),
 ):
     form = await request.form()
     query = form.get("query")
     hypothesis_id = form.get("hypothesis_id")
-
-    hypotheses = _deps["hypotheses"]
-    llm = _deps["llm"]
 
     hypothesis = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
     if not hypothesis:

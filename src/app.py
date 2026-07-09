@@ -11,13 +11,16 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from src.config import Config, create_dependencies
+from src.config import Config
+from src.api.dependencies import init_container
+from src.container import Container
 from src.logging_config import setup_logging
 from src.socketio_instance import sio
 from src.services.socketio_relay import relay_subscribe_forever
 from src.services.status_tracker import StatusTracker
 from src.api import router
-from src.api.dependencies import init_deps
+from src.services.mail import init_mail
+
 
 
 
@@ -52,16 +55,31 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        deps = create_dependencies(config)
+        container = Container()
+        container.config.override(config)
+        init_container(container)
+        container.wire(modules=["src.api.socketio"])
+
         status_tracker = StatusTracker()
-        status_tracker.initialize(deps["tasks"], redis_url=deps["redis_url"])
-        init_deps(deps)
+        status_tracker.initialize(container.task_handler(), redis_url=config.redis_url)
+        if config.mail_server:
+            init_mail(
+                mail_username=config.mail_username,
+                mail_password=config.mail_password,
+                mail_from=config.mail_from,
+                mail_server=config.mail_server,
+                mail_port=config.mail_port,
+                mail_tls=config.mail_tls,
+                mail_ssl=config.mail_ssl,
+            )
+            logger.info("Mail service initialized")
+        else:
+            logger.warning("MAIL_SERVER not set - email notifications disabled")
 
 
         relay_task: asyncio.Task[None] | None = None
-        redis_url = deps.get("redis_url")
-        if redis_url:
-            relay_task = asyncio.create_task(relay_subscribe_forever(redis_url, sio))
+        if config.redis_url:
+            relay_task = asyncio.create_task(relay_subscribe_forever(config.redis_url, sio))
             logger.info("Socket.IO Redis relay subscriber started")
         else:
             logger.warning("REDIS_URL not set - live Socket.IO relay from workers is disabled")
@@ -76,6 +94,7 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
                     await relay_task
                 except asyncio.CancelledError:
                     pass
+            container.unwire()
         logger.info("Application shutting down")
 
     fastapi_app = FastAPI(
