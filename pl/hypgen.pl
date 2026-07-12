@@ -43,7 +43,7 @@
 :- include('inference_rules.pl').
 % :- include('train_rules.pl')
 % :- include('param_learn.pl').
-% :- include('server.pl').
+:- include('server.pl').
 :- include('hypgen_server.pl').
 :- include('meta_interpreter.pl').
 :- include('json_util.pl').
@@ -51,7 +51,7 @@
 
 init :- 
     format("Loading atomspace...~n", []),
-    load_atomspace,
+    % load_atomspace,
     % set_prolog_flag(stack_limit, 103_079_215_104), 
     % format("Asserting background rules & knowledge...~n", []),
     % findall(F, bgc(F), Facts),
