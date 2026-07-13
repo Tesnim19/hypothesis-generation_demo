@@ -1,7 +1,8 @@
-from .config import Config, create_dependencies
-from .logging import setup_logging
+from .logging_config import setup_logging
 from .socketio_instance import sio
 from .status_tracker import StatusTracker, TaskState, status_tracker
+from .deps import create_dependencies
+from .config import get_settings, Settings
 from .utils import (
     allowed_file,
     compute_file_md5,
@@ -14,7 +15,8 @@ from .utils import (
 )
 
 __all__ = [
-    "Config",
+    "Settings",
+    "get_settings",
     "create_dependencies",
     "setup_logging",
     "sio",

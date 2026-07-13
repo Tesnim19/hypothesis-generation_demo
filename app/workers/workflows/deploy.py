@@ -10,23 +10,12 @@ from app.workers.workflows.flows import (
     child_enrichment_batch_flow,
     # hypothesis_flow,  # Commented out - handled synchronously in POST /hypothesis
 )
-from app.core.config import Config
+from app.core.config import get_settings
 from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-def parse_deployment_arguments():
-    """Parse arguments for deployment service"""
-    parser = argparse.ArgumentParser(description="Prefect Deployment Service")
-    parser.add_argument("--ensembl-hgnc-map", type=str, required=True)
-    parser.add_argument("--hgnc-ensembl-map", type=str, required=True)
-    parser.add_argument("--go-map", type=str, required=True)
-    parser.add_argument("--swipl-host", type=str, default="localhost")
-    parser.add_argument("--swipl-port", type=int, default=4242)
-    parser.add_argument("--embedding-model", type=str, default="w601sxs/b1ade-embed-kd")
-    return parser.parse_args()
 
 def setup_deployments(config):
     """Create and configure Prefect deployments"""
@@ -78,14 +67,8 @@ def main():
     load_dotenv()
     
     # Try to get config from arguments first, fallback to environment
-    try:
-        args = parse_deployment_arguments()
-        config = Config.from_args(args)
-        logger.info("✅ Configuration loaded from command line arguments")
-    except SystemExit:
-        # If no args provided, use environment variables
-        config = Config.from_env()
-        logger.info("✅ Configuration loaded from environment variables")
+    config = get_settings() 
+    logger.info("✅ Configuration loaded")
     
     # Validate critical configuration
     if not all([config.ensembl_hgnc_map, config.hgnc_ensembl_map, config.go_map]):

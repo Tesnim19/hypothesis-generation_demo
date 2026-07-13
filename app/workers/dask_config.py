@@ -14,16 +14,13 @@ def dask_setup(worker):
     logger.info(f"[DASK PRELOAD] Worker ID: {getattr(worker, 'id', 'unknown')}")
     
     try:
-        from config import create_dependencies, Config
-        from status_tracker import status_tracker
+        from app.core.config import get_settings
+        from app.core.deps import create_dependencies
         
-        config = Config.from_env()
+        config = get_settings()
         logger.info("[DASK PRELOAD] Config created, creating dependencies...")
         deps = create_dependencies(config)
         logger.info("[DASK PRELOAD] Dependencies created successfully")
-        
-        # Initialize StatusTracker singleton for this worker
-        status_tracker.initialize(deps['tasks'])
         
         worker.deps = deps
         logger.info("[DASK PRELOAD] Worker dependencies set up successfully!")

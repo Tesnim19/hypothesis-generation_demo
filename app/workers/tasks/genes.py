@@ -13,10 +13,10 @@ import cellxgene_census
 import tiledbsoma as soma
 import multiprocessing
 import re
-from app.core.config import Config
 import shutil
 import pickle
 from app.core.utils import get_deps
+from app.core.config import get_settings
 
 try:
     import warnings
@@ -158,7 +158,7 @@ def process_ldsc_results(results_dir, output_prefix, top_n=10):
 @task(log_prints=True)
 def load_ontology_mappings(work_dir):
     """Load mappings - uses shared cache directory from config"""
-    config = Config.from_env()
+    config = get_settings() 
     cache_dir = Path(config.ontology_cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     

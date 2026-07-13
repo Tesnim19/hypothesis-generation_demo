@@ -30,8 +30,9 @@ from prefect_dask import DaskTaskRunner
 import os
 from uuid import uuid4
 
-from app.core.utils import emit_task_update, get_deps
-from app.core.config import Config, create_dependencies
+from app.core.utils import emit_task_update
+from app.core.config import get_settings
+from app.core.deps import create_dependencies
 
 
 ### Enrichment Flow
@@ -45,21 +46,13 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
     Fully project-based enrichment flow that initializes dependencies from centralized config
     """
     # Initialize dependencies from environment variables
-    config = Config.from_env()
+    config = get_settings()
     deps = create_dependencies(config)
-    
-    # Initialize StatusTracker for Prefect context
-    from app.core.status_tracker import StatusTracker
-    status_tracker = StatusTracker()
-    status_tracker.initialize(deps['tasks'])
     
     enrichr = deps['enrichr']
     llm = deps['llm']
-    prolog_query = deps['prolog_query']
     hypotheses = deps['hypotheses']
     gene_expression = deps['gene_expression']
-    projects = deps['projects']
-    enrichment = deps['enrichment']
     
     try:
         logger.info(f"Running project-based enrichment for project {project_id}, variant {variant}")
@@ -257,8 +250,9 @@ def child_enrichment_batch_flow(current_user_id, child_enrich_ids, parent_hypoth
     """
     logger.info(f"[CHILD_BATCH] Starting batch processing for {len(child_enrich_ids)} child enrichments")
     
-    config = Config.from_env()
+    config = get_settings()
     deps = create_dependencies(config)
+
     hypotheses = deps['hypotheses']
     enrichment = deps['enrichment']
 
@@ -345,10 +339,10 @@ def child_enrichment_batch_flow(current_user_id, child_enrich_ids, parent_hypoth
     task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
 )
 def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
-    config = Config.from_env()
+    config = get_settings()
     deps = create_dependencies(config)
+
     hypotheses = deps['hypotheses']
-    enrichment = deps['enrichment']
  
     hypothesis = check_hypothesis.submit(current_user_id, enrich_id, go_id, hypothesis_id).result()
     if hypothesis:
@@ -538,7 +532,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path, ref_genome="GRCh
         
         logger.info(f"[PIPELINE] Stage 3: COJO analysis")
        
-        config = Config.from_env()
+        config = get_settings()
         plink_dir = config.get_plink_dir(ref_genome)
         cojo_result = run_cojo_per_chromosome.submit(significant_df, plink_dir, output_dir, maf_threshold=maf_threshold, population=population, ref_genome=ref_genome).result()
         

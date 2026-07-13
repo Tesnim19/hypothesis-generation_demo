@@ -2,7 +2,6 @@ from collections import namedtuple
 from typing import List, Optional
 import pickle
 import gseapy as gp
-from app.core.config import Config, create_dependencies
 from app.workers.tasks.genes import get_coexpression_matrix_for_tissue
 import pandas as pd
 from loguru import logger
@@ -11,7 +10,7 @@ from loguru import logger
 class Enrich:
 
     def __init__(self, ensembl_hgnc_map_path, hgnc_ensembl_map_path,
-                 go_map_path):
+                 go_map_path, data_dir, gene_expression_handler):
 
         with open(ensembl_hgnc_map_path, "rb") as f:
             self.ensembl_hgnc_map = pickle.load(f)
@@ -19,18 +18,19 @@ class Enrich:
             self.hgnc_ensembl_map = pickle.load(f)
         with open(go_map_path, "rb") as f:
             self.go_map = pickle.load(f)
-        
-        self.config = Config.from_env()
+
+        self.data_dir = data_dir # added data dir as a parameter instead of getting it from config
+        self.gene_expression = gene_expression_handler
 
     def _load_fallback_coexpression_data(self) -> List[str]:
         """Load hardcoded brown preadipocytes coexpression data as fallback."""
-        fallback_path = f"{self.config.data_dir}/brown_preadipocytes_irx3_corr_top_500_genes.pkl"
+        fallback_path = f"{self.data_dir}/brown_preadipocytes_irx3_corr_top_500_genes.pkl"
         with open(fallback_path, "rb") as f:
             return pickle.load(f)
     
     def _load_fallback_background_data(self) -> List[str]:
         """Load hardcoded brown preadipocytes background genes as fallback."""
-        fallback_path = f"{self.config.data_dir}/brown_preadipocytes_irx3_corr_background_genes.pkl"
+        fallback_path = f"{self.data_dir}/brown_preadipocytes_irx3_corr_background_genes.pkl"
         with open(fallback_path, "rb") as f:
             return pickle.load(f)
     
@@ -38,11 +38,9 @@ class Enrich:
         """
         Retrieve UBERON ID from database for a given tissue name.
         """
-        deps = create_dependencies(self.config)
-        gene_expression = deps['gene_expression']
         
         # Retrieve tissue mapping from database
-        tissue_mapping = gene_expression.get_tissue_mapping(user_id, project_id, tissue_name)
+        tissue_mapping = self.gene_expression.get_tissue_mapping(user_id, project_id, tissue_name)
         
         if not tissue_mapping:
             return None
