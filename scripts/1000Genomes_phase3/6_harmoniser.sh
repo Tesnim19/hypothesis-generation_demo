@@ -333,7 +333,10 @@ chromlist_from_ssf() {
 # Detect if input is already in SSF format — skip reformatting (same logic as notebook)
 _check_reader="cat"
 case "$SUMSTATS" in *.gz|*.bgz) _check_reader="bgzip -dc";; esac
-_header=$($_check_reader "$SUMSTATS" | head -1 | tr '[:upper:]' '[:lower:]')
+_header=$(
+  set +o pipefail
+  $_check_reader "$SUMSTATS" | head -1 | tr '[:upper:]' '[:lower:]'
+)
 
 if echo "$_header" | grep -q "base_pair_location" && echo "$_header" | grep -q "effect_allele"; then
   echo "Input is already in SSF format — skipping reformatting"

@@ -85,15 +85,12 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
             variant_nodes = [n for n in graph.get("nodes", []) if n.get("type") == "snp"]
 
             gene_id, gene_name = extract_causal_gene_from_graph(graph, variant_nodes)
-
-            # Use extracted gene or fail
-            extracted_gene = gene_name or gene_id
-            if not extracted_gene:
+            if not (gene_id or gene_name):
                 error_msg = f"No causal gene found in graph {idx+1}/{len(graphs_with_prob)} (prob={prob:.3f}). Graph may contain no genes or no direct SNP-gene connections."
                 logger.error(error_msg)
                 raise ValueError(error_msg)
 
-            this_causal_gene = extracted_gene
+            this_causal_gene = enrichr.to_symbol(gene_name or gene_id)
             logger.info(f"Graph {idx+1}: Extracted causal gene '{this_causal_gene}' (prob={prob:.3f})")
             graph_genes.append((idx, this_causal_gene))
 
@@ -118,14 +115,22 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         # Create enrichments for all graphs
         enrichment_data = []
         main_enrichment_id = None
-        shared_enrichment_cache = {}  # Cache for shared enrichments
+        # Values: tuple (relevant_gos list, enrichment_run_meta dict) for reproducible causal_graph meta
+        shared_enrichment_cache: dict[str, tuple] = {}
+        primary_enrichment_meta: dict | None = None
 
         for idx, (original_i, graph, prob) in enumerate(graphs_with_prob):
             this_causal_gene = graph_genes[idx][1]
 
+            enrichment_run_meta = {
+                "attempted_ldsc_cell_type": selected_tissue,
+                "non_tissue_specific_fallback": False,
+                "effective_enrichment_mode": "tissue" if selected_tissue else "non_tissue",
+            }
+
             if use_shared_enrichment and this_causal_gene in shared_enrichment_cache:
                 logger.info(f"Reusing shared enrichment for gene {this_causal_gene}")
-                relevant_gos = shared_enrichment_cache[this_causal_gene]
+                relevant_gos, enrichment_run_meta = shared_enrichment_cache[this_causal_gene]
             else:
                 # Run enrichment for this specific gene
                 logger.info(f"Running enrichment for gene {this_causal_gene} (graph {idx+1}/{len(graphs_with_prob)})")
@@ -139,13 +144,22 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 )
 
                 if selected_tissue:
+                    ensembl_gene = enrichr.to_ensembl_id(this_causal_gene) or this_causal_gene
                     coexpression_data = get_coexpression_matrix_for_tissue.submit(
-                        this_causal_gene, selected_tissue, k=500
+                        ensembl_gene, selected_tissue, k=500
                     ).result()
                     enrich_tbl = enrichr.run(
                         this_causal_gene, tissue_name=selected_tissue,
                         coexpression_data=coexpression_data
                     )
+                    if enrich_tbl is None or len(enrich_tbl) == 0:
+                        logger.warning(
+                            f"Tissue '{selected_tissue}' produced no enrichment for {this_causal_gene}; "
+                            f"retrying with non–tissue-specific enrichment (fallback reference network)."
+                        )
+                        enrich_tbl = enrichr.run(this_causal_gene)
+                        enrichment_run_meta["non_tissue_specific_fallback"] = True
+                        enrichment_run_meta["effective_enrichment_mode"] = "non_tissue_fallback_from_tissue"
                 else:
                     enrich_tbl = enrichr.run(this_causal_gene)
 
@@ -158,7 +172,22 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
 
                 # Cache if shared
                 if use_shared_enrichment:
-                    shared_enrichment_cache[this_causal_gene] = relevant_gos
+                    shared_enrichment_cache[this_causal_gene] = (relevant_gos, dict(enrichment_run_meta))
+
+            if idx == 0:
+                primary_enrichment_meta = dict(enrichment_run_meta)
+            emit_task_update(
+                hypothesis_id=hypothesis_id,
+                task_name=f"Enrichment Analysis ({idx+1}/{len(graphs_with_prob)})",
+                state=TaskState.COMPLETED,
+                details={
+                    "causal_gene": this_causal_gene,
+                    "tissue": selected_tissue or "standard",
+                    **enrichment_run_meta,
+                    "go_term_count": len(relevant_gos) if isinstance(relevant_gos, list) else 0,
+                },
+                progress=55 + (idx * 15 // max(len(graphs_with_prob), 1)),
+            )
 
             # Store metadata for the highest probability graph in the main hypothesis
             if idx == 0:
@@ -171,13 +200,17 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                 })
 
             # Create enrichment for this graph
+            resolved_graph = enrichr.annotate_graph_gene_names(graph)
             enrich_id = create_enrich_data.submit(
                 current_user_id, project_id, variant,
-                phenotype, this_causal_gene, relevant_gos, {
-                    "graph": graph,
+                phenotype, this_causal_gene, relevant_gos, 
+                {
+                    "graph": resolved_graph,
                     "graph_index": original_i,
                     "total_graphs": len(graphs_list),
-                }, hypothesis_id
+                    **enrichment_run_meta,
+                },
+                hypothesis_id
             ).result()
             enrichment_data.append({
                 "enrich_id": enrich_id,
@@ -192,11 +225,19 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
         all_enrich_ids = [e['enrich_id'] for e in enrichment_data]
 
         # Update original hypothesis with main enrichment and children info
-        hypotheses.update_hypothesis(hypothesis_id, {
+        hypo_patch: dict = {
             "enrich_id": main_enrichment_id,
             "child_enrich_ids": all_enrich_ids[1:],
-            "status": "pending"
-        })
+            "status": "pending",
+        }
+        if primary_enrichment_meta:
+            hypo_patch["enrichment_effective_mode"] = primary_enrichment_meta.get("effective_enrichment_mode")
+            hypo_patch["non_tissue_specific_fallback"] = primary_enrichment_meta.get(
+                "non_tissue_specific_fallback", False
+            )
+            hypo_patch["attempted_ldsc_cell_type"] = primary_enrichment_meta.get("attempted_ldsc_cell_type")
+
+        hypotheses.update_hypothesis(hypothesis_id, hypo_patch)
 
         logger.info(f"Created {len(enrichment_data)} enrichments, main: {main_enrichment_id}")
         logger.info(f"Child enrichments (will be processed on-demand): {all_enrich_ids[1:]}")

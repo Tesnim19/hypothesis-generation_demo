@@ -6,26 +6,139 @@ that can be downloaded on-demand and cached in MinIO.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from loguru import logger
 from .base_handler import BaseHandler
+from src.utils import gwas_file_has_n_column
+
+
+
+@dataclass(frozen=True)
+class SampleSizeResolution:
+    value: Optional[int]
+    source: str
+    is_user_provided: bool
+    message: str
+
+    @property
+    def is_editable(self) -> bool:
+        return self.source != "library_verified"
+
+    @property
+    def prefill_value(self) -> Optional[int]:
+        """Value the UI should autofill; None when the file already has N."""
+        return self.value
+
+    @property
+    def pipeline_value(self) -> int:
+        """N passed to harmonization when the file lacks a per-variant N column."""
+        if self.value is not None:
+            return self.value
+        return GWASLibraryHandler.DEFAULT_SAMPLE_SIZE_FALLBACK
+
+    def to_api_dict(self) -> dict:
+        return {
+            "sample_size": self.value,
+            "sample_size_source": self.source,
+            "sample_size_message": self.message,
+            "sample_size_is_user_provided": self.is_user_provided,
+            "sample_size_editable": self.is_editable,
+            "sample_size_prefill": self.prefill_value,
+        }
 
 
 class GWASLibraryHandler(BaseHandler):
     """Handler for GWAS library collection"""
 
-    # Neale lab UK Biobank round 2 totals (reference only when DB row lacks default_sample_size).
-    UKB_NEALE_BOTH_SEXES_FALLBACK = 361_194
+    DEFAULT_SAMPLE_SIZE_FALLBACK = 10_000
 
     @staticmethod
-    def sex_stratified_neale_reference_n(sex: Optional[str]) -> int:
-        s = (sex or "both_sexes").strip().lower().replace(" ", "_")
-        if s in ("males", "male"):
-            return 168_962
-        if s in ("females", "female"):
-            return 194_174
-        return 361_194
+    def sample_size_fields_for_library_entry(
+        entry: Dict, resolution: SampleSizeResolution
+    ) -> dict:
+        """Shared sample-size API fields for library list and preview endpoints."""
+        return {
+            **resolution.to_api_dict(),
+            "default_sample_size": entry.get("default_sample_size"),
+        }
+
+    @classmethod
+    def resolve_sample_size_info(
+        cls,
+        entry: Optional[Dict] = None,
+        form_sample_size: Optional[int] = None,
+    ) -> SampleSizeResolution:
+        """
+        Resolve N for harmonization / LDSC with provenance for API display.
+        """
+        if form_sample_size is not None:
+            value = int(form_sample_size)
+            return SampleSizeResolution(
+                value=value,
+                source="user_provided",
+                is_user_provided=True,
+                message=f"Using user-provided sample size (N={value:,}).",
+            )
+        if entry:
+            if entry.get("sample_size") is not None:
+                value = int(entry["sample_size"])
+                return SampleSizeResolution(
+                    value=value,
+                    source="library_verified",
+                    is_user_provided=False,
+                    message=(
+                        f"Using verified sample size from library metadata "
+                        f"(N={value:,})."
+                    ),
+                )
+            if entry.get("default_sample_size") is not None:
+                value = int(entry["default_sample_size"])
+                message = (
+                    f"No verified sample size found. Using library default sample "
+                    f"size (N={value:,})."
+                )
+            else:
+                value = cls.DEFAULT_SAMPLE_SIZE_FALLBACK
+                message = (
+                    f"No verified sample size found. Using default sample size "
+                    f"(N={value:,})."
+                )
+            return SampleSizeResolution(
+                value=value,
+                source="library_default",
+                is_user_provided=False,
+                message=message,
+            )
+        value = cls.DEFAULT_SAMPLE_SIZE_FALLBACK
+        return SampleSizeResolution(
+            value=value,
+            source="upload_default",
+            is_user_provided=False,
+            message=(
+                f"No sample size provided. Using default sample size (N={value:,}) "
+                f"when your file lacks an N column."
+            ),
+        )
+
+    @classmethod
+    def resolve_upload_sample_size_info(
+        cls, file_path: Optional[str] = None
+    ) -> SampleSizeResolution:
+        """Preview sample-size resolution for a user-uploaded GWAS file."""
+
+        if file_path and gwas_file_has_n_column(file_path):
+            return SampleSizeResolution(
+                value=None,
+                source="file_has_n",
+                is_user_provided=False,
+                message=(
+                    "Your GWAS file includes an N column; per-variant sample sizes "
+                    "will be used during harmonization."
+                ),
+            )
+        return cls.resolve_sample_size_info(entry=None, form_sample_size=None)
 
     @classmethod
     def resolve_pipeline_sample_size(
@@ -35,18 +148,10 @@ class GWASLibraryHandler(BaseHandler):
     ) -> int:
         """
         N passed to harmonization / LDSC: explicit form value, else verified library
-        sample_size, else default_sample_size (Neale sex-stratified reference), else
-        inferred from sex, else global fallback.
+        sample_size, else default_sample_size from library metadata, else global
+        fallback (10,000).
         """
-        if form_sample_size is not None:
-            return int(form_sample_size)
-        if entry:
-            if entry.get("sample_size") is not None:
-                return int(entry["sample_size"])
-            if entry.get("default_sample_size") is not None:
-                return int(entry["default_sample_size"])
-            return cls.sex_stratified_neale_reference_n(entry.get("sex"))
-        return cls.UKB_NEALE_BOTH_SEXES_FALLBACK
+        return cls.resolve_sample_size_info(entry, form_sample_size).pipeline_value
 
     def __init__(self, mongodb_uri: str, db_name: str):
         """
@@ -356,7 +461,7 @@ class GWASLibraryHandler(BaseHandler):
                 entry.setdefault('last_accessed', None)
                 entry.setdefault(
                     'default_sample_size',
-                    self.sex_stratified_neale_reference_n(entry.get('sex')),
+                    self.DEFAULT_SAMPLE_SIZE_FALLBACK,
                 )
                 entry.setdefault('genome_build', None)
                 # Repopulate: clear stale sample_size when parser omits it (no CSV / no scrape).
