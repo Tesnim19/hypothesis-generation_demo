@@ -54,8 +54,10 @@ dependencies = [
     "boto3>=1.35.0",
     "prefect-dask",
     "dask[distributed]",
+    "statsmodels>=0.14.0",
     "dependency-injector>=4.41",
 ]
 
 [project.optional-dependencies]
 r-integration = ["rpy2>=3.5.0,<3.6.0"]
+dev = ["pytest>=8.0.0"]

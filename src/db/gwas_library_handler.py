@@ -6,15 +6,153 @@ that can be downloaded on-demand and cached in MinIO.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import List, Dict, Optional
 from loguru import logger
 from .base_handler import BaseHandler
+from src.utils import gwas_file_has_n_column
+
+
+
+@dataclass(frozen=True)
+class SampleSizeResolution:
+    value: Optional[int]
+    source: str
+    is_user_provided: bool
+    message: str
+
+    @property
+    def is_editable(self) -> bool:
+        return self.source != "library_verified"
+
+    @property
+    def prefill_value(self) -> Optional[int]:
+        """Value the UI should autofill; None when the file already has N."""
+        return self.value
+
+    @property
+    def pipeline_value(self) -> int:
+        """N passed to harmonization when the file lacks a per-variant N column."""
+        if self.value is not None:
+            return self.value
+        return GWASLibraryHandler.DEFAULT_SAMPLE_SIZE_FALLBACK
+
+    def to_api_dict(self) -> dict:
+        return {
+            "sample_size": self.value,
+            "sample_size_source": self.source,
+            "sample_size_message": self.message,
+            "sample_size_is_user_provided": self.is_user_provided,
+            "sample_size_editable": self.is_editable,
+            "sample_size_prefill": self.prefill_value,
+        }
 
 
 class GWASLibraryHandler(BaseHandler):
     """Handler for GWAS library collection"""
-    
+
+    DEFAULT_SAMPLE_SIZE_FALLBACK = 10_000
+
+    @staticmethod
+    def sample_size_fields_for_library_entry(
+        entry: Dict, resolution: SampleSizeResolution
+    ) -> dict:
+        """Shared sample-size API fields for library list and preview endpoints."""
+        return {
+            **resolution.to_api_dict(),
+            "default_sample_size": entry.get("default_sample_size"),
+        }
+
+    @classmethod
+    def resolve_sample_size_info(
+        cls,
+        entry: Optional[Dict] = None,
+        form_sample_size: Optional[int] = None,
+    ) -> SampleSizeResolution:
+        """
+        Resolve N for harmonization / LDSC with provenance for API display.
+        """
+        if form_sample_size is not None:
+            value = int(form_sample_size)
+            return SampleSizeResolution(
+                value=value,
+                source="user_provided",
+                is_user_provided=True,
+                message=f"Using user-provided sample size (N={value:,}).",
+            )
+        if entry:
+            if entry.get("sample_size") is not None:
+                value = int(entry["sample_size"])
+                return SampleSizeResolution(
+                    value=value,
+                    source="library_verified",
+                    is_user_provided=False,
+                    message=(
+                        f"Using verified sample size from library metadata "
+                        f"(N={value:,})."
+                    ),
+                )
+            if entry.get("default_sample_size") is not None:
+                value = int(entry["default_sample_size"])
+                message = (
+                    f"No verified sample size found. Using library default sample "
+                    f"size (N={value:,})."
+                )
+            else:
+                value = cls.DEFAULT_SAMPLE_SIZE_FALLBACK
+                message = (
+                    f"No verified sample size found. Using default sample size "
+                    f"(N={value:,})."
+                )
+            return SampleSizeResolution(
+                value=value,
+                source="library_default",
+                is_user_provided=False,
+                message=message,
+            )
+        value = cls.DEFAULT_SAMPLE_SIZE_FALLBACK
+        return SampleSizeResolution(
+            value=value,
+            source="upload_default",
+            is_user_provided=False,
+            message=(
+                f"No sample size provided. Using default sample size (N={value:,}) "
+                f"when your file lacks an N column."
+            ),
+        )
+
+    @classmethod
+    def resolve_upload_sample_size_info(
+        cls, file_path: Optional[str] = None
+    ) -> SampleSizeResolution:
+        """Preview sample-size resolution for a user-uploaded GWAS file."""
+
+        if file_path and gwas_file_has_n_column(file_path):
+            return SampleSizeResolution(
+                value=None,
+                source="file_has_n",
+                is_user_provided=False,
+                message=(
+                    "Your GWAS file includes an N column; per-variant sample sizes "
+                    "will be used during harmonization."
+                ),
+            )
+        return cls.resolve_sample_size_info(entry=None, form_sample_size=None)
+
+    @classmethod
+    def resolve_pipeline_sample_size(
+        cls,
+        entry: Optional[Dict] = None,
+        form_sample_size: Optional[int] = None,
+    ) -> int:
+        """
+        N passed to harmonization / LDSC: explicit form value, else verified library
+        sample_size, else default_sample_size from library metadata, else global
+        fallback (10,000).
+        """
+        return cls.resolve_sample_size_info(entry, form_sample_size).pipeline_value
+
     def __init__(self, mongodb_uri: str, db_name: str):
         """
         Initialize the GWAS library handler
@@ -277,7 +415,18 @@ class GWASLibraryHandler(BaseHandler):
             logger.error(f"Error incrementing download count for {file_id}: {e}")
             return False
     
-    def bulk_create_gwas_entries(self, entries: List[Dict]) -> Dict:
+    def clear_collection(self) -> int:
+        """Delete all entries from the collection. Returns deleted count."""
+        result = self.collection.delete_many({})
+        logger.info(f"Cleared {result.deleted_count} entries from gwas_library")
+        return result.deleted_count
+
+    def bulk_create_gwas_entries(
+        self,
+        entries: List[Dict],
+        *,
+        skip_existing: bool = False,
+    ) -> Dict:
         """
         Bulk insert GWAS entries into the collection
         
@@ -285,15 +434,21 @@ class GWASLibraryHandler(BaseHandler):
             entries (List[Dict]): List of GWAS entries to insert
             
         Returns:
-            dict: Result with inserted_count and skipped_count
+            dict: inserted_count, updated_count, skipped_existing_count
         """
         try:
             from datetime import datetime, timezone
             
             inserted_count = 0
-            skipped_count = 0
+            updated_count = 0
+            skipped_existing_count = 0
             
             for entry in entries:
+                if skip_existing and self.collection.find_one(
+                    {"file_id": entry["file_id"]}, {"_id": 1}
+                ):
+                    skipped_existing_count += 1
+                    continue
                 # Add timestamps
                 entry['created_at'] = datetime.now(timezone.utc)
                 entry['updated_at'] = datetime.now(timezone.utc)
@@ -304,27 +459,38 @@ class GWASLibraryHandler(BaseHandler):
                 entry.setdefault('minio_path', None)
                 entry.setdefault('file_size', None)
                 entry.setdefault('last_accessed', None)
-                entry.setdefault('sample_size', None)
+                entry.setdefault(
+                    'default_sample_size',
+                    self.DEFAULT_SAMPLE_SIZE_FALLBACK,
+                )
                 entry.setdefault('genome_build', None)
+                # Repopulate: clear stale sample_size when parser omits it (no CSV / no scrape).
+                if 'sample_size' not in entry:
+                    entry['sample_size'] = None
                 
                 try:
-                    # Insert with unique constraint on file_id
-                    self.collection.insert_one(entry)
-                    inserted_count += 1
-                except Exception as e:
-                    # Skip duplicates
-                    if 'duplicate key error' in str(e).lower():
-                        logger.debug(f"Skipping duplicate entry: {entry.get('file_id')}")
-                        skipped_count += 1
+                    result = self.collection.update_one(
+                        {"file_id": entry["file_id"]},
+                        {"$set": entry},
+                        upsert=True,
+                    )
+                    if result.upserted_id:
+                        inserted_count += 1
                     else:
-                        logger.warning(f"Error inserting entry {entry.get('file_id')}: {e}")
-                        skipped_count += 1
+                        updated_count += 1
+                except Exception as e:
+                    logger.warning(f"Error upserting entry {entry.get('file_id')}: {e}")
+                    updated_count += 1
             
-            logger.info(f"Bulk insert complete: {inserted_count} inserted, {skipped_count} skipped")
+            logger.info(
+                f"Bulk upsert complete: {inserted_count} inserted, {updated_count} updated, "
+                f"{skipped_existing_count} skipped (existing)"
+            )
             
             return {
                 'inserted_count': inserted_count,
-                'skipped_count': skipped_count
+                'updated_count': updated_count,
+                'skipped_existing_count': skipped_existing_count,
             }
             
         except Exception as e:

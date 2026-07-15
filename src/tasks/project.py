@@ -8,7 +8,9 @@ from src.utils import (
     analysis_state_for_public_api,
     emit_analysis_update,
     get_deps,
+    get_population_label,
     normalize_status_responses,
+    project_running_task,
 )
 
 
@@ -208,7 +210,11 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
         credible_sets_data = []
         total_credible_sets_count = 0
         total_variants_count = 0
-        analysis_parameters = project.get("analysis_parameters", {})
+        analysis_parameters = dict(project.get("analysis_parameters") or {})
+        if project.get("population") is not None:
+            analysis_parameters["population"] = get_population_label(project["population"])
+        if project.get("ref_genome") is not None:
+            analysis_parameters["ref_genome"] = project["ref_genome"]
         
         try:
             credible_sets_data = analysis_handler.get_credible_sets_for_project(user_id, project_id)
@@ -320,6 +326,8 @@ def get_project_with_full_data(projects_handler, analysis_handler, hypotheses_ha
             # Summary counts at top level
             "total_credible_sets_count": total_credible_sets_count,
             "total_variants_count": total_variants_count,
+
+            "running_task": project_running_task(analysis_state),
             
             # Analysis state and parameters  
             "analysis_state": analysis_state_for_public_api(analysis_state),

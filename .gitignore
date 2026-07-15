@@ -214,6 +214,12 @@ data/projects
 data/states
 data/external_data
 data/1000Genomes_phase3
+data/annotations
+data/humanenhancer_atac_data
+data/ldscores
+data/OSF
+data/cts
+data/peaks
 data/raw
 data/ldsc
 data/ldsc_test
@@ -242,9 +248,9 @@ work #nextflow work dir
 runlog
 work/
 
-
-
 CLAUDE.md
 
-
 /data/ot_uc_sumstats
+
+# test_dir
+scratch/*

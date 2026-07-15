@@ -34,6 +34,7 @@ def parse_prolog_graphs(raw_response):
 def extract_causal_gene_from_graph(graph, variant_nodes):
     """
     Extract the most likely causal gene from the Prolog graph structure using topology.
+    Returns (gene_id, gene_name) from the graph node, or (None, None) if not found.
     """
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])

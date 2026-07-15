@@ -13,6 +13,8 @@ Options:
     --dry-run         Validate and show preview, but don't insert
     --clear           Clear existing collection before populating (destructive!)
     --sample N        Show N sample entries (default: 5)
+    --skip-existing   Skip DB rows that already exist (no upsert for those file_ids)
+    --showcase-delay SEC   Sleep SEC before each uncached showcase HTTP request (0 default)
 
 Examples:
     # Validate manifest only
@@ -42,14 +44,19 @@ from loguru import logger
 from dotenv import load_dotenv
 
 
-def validate_manifest(manifest_path: str, sample_size: int = 5):
+def validate_manifest(
+    manifest_path: str,
+    sample_size: int = 5,
+    showcase_delay_sec: float = 0.0,
+):
     """
     Validate a manifest file
-    
+
     Args:
         manifest_path (str): Path to manifest file
         sample_size (int): Number of sample entries to display
-        
+        showcase_delay_sec: Seconds to sleep before each uncached showcase HTTP request
+
     Returns:
         tuple: (valid_entries, invalid_entries, report)
     """
@@ -58,7 +65,9 @@ def validate_manifest(manifest_path: str, sample_size: int = 5):
     print(f"{'='*80}\n")
     
     # Parse manifest
-    parser = GWASManifestParser(manifest_path)
+    parser = GWASManifestParser(
+        manifest_path, showcase_request_delay_sec=showcase_delay_sec
+    )
     entries = parser.parse()
     
     print(f"✓ Parsed {len(entries)} entries from manifest\n")
@@ -97,6 +106,8 @@ def validate_manifest(manifest_path: str, sample_size: int = 5):
             print(f"    Display Name: {entry['display_name']}")
             print(f"    Description: {entry['description'][:80]}...")
             print(f"    Sex: {entry['sex']}")
+            print(f"    sample_size: {entry.get('sample_size', '—')}")
+            print(f"    default_sample_size: {entry.get('default_sample_size')}")
             print(f"    Has AWS URL: {bool(entry.get('aws_url'))}")
             print(f"    Has wget: {bool(entry.get('wget_command'))}")
             print(f"    Has Dropbox: {bool(entry.get('dropbox_url'))}")
@@ -105,13 +116,19 @@ def validate_manifest(manifest_path: str, sample_size: int = 5):
     return valid_entries, invalid_entries, report
 
 
-def populate_database(valid_entries, clear_existing=False):
+def populate_database(
+    valid_entries,
+    clear_existing=False,
+    *,
+    skip_existing=False,
+):
     """
     Populate the database with valid entries
     
     Args:
         valid_entries (list): List of valid GWAS entries
         clear_existing (bool): Whether to clear existing collection first
+        skip_existing (bool): If True, do not upsert rows whose file_id is already in the DB
     """
     # Load environment variables
     load_dotenv()
@@ -155,17 +172,21 @@ def populate_database(valid_entries, clear_existing=False):
             sys.exit(1)
     
     # Insert entries
-    print(f"Inserting {len(valid_entries)} entries into database...")
-    
+    mode = "skip-existing" if skip_existing else "upsert-all"
+    print(f"Writing {len(valid_entries)} entries ({mode})...")
+
     try:
-        result = handler.bulk_create_gwas_entries(valid_entries)
-        
+        result = handler.bulk_create_gwas_entries(
+            valid_entries, skip_existing=skip_existing
+        )
+
         print(f"\n{'='*80}")
         print("INSERTION RESULTS")
         print(f"{'='*80}")
-        print(f"Inserted:  {result['inserted_count']} ✓")
-        print(f"Skipped:   {result['skipped_count']} (duplicates)")
-        print(f"Total:     {len(valid_entries)}")
+        print(f"Inserted (new):     {result['inserted_count']} ✓")
+        print(f"Updated (existing): {result['updated_count']}")
+        print(f"Skipped (existing): {result['skipped_existing_count']}")
+        print(f"Total in manifest:  {len(valid_entries)}")
         print(f"{'='*80}\n")
         
         # Get final count
@@ -217,6 +238,20 @@ def main():
         help='Number of sample entries to display (default: 5)'
     )
     
+    parser.add_argument(
+        '--skip-existing',
+        action='store_true',
+        help='Do not update rows whose file_id is already in the database (faster re-runs)',
+    )
+
+    parser.add_argument(
+        '--showcase-delay',
+        type=float,
+        default=0.0,
+        metavar='SEC',
+        help='Seconds to sleep before each uncached UKB showcase HTTP request (0 = no delay)',
+    )
+
     args = parser.parse_args()
     
     # Validate manifest file exists
@@ -227,7 +262,8 @@ def main():
     # Validate manifest
     valid_entries, invalid_entries, report = validate_manifest(
         args.manifest_file,
-        sample_size=args.sample
+        sample_size=args.sample,
+        showcase_delay_sec=args.showcase_delay,
     )
     
     # Check if validation passed
@@ -248,7 +284,11 @@ def main():
         sys.exit(0)
     
     # Populate database
-    populate_database(valid_entries, clear_existing=args.clear)
+    populate_database(
+        valid_entries,
+        clear_existing=args.clear,
+        skip_existing=args.skip_existing,
+    )
 
 
 if __name__ == '__main__':
