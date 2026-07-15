@@ -236,7 +236,6 @@ data/chr16
 data/per_chr
 diagrams
 docs
-uv.lock
 
 # Logs
 logs/
