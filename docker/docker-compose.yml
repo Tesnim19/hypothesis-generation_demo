@@ -171,6 +171,25 @@ services:
       retries: 5
     restart: unless-stopped
 
+  credible-sets-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${CREDIBLE_SETS_DB_USER}
+      POSTGRES_PASSWORD: ${CREDIBLE_SETS_DB_PASSWORD}
+      POSTGRES_DB: ${CREDIBLE_SETS_DB_NAME}
+    ports:
+      - "5411:5432"
+    volumes:
+      - credible-sets-postgres-data:/var/lib/postgresql/data
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CREDIBLE_SETS_DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   prefect-service:
     build:
       context: ..
@@ -275,6 +294,7 @@ volumes:
   mongo-data:
   prefect-data:
   prefect-postgres-data:
+  credible-sets-postgres-data:
 
 networks:
   app_network:
