@@ -45,6 +45,14 @@ class Config:
         self.ldsc_cts_file = "data/cts/cell_types_available.cts"
         self.cell_ontology_tsv = "data/Cell_ontology.tsv"
         self.catlas_abc_aliases_tsv = "data/catlas_abc_cell_type_aliases.tsv"
+        self.mail_username = ""
+        self.mail_password = ""
+        self.mail_from = ""
+        self.mail_server = ""
+        self.mail_port = 587
+        self.mail_tls = True
+        self.mail_ssl = False
+        
 
     @classmethod
     def from_args(cls, args):
@@ -109,6 +117,13 @@ class Config:
         config.catlas_abc_aliases_tsv = os.getenv(
             "CATLAS_ABC_ALIASES_TSV", "data/catlas_abc_cell_type_aliases.tsv"
         )
+        config.mail_username = os.getenv("MAIL_USERNAME", "")
+        config.mail_password = os.getenv("MAIL_PASSWORD", "")
+        config.mail_from = os.getenv("MAIL_FROM", "")
+        config.mail_server = os.getenv("MAIL_SERVER", "")
+        config.mail_port = int(os.getenv("MAIL_PORT", "587"))
+        config.mail_tls = os.getenv("MAIL_TLS", "true").lower() == "true"
+        config.mail_ssl = os.getenv("MAIL_SSL", "false").lower() == "true"
         return config
 
     def get_harmonizer_ref_dir(self, ref_genome):

@@ -204,17 +204,18 @@ to_gwas_ssf() {
   READER="cat"
   case "$SRC" in *.gz|*.bgz) READER="bgzip -dc";; esac
 
-  # Build minimal GWAS-SSF (Neale/PLINK2/SSF autodetect), force chromosome to "chr*" form
+  # Build minimal GWAS-SSF (Neale/PLINK2/FinnGen/SSF autodetect), force chromosome to "chr*" form
   $READER "$SRC" | awk -v OFS="\t" '
     BEGIN{
       print "chromosome\tbase_pair_location\teffect_allele\tother_allele\tbeta\tstandard_error\tp_value\teffect_allele_frequency\trsid"
     }
     NR==1{
-      for(i=1;i<=NF;i++) h[tolower($i)]=i
-      is_neale = h["variant"] && (h["beta"]||h["or"]) && (h["se"]||h["stderr"]||h["standard_error"]) && (h["pval"]||h["p"])
-      is_plink = ((h["chr"]||h["chrom"]) && (h["bp"]||h["pos"]) && h["a1"] && h["a2"] && (h["beta"]||h["or"]) && (h["se"]||h["stderr"]||h["standard_error"]) && (h["p"]||h["pval"]))
-      is_ssf   = (h["chromosome"] && h["base_pair_location"] && h["effect_allele"] && h["other_allele"] && h["beta"] && h["standard_error"] && (h["p_value"]||h["p"]))
-      if(!is_neale && !is_plink && !is_ssf){ print "ERROR: unknown layout" > "/dev/stderr"; exit 2 }
+      for(i=1;i<=NF;i++) { col=tolower($i); gsub(/^#/, "", col); h[col]=i }
+      is_neale  = h["variant"] && (h["beta"]||h["or"]) && (h["se"]||h["stderr"]||h["standard_error"]) && (h["pval"]||h["p"])
+      is_plink  = ((h["chr"]||h["chrom"]) && (h["bp"]||h["pos"]) && h["a1"] && h["a2"] && (h["beta"]||h["or"]) && (h["se"]||h["stderr"]||h["standard_error"]) && (h["p"]||h["pval"]))
+      is_finngen = h["chrom"] && h["pos"] && h["ref"] && h["alt"] && h["beta"] && h["sebeta"] && (h["pval"]||h["p"])
+      is_ssf    = (h["chromosome"] && h["base_pair_location"] && h["effect_allele"] && h["other_allele"] && h["beta"] && h["standard_error"] && (h["p_value"]||h["p"]))
+      if(!is_neale && !is_plink && !is_finngen && !is_ssf){ print "ERROR: unknown layout" > "/dev/stderr"; exit 2 }
       next
     }
     {
@@ -237,6 +238,16 @@ to_gwas_ssf() {
         if(h["p_value"]) p=$h["p_value"]; else p=$h["p"]
         if(h["effect_allele_frequency"]) eaf=$h["effect_allele_frequency"]; else eaf="NA"
         if(h["rsid"]) rsid=$h["rsid"]; else if(h["variant_id"]) rsid=$h["variant_id"]; else rsid="NA"
+      } else if(is_finngen) {
+        chrom = $h["chrom"]
+        pos   = $h["pos"]
+        ea    = $h["alt"]
+        oa    = $h["ref"]
+        beta  = $h["beta"]
+        se    = $h["sebeta"]
+        if(h["pval"]) p=$h["pval"]; else p=$h["p"]
+        if(h["af_alt"]) eaf=$h["af_alt"]; else eaf="NA"
+        if(h["rsids"]) rsid=$h["rsids"]; else if(h["rsid"]) rsid=$h["rsid"]; else rsid="NA"
       } else {
         chrom = (h["chr"]? $h["chr"] : $h["chrom"])
         pos   = (h["bp"]?  $h["bp"]  : $h["pos"])

@@ -38,16 +38,38 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_root))
 
+from scripts.finngen_manifest_parser import (
+    FinnGenManifestParser,
+    detect_manifest_format,
+)
 from scripts.gwas_manifest_parser import GWASManifestParser
 from src.db import GWASLibraryHandler
 from loguru import logger
 from dotenv import load_dotenv
 
 
+def _resolve_manifest_source(manifest_path: str, source: str) -> str:
+    if source != "auto":
+        return source
+    detected = detect_manifest_format(manifest_path)
+    print(f"Auto-detected manifest format: {detected}")
+    return detected
+
+
+def _create_parser(manifest_path: str, source: str, showcase_delay_sec: float = 0.0):
+    if source == "finngen":
+        return FinnGenManifestParser(manifest_path)
+    return GWASManifestParser(
+        manifest_path, showcase_request_delay_sec=showcase_delay_sec
+    )
+
+
 def validate_manifest(
     manifest_path: str,
     sample_size: int = 5,
     showcase_delay_sec: float = 0.0,
+    *,
+    source: str = "auto",
 ):
     """
     Validate a manifest file
@@ -60,14 +82,14 @@ def validate_manifest(
     Returns:
         tuple: (valid_entries, invalid_entries, report)
     """
+    resolved_source = _resolve_manifest_source(manifest_path, source)
+
     print(f"\n{'='*80}")
     print(f"VALIDATING MANIFEST: {manifest_path}")
+    print(f"Source: {resolved_source}")
     print(f"{'='*80}\n")
-    
-    # Parse manifest
-    parser = GWASManifestParser(
-        manifest_path, showcase_request_delay_sec=showcase_delay_sec
-    )
+
+    parser = _create_parser(manifest_path, resolved_source, showcase_delay_sec)
     entries = parser.parse()
     
     print(f"✓ Parsed {len(entries)} entries from manifest\n")
@@ -105,6 +127,7 @@ def validate_manifest(
             print(f"    Phenotype Code: {entry.get('phenotype_code', 'N/A')}")
             print(f"    Display Name: {entry['display_name']}")
             print(f"    Description: {entry['description'][:80]}...")
+            print(f"    Source: {entry.get('source', '—')}")
             print(f"    Sex: {entry['sex']}")
             print(f"    sample_size: {entry.get('sample_size', '—')}")
             print(f"    default_sample_size: {entry.get('default_sample_size')}")
@@ -210,7 +233,14 @@ def main():
     
     parser.add_argument(
         'manifest_file',
-        help='Path to UK Biobank GWAS manifest file (TSV or CSV)'
+        help='Path to GWAS manifest file (UK Biobank CSV or FinnGen TSV)',
+    )
+
+    parser.add_argument(
+        '--source',
+        choices=['auto', 'ukbb', 'finngen'],
+        default='auto',
+        help='Manifest format: auto-detect (default), ukbb, or finngen',
     )
     
     parser.add_argument(
@@ -264,6 +294,7 @@ def main():
         args.manifest_file,
         sample_size=args.sample,
         showcase_delay_sec=args.showcase_delay,
+        source=args.source,
     )
     
     # Check if validation passed

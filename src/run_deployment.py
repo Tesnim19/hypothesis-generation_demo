@@ -22,6 +22,8 @@ def invoke_analysis_pipeline_deployment(
     user_id, project_id, gwas_file_path=None, ref_genome="GRCh38", population="EUR",
     batch_size=5, max_workers=3, maf_threshold=0.01, seed=42, window=2000, L=-1,
     coverage=0.95, min_abs_corr=0.5, sample_size=None,
+    user_email: str | None = None,
+    project_name: str | None = None,
     file_metadata_id=None, file_needs_processing=False,
     file_storage_key=None, file_id_new=None,
     file_source_minio_path=None, file_source_download_url=None,
@@ -52,6 +54,8 @@ def invoke_analysis_pipeline_deployment(
             "file_source_download_url": file_source_download_url,
             "file_minio_cache_key": file_minio_cache_key,
             "file_gwas_library_id": file_gwas_library_id,
+            "user_email": user_email,
+            "project_name": project_name,
         },
         timeout=0
     )
