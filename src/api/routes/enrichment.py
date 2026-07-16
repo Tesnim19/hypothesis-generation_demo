@@ -67,7 +67,7 @@ async def get_enrich(
 
 @router.post("/enrich", status_code=202, response_model=EnrichPostAcceptedResponse)
 async def post_enrich(
-    body: EnrichPostBody = Body(...),
+    body: EnrichPostBody = Body(default_factory=EnrichPostBody),
     variant: str | None = Query(None),
     project_id: str | None = Query(None),
     tissue_name: str | None = Query(None),
