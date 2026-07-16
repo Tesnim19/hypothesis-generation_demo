@@ -521,3 +521,11 @@ async def post_analysis_pipeline(
             file_id=file_metadata_id,
             message="Analysis pipeline started successfully",
         )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error(f"[API] Error starting analysis pipeline: {exc}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error starting analysis pipeline: {exc}",
+            )
