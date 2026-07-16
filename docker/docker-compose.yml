@@ -4,6 +4,8 @@ services:
 
   mongo:
     image: mongo:latest
+    # ports:
+    #   - "27099:27017"
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
@@ -11,12 +13,16 @@ services:
       - mongo-data:/data/db
     networks:
       - app_network
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+
+  hypothesis-base:
+    # Builds the heavy base image once. This image is used by Dockerfile.app.
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    image: hypothesis-base:latest
+    # This service is only used to build the base image; it does not need to stay running.
+    command: ["true"]
+    restart: "no"
 
   prolog-service:
     build:
@@ -26,16 +32,17 @@ services:
       - "4242:4242"
     volumes:
       - ../pl:/app/pl
+      # - /mnt/hdd_1/tesnim/version1/prolog_out_v2:/mnt/prolog_out_v2
+      # - /mnt/hdd_1/tesnim/version1/prolog_out_v3:/mnt/prolog_out_v3
       - /mnt/hdd_1/biocypher-kg/output/human/prolog_out_v2:/mnt/prolog_out_v2
       - /mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3:/mnt/prolog_out_v3
     networks:
       - app_network
-    restart: unless-stopped
 
   dask-scheduler:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     hostname: dask-scheduler
     ports:
       - "8786:8786" 
@@ -56,12 +63,11 @@ services:
       start_period: 10s
     networks:
       - app_network
-    restart: unless-stopped
 
   dask-worker:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     environment:
       - DASK_ADDRESS=tcp://dask-scheduler:8786
       - PREFECT_API_URL=http://prefect-service:4200/api
@@ -72,7 +78,8 @@ services:
       - HGNC_ENSEMBL_MAP=/app/data/hgnc_to_ensembl.pkl
       - GO_MAP=/app/data/go_map.pkl
       - SKIP_SEED=true
-      - REDIS_URL=redis://redis:6379
+      - API_HOST=api-service
+      - API_PORT=5000
       - OPENAI_API_KEY=${OpenAI}
     env_file:
       - ../.env
@@ -81,20 +88,20 @@ services:
       - ../data:/app/data
       - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
     depends_on:
+      hypothesis-base:
+        condition: service_completed_successfully
       dask-scheduler:
         condition: service_healthy  
       mongo:
-        condition: service_healthy
+        condition: service_started
       prolog-service:
         condition: service_started
-      redis:
-        condition: service_healthy
     command: >
       uv run dask worker tcp://dask-scheduler:8786 
       --nworkers 4
       --nthreads 1 
       --memory-limit 40GB
-      --preload src.dask_preload
+      --preload dask_preload
     deploy:
       mode: replicated
       replicas: 1  
@@ -102,14 +109,14 @@ services:
         limits:
           cpus: '64.0'   
           memory: 180G    
+
     networks:
       - app_network
-    restart: unless-stopped
 
   api-service:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     ports:
       - "5008:5000"
     environment:
@@ -130,47 +137,28 @@ services:
       - ..:/app
       - ../data:/app/data
     depends_on:
+      hypothesis-base:
+        condition: service_completed_successfully
       mongo:
-        condition: service_healthy
+        condition: service_started
       prefect-service:
         condition: service_healthy
       dask-scheduler:
         condition: service_healthy
       redis:
-        condition: service_healthy
+        condition: service_started
     command: >
-      uv run gunicorn "src.server:create_app_with_config"
+      uv run gunicorn "server:create_app_with_config"
       --workers 4
       --worker-class uvicorn.workers.UvicornWorker
       --bind 0.0.0.0:5000
-      --timeout 600
+      --timeout 120
       --graceful-timeout 30
       --keep-alive 5
       --access-logfile -
       --error-logfile -
     networks:
       - app_network
-    restart: unless-stopped
-
-  prefect-postgres:
-    image: postgres:15-alpine
-    environment:
-      POSTGRES_USER: ${PREFECT_DB_USER}
-      POSTGRES_PASSWORD: ${PREFECT_DB_PASSWORD}
-      POSTGRES_DB: ${PREFECT_DB_NAME}
-    ports:
-      - "5409:5432" 
-    volumes:
-      - prefect-postgres-data:/var/lib/postgresql/data
-    networks:
-      - app_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${PREFECT_DB_USER}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
   prefect-service:
     build:
       context: ..
@@ -181,14 +169,9 @@ services:
       - ..:/app
       - prefect-data:/root/.prefect 
     environment:
-      - PREFECT_API_URL=http://prefect-service:4200/api
-      - PREFECT_UI_API_URL=https://dev.rejuve.bio:5054/api
+      - PREFECT_API_URL=http://localhost:4200/api
       - UV_PROJECT_ENVIRONMENT=/opt/prefect-venv
       - DASK_ADDRESS=tcp://dask-scheduler:8786
-      - PREFECT_API_DATABASE_CONNECTION_URL=postgresql+asyncpg://${PREFECT_DB_USER}:${PREFECT_DB_PASSWORD}@prefect-postgres:5432/${PREFECT_DB_NAME}
-    depends_on:
-      prefect-postgres:
-        condition: service_healthy
     env_file:
       - ../.env
     command: > 
@@ -201,12 +184,11 @@ services:
       timeout: 15s
       retries: 20
       start_period: 300s
-    restart: unless-stopped
   
   prefect-deployment:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.app
     deploy:
       resources:
         limits:
@@ -224,10 +206,9 @@ services:
       uv run prefect work-pool update 'analysis-pool' --concurrency-limit 3 &&
       uv run prefect work-pool create 'interactive-pool' --type process --overwrite &&
       uv run prefect work-pool update 'interactive-pool' --concurrency-limit 10 &&
-      uv run prefect concurrency-limit create harmonize_tag 2 || true &&
 
       echo '--- 2. Registering Flows ---' &&
-      uv run python src/deployments.py --ensembl-hgnc-map /app/data/ensembl_to_hgnc.pkl --hgnc-ensembl-map /app/data/hgnc_to_ensembl.pkl --go-map /app/data/go_map.pkl --swipl-host prolog-service --swipl-port 4242 &&
+      uv run python deployments.py --ensembl-hgnc-map /app/data/ensembl_to_hgnc.pkl --hgnc-ensembl-map /app/data/hgnc_to_ensembl.pkl --go-map /app/data/go_map.pkl --swipl-host prolog-service --swipl-port 4242 &&
 
       echo '--- 3. Starting The Chefs (Workers) ---' &&
       uv run prefect worker start --pool 'analysis-pool' --name 'heavy-worker' &
@@ -244,17 +225,18 @@ services:
       - ENSEMBL_HGNC_MAP=/app/data/ensembl_to_hgnc.pkl
       - HGNC_ENSEMBL_MAP=/app/data/hgnc_to_ensembl.pkl
       - GO_MAP=/app/data/go_map.pkl
-      - REDIS_URL=redis://redis:6379
+      - API_HOST=api-service
+      - API_PORT=5000
       - OPENAI_API_KEY=${OpenAI}
     depends_on:
+      hypothesis-base:
+          condition: service_completed_successfully
       prefect-service:
         condition: service_healthy
       dask-scheduler:
         condition: service_started
       mongo:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+        condition: service_started
     networks:
       - app_network
   
@@ -264,17 +246,10 @@ services:
       - "6399:6379"
     networks:
       - app_network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
 
 volumes:
   mongo-data:
   prefect-data:
-  prefect-postgres-data:
 
 networks:
   app_network:
