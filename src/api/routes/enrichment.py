@@ -93,7 +93,6 @@ async def post_enrich(
 
     phenotype = project["phenotype"]
 
-    tissue_name = request.query_params.get("tissue_name") or body_m.tissue_name
     if not tissue_name:
         raise HTTPException(status_code=400, detail="tissue_name is required")
 
