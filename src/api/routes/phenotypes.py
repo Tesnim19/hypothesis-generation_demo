@@ -75,17 +75,33 @@ async def get_phenotypes(
 
 
 @router.post("/phenotypes", status_code=201, response_model=PhenotypeBulkResponse)
-async def post_phenotypes(data: list[PhenotypeBulkItem] = Body(...)):
+async def post_phenotypes(data: list = Body(...)):
     phenotypes = _deps["phenotypes"]
     try:
-        if not data:
+        if not isinstance(data, list):
             raise HTTPException(
-                status_code=400, detail="No phenotypes provided"
+                status_code=400, detail="Expected JSON array of phenotypes"
             )
 
-        phenotypes_data = [
-            {"id": item.id, "phenotype_name": item.name} for item in data
-        ]
+        phenotypes_data = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            try:
+                row = PhenotypeBulkItem.model_validate(item)
+            except ValidationError:
+                logger.warning(f"Skipping invalid phenotype entry: {item}")
+                continue
+            phenotype = {"id": row.id, "phenotype_name": row.name}
+            if phenotype["id"] and phenotype["phenotype_name"]:
+                phenotypes_data.append(phenotype)
+            else:
+                logger.warning(f"Skipping invalid phenotype entry: {item}")
+
+        if not phenotypes_data:
+            raise HTTPException(
+                status_code=400, detail="No valid phenotypes found in JSON data"
+            )
 
         result = phenotypes.bulk_create_phenotypes(phenotypes_data)
         return PhenotypeBulkResponse(
