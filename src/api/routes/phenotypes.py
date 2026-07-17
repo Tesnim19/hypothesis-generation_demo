@@ -4,7 +4,6 @@ from typing import Union
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from loguru import logger
-from pydantic import ValidationError
 
 from src.api.dependencies import _deps
 from src.api.schemas.phenotypes import (
