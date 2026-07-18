@@ -181,6 +181,7 @@ services:
       - "5411:5432"
     volumes:
       - credible-sets-postgres-data:/var/lib/postgresql/data
+      - ./init-credible-sets.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - app_network
     healthcheck:
