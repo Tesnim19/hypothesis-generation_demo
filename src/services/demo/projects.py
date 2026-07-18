@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from loguru import logger
 
 from src.db import (
     AnalysisHandler,
     DemoTemplateHandler,
+    EnrichmentHandler,
     FileHandler,
+    GeneExpressionHandler,
     HypothesisHandler,
     ProjectHandler,
 )
@@ -44,6 +47,122 @@ def resolve_hypothesis_data_user_id(
     if not access or hypothesis.get("user_id") != access.owner_user_id:
         return None
     return access.owner_user_id
+
+
+@dataclass(frozen=True)
+class HypothesisWriteContext:
+    data_user_id: str
+    enrich_id: str
+    hypothesis_id: str
+    project_id: str
+    forked: bool
+
+
+def resolve_enrich_and_hypothesis_for_write(
+    *,
+    demo_templates: DemoTemplateHandler,
+    projects: ProjectHandler,
+    enrichment: EnrichmentHandler,
+    hypotheses: HypothesisHandler,
+    current_user_id: str,
+    enrich_id: str,
+    gene_expression: GeneExpressionHandler | None = None,
+) -> HypothesisWriteContext | None:
+    """Resolve writable user/enrich/hypothesis ids for hypothesis generation."""
+    enrich = enrichment.get_enrich(current_user_id, enrich_id)
+    if enrich:
+        hypothesis = hypotheses.get_hypothesis_by_enrich(current_user_id, enrich_id)
+        if hypothesis:
+            project_id = enrich.get("project_id") or hypothesis.get("project_id")
+            if not project_id:
+                return None
+            return HypothesisWriteContext(
+                data_user_id=current_user_id,
+                enrich_id=enrich_id,
+                hypothesis_id=hypothesis["id"],
+                project_id=project_id,
+                forked=False,
+            )
+
+    enrich = enrichment.get_enrich(enrich_id=enrich_id)
+    if not enrich or not enrich.get("project_id"):
+        return None
+
+    access = resolve_project_access_or_none(
+        demo_templates, current_user_id, enrich["project_id"]
+    )
+    if not access or enrich.get("user_id") != access.owner_user_id:
+        return None
+
+    source_hypothesis = hypotheses.get_hypothesis_by_enrich(access.owner_user_id, enrich_id)
+    if not source_hypothesis:
+        return None
+
+    if access.mode == "owner":
+        return HypothesisWriteContext(
+            data_user_id=access.owner_user_id,
+            enrich_id=enrich_id,
+            hypothesis_id=source_hypothesis["id"],
+            project_id=enrich["project_id"],
+            forked=False,
+        )
+
+    project_id, forked = resolve_fork_project_id(
+        demo_templates=demo_templates,
+        projects=projects,
+        current_user_id=current_user_id,
+        project_id=enrich["project_id"],
+        template=access.template,
+    )
+
+    variant = (
+        source_hypothesis.get("variant")
+        or source_hypothesis.get("variant_id")
+        or source_hypothesis.get("variant_rsid")
+        or enrich.get("variant")
+    )
+    phenotype = source_hypothesis.get("phenotype") or enrich.get("phenotype")
+
+    existing_in_fork = None
+    if variant and phenotype:
+        existing_in_fork = hypotheses.get_hypothesis_by_phenotype_and_variant_in_project(
+            current_user_id, project_id, phenotype, variant
+        )
+
+    user_enrich_id = enrichment.ensure_enrich_copy_for_user(
+        enrich, current_user_id, project_id
+    )
+
+    if existing_in_fork:
+        user_hypothesis_id = existing_in_fork["id"]
+        if existing_in_fork.get("enrich_id") != user_enrich_id:
+            hypotheses.update_hypothesis(
+                user_hypothesis_id, {"enrich_id": user_enrich_id}
+            )
+    else:
+        user_hypothesis_id = hypotheses.ensure_hypothesis_copy_for_user(
+            source_hypothesis,
+            current_user_id,
+            user_enrich_id,
+            project_id,
+        )
+
+    if variant and gene_expression:
+        gene_expression.ensure_tissue_selection_copy(
+            access.owner_user_id,
+            enrich["project_id"],
+            current_user_id,
+            project_id,
+            variant,
+        )
+
+    return HypothesisWriteContext(
+        data_user_id=current_user_id,
+        enrich_id=user_enrich_id,
+        hypothesis_id=user_hypothesis_id,
+        project_id=project_id,
+        forked=forked,
+    )
 
 
 def _fork_metadata(

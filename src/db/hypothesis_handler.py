@@ -1,4 +1,6 @@
 from loguru import logger
+from datetime import datetime, timezone
+from uuid import uuid4
 from .base_handler import BaseHandler
 
 
@@ -71,6 +73,52 @@ class HypothesisHandler(BaseHandler):
             'user_id': user_id,
             'enrich_id': enrich_id
         })
+
+    def ensure_hypothesis_copy_for_user(
+        self,
+        source_hypothesis: dict,
+        user_id: str,
+        enrich_id: str,
+        project_id: str,
+    ) -> str:
+        """Return a hypothesis id owned by user_id for the given enrichment."""
+        variant = (
+            source_hypothesis.get("variant")
+            or source_hypothesis.get("variant_id")
+            or source_hypothesis.get("variant_rsid")
+        )
+        phenotype = source_hypothesis.get("phenotype")
+        if variant and phenotype:
+            existing = self.get_hypothesis_by_phenotype_and_variant_in_project(
+                user_id, project_id, phenotype, variant
+            )
+            if existing:
+                if existing.get("enrich_id") != enrich_id:
+                    self.update_hypothesis(existing["id"], {"enrich_id": enrich_id})
+                return existing["id"]
+
+        existing = self.get_hypothesis_by_enrich(user_id, enrich_id)
+        if existing:
+            return existing["id"]
+
+        new_doc = {key: value for key, value in source_hypothesis.items() if key != "_id"}
+        new_doc.update(
+            {
+                "id": str(uuid4()),
+                "user_id": user_id,
+                "enrich_id": enrich_id,
+                "project_id": project_id,
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        for field in ("summary", "graph", "go_id"):
+            new_doc.pop(field, None)
+        self.hypothesis_collection.insert_one(new_doc)
+        logger.info(
+            f"Copied hypothesis {source_hypothesis['id']} to user {user_id} "
+            f"as {new_doc['id']} for enrichment {enrich_id}"
+        )
+        return new_doc["id"]
 
     def get_hypothesis_by_id(self, hypothesis_id):
         """Get hypothesis by ID without user filtering - used by system services"""

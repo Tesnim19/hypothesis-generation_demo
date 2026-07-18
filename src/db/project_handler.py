@@ -89,7 +89,9 @@ class ProjectHandler(BaseHandler):
                         errors.append(f"Project {project_id} not found or access denied")
                         continue
 
-                    if project.get("is_template") or project.get("is_demo"):
+                    if project.get("is_template") or (
+                        project.get("is_demo") and not project.get("source_template_id")
+                    ):
                         errors.append(
                             f"Project {project_id} is a demo template and cannot be deleted"
                         )
@@ -105,6 +107,17 @@ class ProjectHandler(BaseHandler):
                     })
                     
                     if result.deleted_count > 0:
+                        if project.get("source_template_id"):
+                            fork_result = self.db["user_demo_forks"].delete_one(
+                                {
+                                    "user_id": user_id,
+                                    "forked_project_id": project_id,
+                                }
+                            )
+                            if fork_result.deleted_count:
+                                logger.info(
+                                    f"Cleared demo fork mapping for project {project_id}"
+                                )
                         deleted_count += 1
                         logger.info(f"Successfully deleted project {project_id} and all associated data")
                     else:
@@ -185,6 +198,14 @@ class ProjectHandler(BaseHandler):
                 'project_id': project_id
             })
             logger.info(f"Deleted {enrich_result.deleted_count} enrichment records for project {project_id}")
+
+            tissue_result = self.db["tissue_selections"].delete_many({
+                "user_id": user_id,
+                "project_id": project_id,
+            })
+            logger.info(
+                f"Deleted {tissue_result.deleted_count} tissue selections for project {project_id}"
+            )
             
             # 6. Delete analysis results
             analysis_result = self.analysis_results_collection.delete_many({
@@ -400,12 +421,14 @@ class ProjectHandler(BaseHandler):
                 "gwas_file_id": gwas_file_id,
                 "name": new_name or f"{source.get('name', 'Project')} (from sample)",
                 "is_template": False,
+                "is_demo": False,
                 "source_template_id": template_project_id,
                 "source_template_slug": template_slug,
                 "created_at": now,
                 "updated_at": now,
             }
         )
+        new_project.pop("demo_slug", None)
         self.projects_collection.insert_one(new_project)
 
         project_query = {"user_id": template_user_id, "project_id": template_project_id}
@@ -420,6 +443,15 @@ class ProjectHandler(BaseHandler):
             project_query,
             target_user_id,
             new_project_id,
+        )
+        self._copy_collection_docs(
+            self.db["tissue_selections"],
+            project_query,
+            target_user_id,
+            new_project_id,
+            transform=lambda doc: doc.update(
+                {"id": str(uuid4()), "created_at": now}
+            ),
         )
 
         run_id_map: dict[str, str] = {}
