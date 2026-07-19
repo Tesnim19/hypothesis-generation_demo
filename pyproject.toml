@@ -11,7 +11,7 @@ dependencies = [
     "gunicorn",
     "redis",
     "python-multipart",
-    "gseapy",
+    "gseapy==1.1.8",
     "faiss-gpu",
     "python-dotenv",
     "PyJWT==2.9.0",

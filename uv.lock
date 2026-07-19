@@ -1155,7 +1155,7 @@ wheels = [
 
 [[package]]
 name = "gseapy"
-version = "1.3.0"
+version = "1.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib" },
@@ -1164,13 +1164,14 @@ dependencies = [
     { name = "requests" },
     { name = "scipy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/29/d0/5430ceec2657b95f5c00e7a359caefaab44c531c207fd095a90c0757cf48/gseapy-1.3.0.tar.gz", hash = "sha256:bc5daa80376751c42c0beb5cfbb42131ad2de3c9426f97a415df37d713ceaae3", size = 163682, upload-time = "2026-06-21T23:28:07.005Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8f/4e/d645bd4e45a97a883666a5be051fc1206e089223e1c1f9a992e9f499eae5/gseapy-1.1.8.tar.gz", hash = "sha256:013873a7ace7b9141b2a0d2bd85b5ae8b90ffe1e71e78a3cf32729df16f75d57", size = 112550, upload-time = "2025-03-26T22:12:31.086Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/41/f0/26d034280ace2022e68415ec1c51bd059fa3089e4cb32a72dfe33fe4b810/gseapy-1.3.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:bb26b213f909f03e4ee539d6289b4f608060855a2d36023a7c0be1a73fd05d43", size = 590600, upload-time = "2026-06-21T23:27:02.83Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/b4/67fba63a3715f5d1ea3659d009380ff2dccbcade15948e638c6530304775/gseapy-1.3.0-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:a2961534179ddc3902e534760e780d8338c89aae8010f3c65666a5ec3b89904b", size = 646409, upload-time = "2026-06-21T23:27:04.869Z" },
-    { url = "https://files.pythonhosted.org/packages/58/ca/cb383d7d7845ae48a262c4d15b6edad87a8e6a0adda763164499af296bdb/gseapy-1.3.0-cp310-cp310-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:75f1ded37cb634968ea72b3333f1d141df74b56b6bf13dea20ee208bea10d48b", size = 665914, upload-time = "2026-06-21T23:27:06.791Z" },
-    { url = "https://files.pythonhosted.org/packages/96/a6/a7324f4b1f27c31ad6b224e7734a208007ab464894f287fd937b20ce9fa0/gseapy-1.3.0-cp310-cp310-win32.whl", hash = "sha256:aa823a4dec677f20660e5b89fed19e8b339bad52f6cc08a7ace0e546b97a8805", size = 468397, upload-time = "2026-06-21T23:27:08.567Z" },
-    { url = "https://files.pythonhosted.org/packages/94/39/c9b0519a40a092084119a71dce62878216dda3751e4a4d91bfb530fe70ef/gseapy-1.3.0-cp310-cp310-win_amd64.whl", hash = "sha256:ed9bdcc282ea1d49d045f498f70110603b4d341b227c2e4ddacb10228b55d2f4", size = 487064, upload-time = "2026-06-21T23:27:10.396Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/5d/92210ef448ac68f6d051b5838a2043de68ed63497fbb169d94f5f40ad8ee/gseapy-1.1.8-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:48c128df10325a447d04f58a4fa3d03c15d30a533d8f1102f8877a266fafb87d", size = 531338, upload-time = "2025-03-26T22:16:59.49Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/c1/3b18d3b5f49f73d0c346f16fa22d7684f20962b1295375b7482775f0e56a/gseapy-1.1.8-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:dcfc0cfe21a71be18fa7e5167302febd0db357b8ff0140647b6438848992798c", size = 574312, upload-time = "2025-03-26T22:58:57.805Z" },
+    { url = "https://files.pythonhosted.org/packages/91/34/f1b6ba11c3fb28444f4aa2c05c2cdcb0b77ec792a4e9fb298a0cdee3d751/gseapy-1.1.8-cp310-cp310-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:58c5c74a2086ae9c6db5609d66ce8d34538beb2ce97d74e17f7995e2066acd8b", size = 623015, upload-time = "2025-03-26T22:19:58.514Z" },
+    { url = "https://files.pythonhosted.org/packages/31/65/459145034ec879c0eb05f7d8347e01abb848742dfa164ac4f3b5b9f4fa7d/gseapy-1.1.8-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3c3ebb7bbcd9ec403c8143dae63be9fc6de7500e0c48b9785a772a984eac78ff", size = 590755, upload-time = "2025-03-26T22:20:00.045Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/fb/d678673ca578207d881f917400b14f8f0a8de00c816f17a5da4001aa51ae/gseapy-1.1.8-cp310-cp310-win32.whl", hash = "sha256:579729b64781dcaecd9a59acfcee13004d412d7563bba46c971a9919c2477ca5", size = 387614, upload-time = "2025-03-26T22:20:20.515Z" },
+    { url = "https://files.pythonhosted.org/packages/37/ee/9e2a4f8f94e73fd125985cb33a98fe21c8af66a000e039f0f811903edead/gseapy-1.1.8-cp310-cp310-win_amd64.whl", hash = "sha256:89ca0702279065b3b79ecf66558bdd4aa65db2953bf08fa4a174df99ac5c322c", size = 419381, upload-time = "2025-03-26T22:20:16.886Z" },
 ]
 
 [[package]]
@@ -1463,7 +1464,7 @@ requires-dist = [
     { name = "faiss-gpu" },
     { name = "fastapi" },
     { name = "fastapi-mail", specifier = ">=1.4.0" },
-    { name = "gseapy" },
+    { name = "gseapy", specifier = "==1.1.8" },
     { name = "gunicorn" },
     { name = "gwaslab" },
     { name = "llama-index" },
