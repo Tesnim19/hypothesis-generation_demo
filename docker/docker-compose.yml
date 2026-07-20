@@ -191,6 +191,28 @@ services:
       retries: 5
     restart: unless-stopped
 
+  credible-sets-loader:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - CREDIBLE_SETS_DB_HOST=credible-sets-postgres
+      - CREDIBLE_SETS_DB_PORT=5432
+      - CREDIBLE_SETS_DB_NAME=${CREDIBLE_SETS_DB_NAME}
+      - CREDIBLE_SETS_DB_USER=${CREDIBLE_SETS_DB_USER}
+      - CREDIBLE_SETS_DB_PASSWORD=${CREDIBLE_SETS_DB_PASSWORD}
+      - PYTHONPATH=/app
+    volumes:
+      - ..:/app
+    depends_on:
+      credible-sets-postgres:
+        condition: service_healthy
+    command: >
+      uv run python scripts/load_credible_sets_to_postgres.py --release latest
+    networks:
+      - app_network
+    restart: "no"
+
   prefect-service:
     build:
       context: ..
