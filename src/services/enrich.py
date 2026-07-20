@@ -8,6 +8,7 @@ import pandas as pd
 from loguru import logger
 
 from src.config import Config
+from src.catlas_census_mapping import CatlasMappingError
 from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
 
 _ENSG_RE = re.compile(r"^ENSG\d+$", re.IGNORECASE)
@@ -112,6 +113,8 @@ class Enrich:
                 top_positive_tuples, top_negative_tuples, all_genes = get_coexpression_matrix_for_tissue.fn(
                     relevant_gene, tissue_name, k=k
                 )
+            except CatlasMappingError:
+                raise
             except Exception as e:
                 logger.error(f"Error running CellxGene coexpression analysis: {e}")
                 return self._load_fallback_coexpression_data()

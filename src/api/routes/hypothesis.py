@@ -208,9 +208,14 @@ async def get_hypothesis(
             status_data["status"] = "Failed"
             if hypothesis.get("error") is not None:
                 status_data["error"] = hypothesis.get("error")
+            if hypothesis.get("error_detail") is not None:
+                status_data["error_detail"] = hypothesis.get("error_detail")
         elif latest_state and latest_state.get("state") == "failed":
             status_data["status"] = "Failed"
             status_data["error"] = latest_state.get("error")
+            task_details = latest_state.get("details")
+            if isinstance(task_details, dict) and task_details.get("error_type"):
+                status_data["error_detail"] = task_details
 
         selected_tissue = None
         if gene_expression:

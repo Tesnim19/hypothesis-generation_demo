@@ -17,6 +17,7 @@ from src.config import Config
 from src.utils import get_deps
 from src.tasks.ldsc_sumstats import harmonized_to_ldsc_sumstats_zhang
 from src.catlas_census_mapping import (
+    CatlasMappingError,
     ResolvedCensusCellFilter,
     _escape_soma_string_literal,
     resolve_ldsc_for_census,
@@ -244,7 +245,7 @@ def map_tissues_to_cellxgene(top_tissues):
         resolved = resolve_ldsc_for_census(
             ldsc_name,
             repo_root=config.repo_root,
-            cell_ontology_rel=config.cell_ontology_tsv,
+            mapping_json_rel=config.catlas_celltype_cl_mapping_json,
             catlas_aliases_rel=config.catlas_abc_aliases_tsv,
         )
         results[ldsc_name] = {
@@ -276,7 +277,7 @@ def get_coexpression_matrix_for_tissue(gene, cell_type, k=500, batch_size=1000):
     resolved = resolve_ldsc_for_census(
         cell_type,
         repo_root=config.repo_root,
-        cell_ontology_rel=config.cell_ontology_tsv,
+        mapping_json_rel=config.catlas_celltype_cl_mapping_json,
         catlas_aliases_rel=config.catlas_abc_aliases_tsv,
     )
     log_label = cell_type.replace("_", " ").lower()
@@ -572,6 +573,13 @@ def run_combined_ldsc_tissue_analysis(munged_file, output_dir, project_id, user_
             "top_tissues": ldsc_results_data[:10]
         }
         
+    except CatlasMappingError as e:
+        logger.error(
+            f"[PIPELINE] LDSC tissue mapping failed for {e.ldsc_name!r}: {e}"
+        )
+        if analysis_run_id:
+            gene_expression.update_gene_expression_run_status(analysis_run_id, 'failed')
+        raise
     except Exception as e:
         logger.error(f"[PIPELINE] Combined LDSC + tissue analysis failed: {str(e)}")
         if analysis_run_id:
