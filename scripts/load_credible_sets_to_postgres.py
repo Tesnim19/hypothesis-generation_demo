@@ -273,6 +273,15 @@ def main():
     conn.commit()
     print("Schema created/verified.")
 
+    # Exit early if data is already fully loaded (avoid re-downloading on every restart)
+    with conn.cursor() as cur:
+        cur.execute("SELECT COUNT(*) FROM gwas_study_index")
+        study_count = cur.fetchone()[0]
+    if study_count > 0 and not args.resume:
+        print(f"Data already loaded ({study_count:,} studies in gwas_study_index). Skipping.")
+        conn.close()
+        return
+
     if args.resume:
         n = already_loaded_count(conn)
         if n > 0:
