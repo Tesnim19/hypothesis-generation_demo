@@ -22,8 +22,8 @@ ENV PATH="/opt/prefect-venv/bin:$PATH"
 WORKDIR /app
 
 # Install the Python dependencies
-COPY pyproject.toml .
-RUN uv sync
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen
 
 # Install dependencies for the virutal environment
 # RUN pip install -U prefect open-cravat
