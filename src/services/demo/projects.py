@@ -75,6 +75,11 @@ def resolve_enrich_and_hypothesis_for_write(
         if hypothesis:
             project_id = enrich.get("project_id") or hypothesis.get("project_id")
             if not project_id:
+                logger.warning(
+                    f"[demo] enrich {enrich_id} and hypothesis {hypothesis.get('id')} "
+                    f"for user {current_user_id} both have no project_id; "
+                    "cannot resolve a write context."
+                )
                 return None
             return HypothesisWriteContext(
                 data_user_id=current_user_id,
@@ -92,6 +97,11 @@ def resolve_enrich_and_hypothesis_for_write(
         demo_templates, current_user_id, enrich["project_id"]
     )
     if not access or enrich.get("user_id") != access.owner_user_id:
+        logger.warning(
+            f"[demo] Denied cross-user enrich access: user {current_user_id} "
+            f"requested enrich {enrich_id} (owner={enrich.get('user_id')}, "
+            f"project={enrich.get('project_id')})."
+        )
         return None
 
     source_hypothesis = hypotheses.get_hypothesis_by_enrich(access.owner_user_id, enrich_id)

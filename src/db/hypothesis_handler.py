@@ -109,6 +109,7 @@ class HypothesisHandler(BaseHandler):
                 "enrich_id": enrich_id,
                 "project_id": project_id,
                 "created_at": datetime.now(timezone.utc),
+                "status": "pending",
             }
         )
         for field in ("summary", "graph", "go_id"):
