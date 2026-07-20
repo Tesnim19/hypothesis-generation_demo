@@ -45,6 +45,9 @@ class Config:
         self.ldsc_cts_file = "data/cts/cell_types_available.cts"
         self.cell_ontology_tsv = "data/Cell_ontology.tsv"
         self.catlas_abc_aliases_tsv = "data/catlas_abc_cell_type_aliases.tsv"
+        self.catlas_celltype_cl_mapping_json = (
+            "data/catlas_celltype_cl_mapping.json"
+        )
         self.mail_username = ""
         self.mail_password = ""
         self.mail_from = ""
@@ -116,6 +119,10 @@ class Config:
         config.cell_ontology_tsv = os.getenv("CELL_ONTOLOGY_TSV", "data/Cell_ontology.tsv")
         config.catlas_abc_aliases_tsv = os.getenv(
             "CATLAS_ABC_ALIASES_TSV", "data/catlas_abc_cell_type_aliases.tsv"
+        )
+        config.catlas_celltype_cl_mapping_json = os.getenv(
+            "CATLAS_CELLTYPE_CL_MAPPING_JSON",
+            "data/catlas_celltype_cl_mapping.json",
         )
         config.mail_username = os.getenv("MAIL_USERNAME", "")
         config.mail_password = os.getenv("MAIL_PASSWORD", "")

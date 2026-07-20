@@ -8,6 +8,7 @@ from prefect_dask import DaskTaskRunner
 from src.services.status_tracker import TaskState
 
 from src.config import Config, create_dependencies
+from src.catlas_census_mapping import CatlasMappingError
 from src.tasks import (
     check_enrich,
     get_candidate_genes,
@@ -244,6 +245,27 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
 
         # Return main enrichment
         return {"id": main_enrichment_id}, 200
+
+    except CatlasMappingError as e:
+        error_detail = e.as_detail()
+        logger.error(f"Enrichment flow failed (catlas mapping): {error_detail}")
+
+        hypotheses.update_hypothesis(hypothesis_id, {
+            "status": "failed",
+            "error": str(e),
+            "error_detail": error_detail,
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec='milliseconds') + "Z",
+        })
+
+        emit_task_update(
+            hypothesis_id=hypothesis_id,
+            task_name="Enrichment",
+            state=TaskState.FAILED,
+            error=str(e),
+            details=error_detail,
+            progress=0,
+        )
+        raise
 
     except Exception as e:
         logger.error(f"Enrichment flow failed: {str(e)}")
