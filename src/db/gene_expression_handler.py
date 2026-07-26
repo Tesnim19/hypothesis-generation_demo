@@ -141,6 +141,26 @@ class GeneExpressionHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Error getting tissue selection: {str(e)}")
             return None
+
+    def ensure_tissue_selection_copy(
+        self,
+        source_user_id: str,
+        source_project_id: str,
+        target_user_id: str,
+        target_project_id: str,
+        variant_id: str,
+    ) -> None:
+        """Copy demo tissue selection to a fork when the fork has none yet."""
+        if self.get_tissue_selection(target_user_id, target_project_id, variant_id):
+            return
+        source = self.get_tissue_selection(source_user_id, source_project_id, variant_id)
+        if source and source.get("tissue_name"):
+            self.save_tissue_selection(
+                target_user_id,
+                target_project_id,
+                variant_id,
+                source["tissue_name"],
+            )
     
     
     def get_ldsc_results_for_project(self, user_id, project_id, limit=10, format='summary'):
