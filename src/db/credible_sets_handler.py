@@ -175,6 +175,36 @@ class CredibleSetsHandler:
             logger.warning(f"[CredibleSets] get_credible_sets_for_region({study_id}): {exc}")
             return []
 
+    def get_all_credible_sets_for_study(self, study_id: str) -> list:
+        """
+        Fetch every credible set for a study, regardless of genomic region.
+        Used to bypass COJO + fine-mapping entirely when OpenTargets already
+        has full study-level credible sets. Returns raw rows as dicts — pass
+        each through convert_ot_row_to_credible_set() before saving.
+        """
+        if not study_id or not _PSYCOPG2_OK:
+            return []
+        try:
+            conn = self._get_conn()
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT study_locus_id, study_id, variant_id,
+                           chromosome, position,
+                           beta, p_value_mantissa, p_value_exponent,
+                           effect_allele_frequency, standard_error,
+                           finemap_method, confidence, locus
+                    FROM credible_sets
+                    WHERE study_id = %s
+                    ORDER BY chromosome, position
+                    """,
+                    (study_id,),
+                )
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as exc:
+            logger.warning(f"[CredibleSets] get_all_credible_sets_for_study({study_id}): {exc}")
+            return []
+
     def close(self):
         if self._conn and not self._conn.closed:
             self._conn.close()
