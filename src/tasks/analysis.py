@@ -1122,6 +1122,63 @@ def create_region_batches(cojo_results, batch_size=3):
     logger.info(f"[BATCH] Created {len(batches)} batches from {len(regions)} regions")
     return batches
 
+@task(retries=2)
+def get_results_from_opentargets_task(user_id, project_id, opentargets_study_id, coverage=0.95):
+    """
+    Fetch all OpenTargets pre-computed credible sets for a study and return them
+    in the same DataFrame shape finemap_region_batch_worker produces, so the
+    pipeline can skip COJO and SuSiE fine-mapping entirely when full study-level
+    OpenTargets results are already available.
+    """
+    from src.db.credible_sets_handler import (
+        CredibleSetsHandler, convert_ot_row_to_credible_set,
+    )
+
+    deps = get_deps()
+    analysis_handler = deps["analysis"]
+
+    ot_handler = CredibleSetsHandler()
+    try:
+        ot_rows = ot_handler.get_all_credible_sets_for_study(opentargets_study_id)
+    finally:
+        ot_handler.close()
+
+    if not ot_rows:
+        logger.warning(f"[OT] No credible sets found for study {opentargets_study_id}")
+        return None
+
+    logger.info(f"[OT] Found {len(ot_rows)} credible set(s) for study {opentargets_study_id}")
+
+    import json as _json
+    result_rows = []
+    for cs_idx, ot_row in enumerate(ot_rows, 1):
+        cs = convert_ot_row_to_credible_set(ot_row, coverage=coverage)
+        cs["completed_at"] = datetime.now().isoformat()
+        analysis_handler.save_credible_set(user_id, project_id, cs)
+
+        locus = ot_row.get("locus") or []
+        if isinstance(locus, str):
+            locus = _json.loads(locus)
+        for v in locus:
+            vid = v.get("variantId", "")
+            parts = vid.split("_")
+            result_rows.append({
+                "variant_id": vid,
+                "chromosome": parts[0] if parts else ot_row.get("chromosome"),
+                "position": int(parts[1]) if len(parts) > 1 else ot_row.get("position"),
+                "beta": v.get("beta") or ot_row.get("beta"),
+                "PIP": float(v.get("posteriorProbability") or 0),
+                "cs": cs_idx,
+                "credible_set": cs_idx,
+                "source": "opentargets",
+            })
+
+    if not result_rows:
+        return None
+
+    return pd.DataFrame(result_rows)
+
+
 @task(retries=3)
 def finemap_region_batch_worker(batch_data):
 
