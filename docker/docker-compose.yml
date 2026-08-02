@@ -74,6 +74,11 @@ services:
       - SKIP_SEED=true
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OpenAI}
+      - CREDIBLE_SETS_DB_HOST=credible-sets-postgres
+      - CREDIBLE_SETS_DB_PORT=5432
+      - CREDIBLE_SETS_DB_NAME=${CREDIBLE_SETS_DB_NAME}
+      - CREDIBLE_SETS_DB_USER=${CREDIBLE_SETS_DB_USER}
+      - CREDIBLE_SETS_DB_PASSWORD=${CREDIBLE_SETS_DB_PASSWORD}
     env_file:
       - ../.env
     volumes:
@@ -82,15 +87,17 @@ services:
       - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
     depends_on:
       dask-scheduler:
-        condition: service_healthy  
+        condition: service_healthy
       mongo:
         condition: service_healthy
       prolog-service:
         condition: service_started
       redis:
         condition: service_healthy
+      credible-sets-postgres:
+        condition: service_healthy
     command: >
-      uv run dask worker tcp://dask-scheduler:8786 
+      uv run dask worker tcp://dask-scheduler:8786
       --nworkers 4
       --nthreads 1 
       --memory-limit 40GB
@@ -288,6 +295,11 @@ services:
       - GO_MAP=/app/data/go_map.pkl
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OpenAI}
+      - CREDIBLE_SETS_DB_HOST=credible-sets-postgres
+      - CREDIBLE_SETS_DB_PORT=5432
+      - CREDIBLE_SETS_DB_NAME=${CREDIBLE_SETS_DB_NAME}
+      - CREDIBLE_SETS_DB_USER=${CREDIBLE_SETS_DB_USER}
+      - CREDIBLE_SETS_DB_PASSWORD=${CREDIBLE_SETS_DB_PASSWORD}
     depends_on:
       prefect-service:
         condition: service_healthy
@@ -297,9 +309,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      credible-sets-postgres:
+        condition: service_healthy
     networks:
       - app_network
-  
+
   redis:
     image: redis:7-alpine
     ports:
