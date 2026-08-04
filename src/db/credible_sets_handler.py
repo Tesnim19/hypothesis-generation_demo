@@ -175,6 +175,41 @@ class CredibleSetsHandler:
             logger.warning(f"[CredibleSets] get_credible_sets_for_region({study_id}): {exc}")
             return []
 
+    def search_studies_by_trait(self, trait: str, limit: int = 20) -> list:
+        """
+        Search OpenTargets GWAS studies by trait text (against opentargets_studies,
+        loaded via scripts/load_opentargets_studies.py), joined with whether each
+        study already has precomputed credible sets in gwas_study_index.
+
+        Lets a user pick a real OpenTargets study directly by trait, rather than
+        needing an existing gwas_library entry to already carry a matching
+        study_id.
+        """
+        if not trait or not _PSYCOPG2_OK:
+            return []
+        try:
+            conn = self._get_conn()
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT s.study_id, s.project_id, s.trait_from_source,
+                           s.trait_efo_ids, s.has_sumstats, s.summarystats_location,
+                           s.n_samples,
+                           (g.study_id IS NOT NULL) AS has_credible_sets,
+                           g.credible_set_count
+                    FROM opentargets_studies s
+                    LEFT JOIN gwas_study_index g ON g.study_id = s.study_id
+                    WHERE s.trait_from_source ILIKE %s
+                    ORDER BY has_credible_sets DESC, s.has_sumstats DESC
+                    LIMIT %s
+                    """,
+                    (f"%{trait}%", limit),
+                )
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as exc:
+            logger.warning(f"[CredibleSets] search_studies_by_trait({trait}): {exc}")
+            return []
+
     def get_all_credible_sets_for_study(self, study_id: str) -> list:
         """
         Fetch every credible set for a study, regardless of genomic region.
