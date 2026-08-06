@@ -20,8 +20,8 @@ from src.services.socketio_relay import relay_subscribe_forever
 from src.services.status_tracker import StatusTracker
 from src.api import router
 from src.api.openapi import (
-    API_DESCRIPTION,
     OPENAPI_TAGS,
+    build_api_description,
     configure_openapi,
     get_api_servers,
 )
@@ -106,7 +106,7 @@ def create_app(config: Config) -> python_socketio.ASGIApp:
     fastapi_app = FastAPI(
         title="Hypothesis Generation API",
         version="0.1.0",
-        description=API_DESCRIPTION,
+        description=build_api_description(),
         openapi_tags=OPENAPI_TAGS,
         servers=get_api_servers(),
         openapi_version="3.1.0",

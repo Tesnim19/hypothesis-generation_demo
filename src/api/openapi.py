@@ -7,6 +7,8 @@ import os
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
+from src.api.openapi_websocket import build_websocket_api_docs
+
 DEFAULT_PUBLIC_HOST = "dev.rejuve.bio"
 DEFAULT_PUBLIC_PORT = "5008"
 DEFAULT_PUBLIC_SCHEME = "https"
@@ -58,12 +60,7 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
 ]
 
-API_DESCRIPTION = """\
-Hypothesis Generation API for GWAS-driven gene hypothesis and enrichment workflows.
-
-Integrates enrichment analysis, knowledge-graph reasoning (Prolog), and LLM summarization
-to produce hypothesis graphs and narratives from genetic association data.
-
+_AUTH_AND_PUBLIC_DOCS = """\
 ## Authentication
 
 Most endpoints require a **JWT Bearer token**. Click **Authorize** above and enter:
@@ -91,17 +88,13 @@ Optional claims: `email`.
 | GET | `/gwas-files/download/{file_id}` |
 | GET | `/phenotypes` |
 | POST | `/phenotypes` |
+"""
 
-## Real-time updates
-
-Long-running enrichment, hypothesis, and analysis-pipeline jobs emit progress over
-**Socket.IO** (WebSocket transport). Detailed event documentation will be added here
-in a follow-up update.
-
+_INTERACTIVE_DOCS = """\
 ## Interactive documentation
 
 This service exposes Swagger directly on its API port (same pattern as the annotation
-service at `:5005/docs`). No nginx path is required for `/docs`.
+service at `:5005/docs`).
 
 | Resource | Dev URL |
 |----------|---------|
@@ -146,6 +139,35 @@ def get_api_servers() -> list[dict[str, str]]:
         servers.append({"url": local, "description": "Local development override"})
 
     return servers
+
+
+def _http_origin_from_server_url(url: str) -> str:
+    return url.rstrip("/")
+
+
+def _ws_origin_from_http(url: str) -> str:
+    url = url.rstrip("/")
+    if url.startswith("https://"):
+        return "wss://" + url[len("https://") :]
+    if url.startswith("http://"):
+        return "ws://" + url[len("http://") :]
+    return url
+
+
+def build_api_description() -> str:
+    """Compose the full OpenAPI description (auth + WebSocket + doc links)."""
+    http_origin = _http_origin_from_server_url(get_api_servers()[0]["url"])
+    ws_origin = _ws_origin_from_http(http_origin)
+    return (
+        "Hypothesis Generation API for GWAS-driven gene hypothesis and enrichment workflows.\n\n"
+        "Integrates enrichment analysis, knowledge-graph reasoning (Prolog), and LLM summarization "
+        "to produce hypothesis graphs and narratives from genetic association data.\n\n"
+        + _AUTH_AND_PUBLIC_DOCS
+        + "\n"
+        + build_websocket_api_docs(ws_origin)
+        + "\n"
+        + _INTERACTIVE_DOCS
+    )
 
 
 def configure_openapi(app: FastAPI) -> None:
