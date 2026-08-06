@@ -9,7 +9,7 @@ from src.db import AnalysisHandler, DemoTemplateHandler
 from src.services.demo import resolve_project_access
 from src.utils import convert_variants_to_object_array, serialize_datetime_fields
 
-router = APIRouter()
+router = APIRouter(tags=["analysis"])
 
 
 @router.get("/credible-sets")

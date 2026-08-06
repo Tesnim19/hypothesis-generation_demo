@@ -32,7 +32,7 @@ from src.utils import serialize_datetime_fields
 from src.config import Config
 from src.catlas_census_mapping import CatlasMappingError, validate_ldsc_tissue_mapping
 
-router = APIRouter()
+router = APIRouter(tags=["enrichment"])
 
 
 @router.get("/enrich")

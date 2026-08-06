@@ -7,7 +7,7 @@ from src.api.dependencies import get_phenotype_handler
 from src.db import PhenotypeHandler
 from src.utils import serialize_datetime_fields
 
-router = APIRouter()
+router = APIRouter(tags=["phenotypes"])
 
 
 @router.get("/phenotypes")

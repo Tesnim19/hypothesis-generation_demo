@@ -53,7 +53,7 @@ from src.utils import (
     serialize_datetime_fields,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["projects"])
 
 
 @router.get("/projects")

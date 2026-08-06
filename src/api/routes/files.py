@@ -8,7 +8,7 @@ from src.api.auth import get_current_user_id
 from src.db import FileHandler
 from src.utils import serialize_datetime_fields
 
-router = APIRouter()
+router = APIRouter(tags=["user_files"])
 
 
 @router.get("/user-files")

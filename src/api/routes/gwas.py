@@ -17,7 +17,7 @@ from src.api.auth import get_current_user_id
 from src.api.dependencies import get_file_handler, get_gwas_library_handler, get_storage
 from src.db import FileHandler, GWASLibraryHandler
 
-router = APIRouter()
+router = APIRouter(tags=["gwas_library"])
 
 
 def _download_to_path_sync(url: str, path: str) -> int:

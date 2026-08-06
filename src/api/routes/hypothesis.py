@@ -38,7 +38,7 @@ from src.utils import (
     serialize_datetime_fields,
 )
 
-router = APIRouter()
+router = APIRouter(tags=["hypothesis"])
 
 _HYPOTHESIS_FLOW_WAIT_TIMEOUT = float(os.getenv("HYPOTHESIS_FLOW_WAIT_TIMEOUT", "120"))
 
