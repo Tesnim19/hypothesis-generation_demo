@@ -115,37 +115,9 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
         )
         logger.info(f"[PIPELINE] LDSC + tissue analysis started in background")
 
-        # Update analysis state after harmonization
-        harmonization_state = {
-            "status": "Running",
-            "stage": "Filtering",
-            "progress": 30,
-            "message": "Harmonization completed, filtering significant variants",
-            "started_at": initial_state["started_at"]
-        }
-        save_analysis_state_task.submit(user_id, project_id, harmonization_state).result()
-
-        logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
-        significant_df_result = filter_significant_variants.submit(harmonized_file, output_dir).result()
-
-        # Extract the actual DataFrame
-        if isinstance(significant_df_result, tuple):
-            significant_df, sig_output_path = significant_df_result
-        else:
-            significant_df = significant_df_result
-            sig_output_path = None
-
-        # Update analysis state after filtering
-        filtering_state = {
-            "status": "Running",
-            "stage": "Cojo",
-            "progress": 50,
-            "message": "Filtering completed, running COJO analysis"
-        }
-        save_analysis_state_task.submit(user_id, project_id, filtering_state).result()
-
         # Check whether OpenTargets already has full study-level credible sets.
-        # If so, skip COJO + SuSiE fine-mapping entirely and use OT results directly.
+        # If so, skip filtering + COJO + SuSiE fine-mapping entirely and use OT
+        # results directly — no need to load/filter the harmonized sumstats at all.
         has_ot_results = False
         if opentargets_study_id:
             _ot_check = CredibleSetsHandler()
@@ -162,22 +134,15 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
         if has_ot_results:
             logger.info(
                 f"[PIPELINE] OpenTargets credible sets found for study "
-                f"{opentargets_study_id} — skipping COJO and fine-mapping"
+                f"{opentargets_study_id} — skipping filtering, COJO, and fine-mapping"
             )
-
-            # Cleanup
-            if sig_output_path and os.path.exists(sig_output_path):
-                try:
-                    os.remove(sig_output_path)
-                    logger.info(f"[PIPELINE] Cleaned up temporary file: {sig_output_path}")
-                except Exception as cleanup_e:
-                    logger.warning(f"[PIPELINE] Could not cleanup {sig_output_path}: {cleanup_e}")
 
             ot_state = {
                 "status": "Running",
                 "stage": "OpenTargets_credible_sets",
                 "progress": 70,
                 "message": "Using OpenTargets pre-computed credible sets, skipping COJO and fine-mapping",
+                "started_at": initial_state["started_at"],
             }
             save_analysis_state_task.submit(user_id, project_id, ot_state).result()
 
@@ -186,6 +151,35 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             ).result()
             successful_batches = 1 if combined_results is not None and len(combined_results) > 0 else 0
         else:
+            # Update analysis state after harmonization
+            harmonization_state = {
+                "status": "Running",
+                "stage": "Filtering",
+                "progress": 30,
+                "message": "Harmonization completed, filtering significant variants",
+                "started_at": initial_state["started_at"]
+            }
+            save_analysis_state_task.submit(user_id, project_id, harmonization_state).result()
+
+            logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
+            significant_df_result = filter_significant_variants.submit(harmonized_file, output_dir).result()
+
+            # Extract the actual DataFrame
+            if isinstance(significant_df_result, tuple):
+                significant_df, sig_output_path = significant_df_result
+            else:
+                significant_df = significant_df_result
+                sig_output_path = None
+
+            # Update analysis state after filtering
+            filtering_state = {
+                "status": "Running",
+                "stage": "Cojo",
+                "progress": 50,
+                "message": "Filtering completed, running COJO analysis"
+            }
+            save_analysis_state_task.submit(user_id, project_id, filtering_state).result()
+
             logger.info(f"[PIPELINE] Stage 3: COJO analysis")
 
             config = Config.from_env()

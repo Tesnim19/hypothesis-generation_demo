@@ -211,6 +211,7 @@ services:
       - PYTHONPATH=/app
     volumes:
       - ..:/app
+    entrypoint: []
     depends_on:
       credible-sets-postgres:
         condition: service_healthy
