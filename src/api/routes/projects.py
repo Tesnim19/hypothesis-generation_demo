@@ -7,7 +7,9 @@ import re
 import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request
+from typing import Union
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 from werkzeug.utils import secure_filename
@@ -37,6 +39,15 @@ from src.db import (
 from src.tasks.project import count_gwas_records, get_project_with_full_data
 from src.api.auth import get_current_user_id, get_current_user_email
 from src.api.dependencies import get_demo_template_handler
+from src.api.schemas import (
+    AnalysisPipelineStartResponse,
+    BulkDeleteProjectsOkResponse,
+    BulkDeleteProjectsPartialResponse,
+    BulkDeleteProjectsRequest,
+    FlexibleDict,
+    ProjectDeleteMessage,
+    ProjectsListResponse,
+)
 from src.services.demo import (
     apply_demo_flags_to_owned_project,
     build_demo_template_summaries,
@@ -56,7 +67,11 @@ from src.utils import (
 router = APIRouter(tags=["projects"])
 
 
-@router.get("/projects")
+@router.get(
+    "/projects",
+    response_model=Union[FlexibleDict, ProjectsListResponse],
+    summary="List projects or get one by id",
+)
 async def get_projects(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
@@ -178,10 +193,14 @@ async def get_projects(
     )
     enhanced_projects = demo_entries + enhanced_projects
 
-    return {"projects": serialize_datetime_fields(enhanced_projects)}
+    return ProjectsListResponse(projects=serialize_datetime_fields(enhanced_projects))
 
 
-@router.delete("/projects")
+@router.delete(
+    "/projects",
+    response_model=ProjectDeleteMessage,
+    summary="Delete a project",
+)
 async def delete_project(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
@@ -196,29 +215,22 @@ async def delete_project(
     if result is False:
         raise HTTPException(status_code=500, detail="Failed to delete project")
     if isinstance(result, dict) and result.get("deleted_count", 0) > 0:
-        return {"message": "Project deleted successfully"}
+        return ProjectDeleteMessage(message="Project deleted successfully")
     raise HTTPException(status_code=404, detail="Project not found or access denied")
 
 
-@router.post("/projects/delete")
+@router.post(
+    "/projects/delete",
+    response_model=Union[BulkDeleteProjectsOkResponse, BulkDeleteProjectsPartialResponse],
+    summary="Bulk delete projects",
+)
 async def bulk_delete_projects(
-    data: dict = Body(...),
+    data: BulkDeleteProjectsRequest,
     current_user_id: str = Depends(get_current_user_id),
     projects: ProjectHandler = Depends(get_project_handler),
     demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
-    project_ids = data.get("project_ids")
-
-    if not project_ids:
-        raise HTTPException(
-            status_code=400, detail="project_ids is required in request body"
-        )
-    if not isinstance(project_ids, list):
-        raise HTTPException(status_code=400, detail="project_ids must be a list")
-    if not project_ids:
-        raise HTTPException(
-            status_code=400, detail="project_ids list cannot be empty"
-        )
+    project_ids = data.project_ids
 
     protected = [
         pid for pid in project_ids if demo_templates.is_registered_template_project(pid)
@@ -233,27 +245,32 @@ async def bulk_delete_projects(
 
     if result and isinstance(result, dict):
         if result["success"]:
-            return {
-                "message": f"Successfully deleted {result['deleted_count']} project(s)",
-                "deleted_count": result["deleted_count"],
-                "total_requested": result["total_requested"],
-            }
+            return BulkDeleteProjectsOkResponse(
+                message=f"Successfully deleted {result['deleted_count']} project(s)",
+                deleted_count=result["deleted_count"],
+                total_requested=result["total_requested"],
+            )
         return JSONResponse(
-            content={
-                "message": (
+            content=BulkDeleteProjectsPartialResponse(
+                message=(
                     f"Partially deleted {result['deleted_count']}/{result['total_requested']}"
                     " project(s)"
                 ),
-                "deleted_count": result["deleted_count"],
-                "total_requested": result["total_requested"],
-                "errors": result.get("errors"),
-            },
+                deleted_count=result["deleted_count"],
+                total_requested=result["total_requested"],
+                errors=result.get("errors"),
+            ).model_dump(),
             status_code=207,
         )
     raise HTTPException(status_code=500, detail="Failed to delete projects")
 
 
-@router.post("/analysis-pipeline", status_code=202)
+@router.post(
+    "/analysis-pipeline",
+    status_code=202,
+    response_model=AnalysisPipelineStartResponse,
+    summary="Start GWAS analysis pipeline",
+)
 async def post_analysis_pipeline(
     request: Request,
     current_user_id: str = Depends(get_current_user_id),
@@ -660,13 +677,13 @@ async def post_analysis_pipeline(
             ),
         )
 
-        return {
-            "status": "started",
-            "project_id": project_id,
-            "file_id": file_metadata_id,
-            "message": "Analysis pipeline started successfully",
+        return AnalysisPipelineStartResponse(
+            status="started",
+            project_id=project_id,
+            file_id=file_metadata_id,
+            message="Analysis pipeline started successfully",
             **sample_size_resolution.to_api_dict(),
-        }
+        )
 
     except HTTPException:
         raise

@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class HypothesisGraphResponse(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str
+    hypothesis_id: str
+    summary: Any | None = None
+    graph: Any | None = None
+    enrich_id: str | None = None
+    project_id: str | None = None
+    forked: bool = False
+
+
+class HypothesisChatResponse(BaseModel):
+    response: Any | None = None
+
+
+class BulkDeleteHypothesesRequest(BaseModel):
+    hypothesis_ids: list[str] = Field(..., min_length=1)
+
+
+class HypothesisChatForm(BaseModel):
+    query: str = Field(..., min_length=1)
+    hypothesis_id: str = Field(..., min_length=1)
+
+    @classmethod
+    def from_form(cls, form: Any) -> HypothesisChatForm:
+        query = form.get("query")
+        hypothesis_id = form.get("hypothesis_id")
+        if not query or not hypothesis_id:
+            raise ValueError("query and hypothesis_id are required")
+        return cls(query=str(query), hypothesis_id=str(hypothesis_id))
