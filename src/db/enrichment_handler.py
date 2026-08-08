@@ -77,6 +77,32 @@ class EnrichmentHandler(BaseHandler):
 
         return enriches if enriches else []
 
+    def ensure_enrich_copy_for_user(self, source_enrich: dict, user_id: str, project_id: str) -> str:
+        """Return an enrichment id owned by user_id for the forked project."""
+        existing = self.get_enrich_by_phenotype_and_variant(
+            source_enrich["phenotype"],
+            source_enrich["variant"],
+            user_id,
+        )
+        if existing and existing.get("project_id") == project_id:
+            return existing["id"]
+
+        new_doc = {key: value for key, value in source_enrich.items() if key != "_id"}
+        new_doc.update(
+            {
+                "id": str(uuid4()),
+                "user_id": user_id,
+                "project_id": project_id,
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        self.enrich_collection.insert_one(new_doc)
+        logger.info(
+            f"Copied enrichment {source_enrich['id']} to user {user_id} "
+            f"as {new_doc['id']} in project {project_id}"
+        )
+        return new_doc["id"]
+
     def delete_enrich(self, user_id, enrich_id):
         """Delete enrichment entry"""
         result = self.enrich_collection.delete_one({'id': enrich_id, 'user_id': user_id})

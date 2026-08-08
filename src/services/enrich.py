@@ -156,7 +156,7 @@ class Enrich:
         If coexpression_data is provided (from Dask task), use it instead of computing.
         """
         library = "GO_Biological_Process_2023"
-        organism = "Human"
+        organism = "human"
         causal_gene_symbol = self.to_symbol(relevant_gene)
         ensembl_gene = self.to_ensembl_id(relevant_gene)
         if ensembl_gene is None:

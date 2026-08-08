@@ -11,7 +11,7 @@ dependencies = [
     "gunicorn",
     "redis",
     "python-multipart",
-    "gseapy",
+    "gseapy==1.1.8",
     "faiss-gpu",
     "python-dotenv",
     "PyJWT==2.9.0",
@@ -24,6 +24,7 @@ dependencies = [
     "llama-index-llms-anthropic",
     "pengines",
     "prefect>=2.14.0,<3.0.0",
+    "anyio>=3.7.1,<4.14",
     "asyncpg",
     "bokeh>=3.1.0",
 
