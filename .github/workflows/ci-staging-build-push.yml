@@ -15,7 +15,7 @@ env:
 jobs:
   # SonarQube Code Quality Analysis
   code-quality-analysis:
-    runs-on: self-hosted
+    runs-on: [self-hosted, dev-runner]
     if: github.event_name == 'pull_request' || github.event_name == 'push'
 
     steps:
@@ -88,7 +88,7 @@ jobs:
     if: |
       (github.event_name == 'pull_request') ||
       (github.event_name == 'push')
-    runs-on: self-hosted
+    runs-on: [self-hosted, dev-runner]
 
     outputs:
       validation-status: ${{ steps.validate.outcome }}
@@ -797,7 +797,7 @@ jobs:
 
   # Email Notifications
   notify-success:
-    runs-on: self-hosted
+    runs-on: [self-hosted, dev-runner]
     needs: [build-and-test-all]
     if: success() && github.event_name == 'push'
     steps:
@@ -830,7 +830,7 @@ jobs:
           - ${{ env.DOCKER_HUB_ORG }}/hypothesis-generation-prefect-deployment:staging
 
   notify-failure:
-    runs-on: self-hosted
+    runs-on: [self-hosted, dev-runner]
     needs: [build-and-test-all]
     if: failure() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
     steps:
@@ -857,7 +857,7 @@ jobs:
           Please check the workflow logs for details.
 
   validation-summary:
-    runs-on: self-hosted
+    runs-on: [self-hosted, dev-runner]
     needs: build-and-test-all
     if: always()
     steps:
