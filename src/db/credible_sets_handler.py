@@ -43,11 +43,52 @@ def _log_pvalue(mantissa, exponent) -> Optional[float]:
         return None
 
 
-def convert_ot_row_to_credible_set(ot_row: dict, coverage: float = 0.95) -> dict:
+def build_rsid_lookup_from_harmonized_file(harmonized_file: str) -> dict:
+    """
+    Build a {(chromosome, position): rsid} lookup from a harmonized sumstats
+    file, so OpenTargets credible sets (which carry no rsID) can be enriched
+    with the rsIDs the harmonization step already resolved.
+
+    Returns an empty dict if the file has no rsid/RS_ID column — callers must
+    treat missing entries as "no rsid available", not an error.
+    """
+    import pandas as pd
+
+    if not harmonized_file or not os.path.exists(harmonized_file):
+        return {}
+
+    try:
+        header = pd.read_csv(harmonized_file, sep='\t', compression='gzip', nrows=0, low_memory=False)
+    except Exception as exc:
+        logger.warning(f"[CredibleSets] could not read harmonized file header for rsid lookup: {exc}")
+        return {}
+
+    rsid_col = next((c for c in ('rsid', 'RS_ID') if c in header.columns), None)
+    if rsid_col is None or 'chromosome' not in header.columns or 'base_pair_location' not in header.columns:
+        logger.info("[CredibleSets] harmonized file has no rsid column — OT credible sets will have null rs_id")
+        return {}
+
+    df = pd.read_csv(
+        harmonized_file, sep='\t', compression='gzip', low_memory=False,
+        usecols=['chromosome', 'base_pair_location', rsid_col],
+    )
+    lookup = {}
+    for chrom, pos, rsid in zip(df['chromosome'], df['base_pair_location'], df[rsid_col]):
+        if pd.notna(rsid):
+            lookup[(str(chrom), int(pos))] = rsid
+    return lookup
+
+
+def convert_ot_row_to_credible_set(ot_row: dict, coverage: float = 0.95, rsid_lookup: Optional[dict] = None) -> dict:
     """
     Convert one OpenTargets credible set row (from credible_sets table) into the
     format expected by AnalysisHandler.save_credible_set().
+
+    *rsid_lookup*, if given, is a {(chromosome, position): rsid} map (see
+    build_rsid_lookup_from_harmonized_file) used to enrich OT variants, which
+    otherwise carry no rsID at all.
     """
+    rsid_lookup = rsid_lookup or {}
     locus = ot_row.get("locus") or []
     if isinstance(locus, str):
         locus = json.loads(locus)
@@ -70,7 +111,9 @@ def convert_ot_row_to_credible_set(ot_row: dict, coverage: float = 0.95) -> dict
         positions.append(parsed["position"] or ot_row.get("position"))
         ref_alleles.append(parsed["ref_allele"])
         minor_alleles.append(parsed["minor_allele"])
-        rs_ids.append(None)
+        chrom = parsed["chromosome"] or ot_row.get("chromosome")
+        pos = parsed["position"] or ot_row.get("position")
+        rs_ids.append(rsid_lookup.get((str(chrom), int(pos))) if chrom is not None and pos is not None else None)
         ref_allele_freqs.append(float(lead_eaf) if lead_eaf is not None else None)
 
         lv = _log_pvalue(v.get("pValueMantissa"), v.get("pValueExponent"))
