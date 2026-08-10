@@ -36,6 +36,17 @@ import pyarrow.parquet as pq
 BASE_URL = "https://ftp.ebi.ac.uk/pub/databases/opentargets/platform"
 FOLDER = "credible_set"
 BATCH_SIZE = 5000
+# Row-group read batch size for streaming a parquet file instead of loading it
+# whole into memory (a single file can be ~235MB, enough to OOM the loader).
+CHUNK_ROWS = 1_000
+# Rows vary wildly in size — some credible sets carry huge `locus`/`ld_set`
+# JSONB blobs (one file had a row group averaging ~27KB/row). Capping a
+# single execute_values() call by row count alone still let a ~135MB insert
+# through, which is what actually killed the Postgres connection. So each
+# insert is also capped by estimated serialized bytes.
+MAX_INSERT_BYTES = 8 * 1024 * 1024
+# Retries per chunk insert before giving up on that chunk and moving on.
+CHUNK_RETRIES = 2
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS credible_sets (
@@ -226,25 +237,82 @@ def already_loaded_count(conn) -> int:
         return cur.fetchone()[0]
 
 
-def process_file(conn, url: str, file_num: int, total: int) -> int:
+def insert_chunk_with_retry(conn, records: list):
+    """
+    Insert one chunk of rows, reconnecting and retrying if the connection
+    died server-side (e.g. OOM-killed) mid-insert. Returns the (possibly new)
+    connection object — callers must keep using the returned conn.
+    """
+    last_exc = None
+    for attempt in range(CHUNK_RETRIES + 1):
+        try:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(cur, INSERT_SQL, records, page_size=BATCH_SIZE)
+            conn.commit()
+            return conn
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as exc:
+            last_exc = exc
+            print(f"    DB connection lost ({exc}); reconnecting (attempt {attempt + 1})", file=sys.stderr)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            conn = get_conn()
+    raise last_exc
+
+
+def _estimate_row_bytes(record: tuple) -> int:
+    """Cheap size estimate dominated by the locus/ld_set JSONB text fields."""
+    size = 200  # fixed-width columns overhead
+    for v in record:
+        if isinstance(v, str):
+            size += len(v)
+    return size
+
+
+def process_file(conn, url: str, file_num: int, total: int):
+    """
+    Stream one parquet file in row-group-sized reads, then flush inserts in
+    byte-capped sub-batches (see MAX_INSERT_BYTES) so memory usage AND the
+    size of any single execute_values() call stay bounded, regardless of how
+    large individual rows are. Returns (conn, rows_inserted) — conn may be a
+    new connection object if a reconnect happened mid-file.
+    """
     fname = url.split("/")[-1]
     print(f"  [{file_num}/{total}] {fname} ... ", end="", flush=True)
 
+    inserted = 0
+    pending, pending_bytes = [], 0
+    t0 = time.time()
+
+    def flush():
+        nonlocal conn, inserted, pending, pending_bytes
+        if not pending:
+            return
+        conn = insert_chunk_with_retry(conn, pending)
+        inserted += len(pending)
+        pending, pending_bytes = [], 0
+
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp:
-        t0 = time.time()
         urllib.request.urlretrieve(url, tmp.name)
-        table = pq.read_table(tmp.name)
+        parquet_file = pq.ParquetFile(tmp.name)
 
-    df = table.to_pandas()
-    df = df[df["studyType"] == "gwas"]
-    records = [row_to_tuple(r) for r in df.to_dict("records")]
+        for batch in parquet_file.iter_batches(batch_size=CHUNK_ROWS):
+            df = batch.to_pandas()
+            df = df[df["studyType"] == "gwas"]
+            if df.empty:
+                continue
+            for row in df.to_dict("records"):
+                record = row_to_tuple(row)
+                record_bytes = _estimate_row_bytes(record)
+                if pending and pending_bytes + record_bytes > MAX_INSERT_BYTES:
+                    flush()
+                pending.append(record)
+                pending_bytes += record_bytes
+        flush()
 
-    with conn.cursor() as cur:
-        psycopg2.extras.execute_values(cur, INSERT_SQL, records, page_size=BATCH_SIZE)
-    conn.commit()
-
-    print(f"{len(records):,} gwas rows  ({time.time()-t0:.1f}s)", flush=True)
-    return len(records)
+    print(f"{inserted:,} gwas rows  ({time.time()-t0:.1f}s)", flush=True)
+    return conn, inserted
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -295,10 +363,21 @@ def main():
 
     for i, url in enumerate(urls, 1):
         try:
-            total_rows += process_file(conn, url, i, len(urls))
+            conn, rows = process_file(conn, url, i, len(urls))
+            total_rows += rows
         except Exception as exc:
             print(f"ERROR on {url}: {exc}", file=sys.stderr)
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                # Connection is dead beyond the retries already attempted in
+                # process_file — reconnect so the loop can continue to the
+                # remaining files instead of exiting.
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = get_conn()
 
     elapsed = time.time() - t_start
     final_count = already_loaded_count(conn)
