@@ -1123,15 +1123,20 @@ def create_region_batches(cojo_results, batch_size=3):
     return batches
 
 @task(retries=2)
-def get_results_from_opentargets_task(user_id, project_id, opentargets_study_id, coverage=0.95):
+def get_results_from_opentargets_task(user_id, project_id, opentargets_study_id, coverage=0.95, harmonized_file=None):
     """
     Fetch all OpenTargets pre-computed credible sets for a study and return them
     in the same DataFrame shape finemap_region_batch_worker produces, so the
     pipeline can skip COJO and SuSiE fine-mapping entirely when full study-level
     OpenTargets results are already available.
+
+    *harmonized_file*, if given, is used to enrich OT variants with rsIDs
+    (OT's own credible_sets table carries no rsID) since harmonization always
+    runs and already resolves them.
     """
     from src.db.credible_sets_handler import (
         CredibleSetsHandler, convert_ot_row_to_credible_set,
+        build_rsid_lookup_from_harmonized_file,
     )
 
     deps = get_deps()
@@ -1149,10 +1154,13 @@ def get_results_from_opentargets_task(user_id, project_id, opentargets_study_id,
 
     logger.info(f"[OT] Found {len(ot_rows)} credible set(s) for study {opentargets_study_id}")
 
+    rsid_lookup = build_rsid_lookup_from_harmonized_file(harmonized_file)
+    logger.info(f"[OT] rsID lookup built with {len(rsid_lookup)} entries from harmonized file")
+
     import json as _json
     result_rows = []
     for cs_idx, ot_row in enumerate(ot_rows, 1):
-        cs = convert_ot_row_to_credible_set(ot_row, coverage=coverage)
+        cs = convert_ot_row_to_credible_set(ot_row, coverage=coverage, rsid_lookup=rsid_lookup)
         cs["completed_at"] = datetime.now().isoformat()
         analysis_handler.save_credible_set(user_id, project_id, cs)
 

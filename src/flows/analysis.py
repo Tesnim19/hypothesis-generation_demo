@@ -147,7 +147,8 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             save_analysis_state_task.submit(user_id, project_id, ot_state).result()
 
             combined_results = get_results_from_opentargets_task.submit(
-                user_id, project_id, opentargets_study_id, coverage=coverage
+                user_id, project_id, opentargets_study_id, coverage=coverage,
+                harmonized_file=harmonized_file
             ).result()
             successful_batches = 1 if combined_results is not None and len(combined_results) > 0 else 0
         else:
