@@ -84,7 +84,7 @@ services:
     volumes:
       - ..:/app
       - ../data:/app/data
-      - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
+      - ${EXTERNAL_DATA_PATH}:/app/data/external_data
     depends_on:
       dask-scheduler:
         condition: service_healthy
@@ -265,7 +265,7 @@ services:
     volumes:
       - ..:/app
       - ../data:/app/data
-      - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
+      - ${EXTERNAL_DATA_PATH}:/app/data/external_data
     env_file:
       - ../.env
     command: >
