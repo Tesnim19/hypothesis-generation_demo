@@ -29,6 +29,8 @@ from src.services.demo import (
 )
 from src.run_deployment import invoke_enrichment_deployment
 from src.utils import serialize_datetime_fields
+from src.config import Config
+from src.catlas_census_mapping import CatlasMappingError, validate_ldsc_tissue_mapping
 
 router = APIRouter()
 
@@ -129,6 +131,16 @@ async def post_enrich(
                 status_code=400,
                 detail=f"Invalid tissue selection. Available tissues: {tissue_names}",
             )
+        config = Config.from_env()
+        try:
+            validate_ldsc_tissue_mapping(
+                tissue_name,
+                repo_root=config.repo_root,
+                mapping_json_rel=config.catlas_celltype_cl_mapping_json,
+                catlas_aliases_rel=config.catlas_abc_aliases_tsv,
+            )
+        except CatlasMappingError as exc:
+            raise HTTPException(status_code=422, detail=exc.as_detail()) from exc
         gene_expression.save_tissue_selection(
             current_user_id, project_id, variant, tissue_name
         )
