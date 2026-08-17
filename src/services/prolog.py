@@ -75,7 +75,10 @@ class PrologQuery:
             try:
                 result = self.execute_query(query)
                 if result and len(result) > 0:
-                    gene_ids.append(result[0])
+                    raw = result[0]
+                    if isinstance(raw, str) and raw.startswith("gene(") and raw.endswith(")"):
+                        raw = raw[5:-1]
+                    gene_ids.append(raw)
                 else:
                     logger.warning(f"No gene ID found for gene name: {gene_name}")
                     gene_ids.append(gene_name)  

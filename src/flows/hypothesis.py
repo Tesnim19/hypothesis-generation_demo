@@ -85,23 +85,32 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
         f"(Ensembl: {causal_gene_ensembl})"
     )
 
-    # Standardize variant IDs
+    # Standardize variant IDs (variant_id/2 may be unavailable or return no results)
     variant_nodes = [n for n in nodes if n["type"] == "snp"]
     variant_rsids = [n['id'] for n in variant_nodes]
     variant_entities = [f"snp({id})" for id in variant_rsids]
     query = f"maplist(variant_id, {variant_entities}, X)".replace("'", "")
 
-    variant_ids = execute_variant_query.submit(query, hypothesis_id).result()
-    for variant_id, rsid, node in zip(variant_ids, variant_rsids, variant_nodes):
-        variant_id = variant_id.replace("'", "")
-        node["id"] = variant_id
+    try:
+        variant_ids = execute_variant_query.submit(query, hypothesis_id).result()
+        if not variant_ids or len(variant_ids) != len(variant_rsids):
+            raise ValueError("variant_id query returned no or incomplete results")
+    except Exception as e:
+        logger.warning(
+            f"variant_id/2 query failed ({e}); using rsIDs directly as variant IDs"
+        )
+        variant_ids = variant_rsids
+
+    for resolved_id, rsid, node in zip(variant_ids, variant_rsids, variant_nodes):
+        resolved_id = str(resolved_id).replace("'", "")
+        node["id"] = resolved_id
         node["name"] = rsid
         source_edges = [e for e in edges if e["source"] == rsid]
         target_edges = [e for e in edges if e["target"] == rsid]
         for edge in source_edges:
-            edge["source"] = variant_id
+            edge["source"] = resolved_id
         for edge in target_edges:
-            edge["target"] = variant_id
+            edge["target"] = resolved_id
 
     gene_nodes = [n for n in nodes if n["type"] == "gene"]
     prolog_gene_nodes = []
