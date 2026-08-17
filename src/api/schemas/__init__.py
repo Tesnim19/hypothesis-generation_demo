@@ -15,6 +15,7 @@ from src.api.schemas.gwas import (
     SampleSizeInfoResponse,
 )
 from src.api.schemas.hypothesis import (
+    BulkDeleteHypothesesResponse,
     BulkDeleteHypothesesRequest,
     HypothesisChatForm,
     HypothesisChatResponse,
@@ -38,6 +39,7 @@ from src.api.schemas.projects import (
 __all__ = [
     "AnalysisPipelineStartResponse",
     "BulkDeleteHypothesesRequest",
+    "BulkDeleteHypothesesResponse",
     "BulkDeleteProjectsOkResponse",
     "BulkDeleteProjectsPartialResponse",
     "BulkDeleteProjectsRequest",

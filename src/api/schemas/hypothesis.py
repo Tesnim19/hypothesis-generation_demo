@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HypothesisGraphResponse(BaseModel):
@@ -23,6 +23,19 @@ class HypothesisChatResponse(BaseModel):
 
 class BulkDeleteHypothesesRequest(BaseModel):
     hypothesis_ids: list[str] = Field(..., min_length=1)
+
+
+class BulkDeleteHypothesisFailure(BaseModel):
+    id: str
+    reason: str
+
+
+class BulkDeleteHypothesesResponse(BaseModel):
+    message: str
+    deleted_count: int
+    enrichments_deleted: int
+    successful: list[str]
+    failed: list[BulkDeleteHypothesisFailure]
 
 
 class HypothesisChatForm(BaseModel):

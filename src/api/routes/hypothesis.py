@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from typing import Union
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -20,11 +20,13 @@ from src.api.dependencies import (
 from src.api.auth import get_current_user_id
 from src.api.schemas import (
     BulkDeleteHypothesesRequest,
+    BulkDeleteHypothesesResponse,
     FlexibleDict,
     FlexibleList,
     HypothesisChatForm,
     HypothesisChatResponse,
     HypothesisGraphResponse,
+    MessageResponse,
 )
 from src.db import (
     DemoTemplateHandler,
@@ -423,19 +425,32 @@ async def post_hypothesis(
     )
 
 
-@router.delete("/hypothesis")
+@router.delete(
+    "/hypothesis",
+    response_model=MessageResponse,
+    responses={404: {"model": MessageResponse}},
+)
 async def delete_hypothesis(
     hypothesis_id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
     hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
 ):
     if hypothesis_id:
-        return hypotheses.delete_hypothesis(current_user_id, hypothesis_id)
+        result, status_code = hypotheses.delete_hypothesis(
+            current_user_id, hypothesis_id
+        )
+        return JSONResponse(content=result, status_code=status_code)
     raise HTTPException(status_code=400, detail="Hypothesis ID is required")
 
 
 @router.post(
     "/hypothesis/delete",
+    response_model=BulkDeleteHypothesesResponse,
+    responses={
+        207: {"model": BulkDeleteHypothesesResponse},
+        400: {"model": MessageResponse},
+        404: {"model": MessageResponse},
+    },
     summary="Bulk delete hypotheses",
 )
 async def bulk_delete_hypotheses(
@@ -455,12 +470,13 @@ async def bulk_delete_hypotheses(
     summary="Chat over a hypothesis graph",
 )
 async def chat(
-    request: Request,
+    query: str | None = Form(None),
+    hypothesis_id: str | None = Form(None),
     current_user_id: str = Depends(get_current_user_id),
     hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
     llm: LLM = Depends(get_llm),
 ):
-    form = await request.form()
+    form = {"query": query, "hypothesis_id": hypothesis_id}
     try:
         chat_form = HypothesisChatForm.from_form(form)
     except ValueError as exc:

@@ -6,6 +6,7 @@ from typing import Union
 from uuid import uuid4
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from loguru import logger
 
 from src.api.dependencies import (
@@ -21,6 +22,7 @@ from src.api.schemas import (
     EnrichPostBody,
     EnrichmentsListResponse,
     FlexibleDict,
+    MessageResponse,
 )
 from src.db import (
     DemoTemplateHandler,
@@ -100,6 +102,9 @@ async def get_enrich(
 async def post_enrich(
     request: Request,
     body: EnrichPostBody | None = Body(None),
+    variant: str | None = Query(None),
+    project_id: str | None = Query(None),
+    tissue_name: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
     projects: ProjectHandler = Depends(get_project_handler),
     hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
@@ -113,8 +118,8 @@ async def post_enrich(
         except Exception:
             payload = {}
 
-    variant = request.query_params.get("variant") or payload.get("variant")
-    project_id = request.query_params.get("project_id") or payload.get("project_id")
+    variant = variant or payload.get("variant")
+    project_id = project_id or payload.get("project_id")
     seed = int(payload.get("seed", 42))
 
     if not project_id:
@@ -139,7 +144,7 @@ async def post_enrich(
 
     phenotype = project["phenotype"]
 
-    tissue_name = request.query_params.get("tissue_name") or payload.get("tissue_name")
+    tissue_name = tissue_name or payload.get("tissue_name")
     if not tissue_name:
         raise HTTPException(status_code=400, detail="tissue_name is required")
 
@@ -228,13 +233,17 @@ async def post_enrich(
     )
 
 
-@router.delete("/enrich")
+@router.delete(
+    "/enrich",
+    response_model=MessageResponse,
+    responses={404: {"model": MessageResponse}},
+)
 async def delete_enrich(
     id: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
     enrichment: EnrichmentHandler = Depends(get_enrichment_handler),
 ):
     if id:
-        result = enrichment.delete_enrich(current_user_id, id)
-        return result
+        result, status_code = enrichment.delete_enrich(current_user_id, id)
+        return JSONResponse(content=result, status_code=status_code)
     raise HTTPException(status_code=400, detail="enrich id is required!")

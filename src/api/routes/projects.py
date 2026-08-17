@@ -9,7 +9,7 @@ from datetime import datetime
 
 from typing import Union
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 from loguru import logger
 from werkzeug.utils import secure_filename
@@ -273,6 +273,21 @@ async def bulk_delete_projects(
 )
 async def post_analysis_pipeline(
     request: Request,
+    project_name: str | None = Form(None),
+    population: str = Form("EUR"),
+    max_workers: str = Form("3"),
+    is_uploaded: str = Form("false"),
+    gwas_file_input: UploadFile | str | None = File(None, alias="gwas_file"),
+    maf_threshold: str = Form("0.01"),
+    seed: str = Form("42"),
+    window: str = Form("2000"),
+    L: str = Form("-1"),
+    coverage: str = Form("0.95"),
+    min_abs_corr: str = Form("0.5"),
+    batch_size: str = Form("5"),
+    sample_size: str | None = Form(None),
+    phenotype: str | None = Form(None),
+    ref_genome: str | None = Form(None),
     current_user_id: str = Depends(get_current_user_id),
     projects: ProjectHandler = Depends(get_project_handler),
     files: FileHandler = Depends(get_file_handler),
@@ -284,21 +299,34 @@ async def post_analysis_pipeline(
     try:
         form = await request.form()
 
-        project_name: str | None = form.get("project_name")
-        population: str = form.get("population", "EUR")
-        max_workers: int = int(form.get("max_workers", 3))
-        is_uploaded: bool = form.get("is_uploaded", "false").lower() == "true"
+        def preserve_explicit_empty(name: str, value):
+            if name in form and form.get(name) == "":
+                return ""
+            return value
 
-        gwas_file = form.get("gwas_file") if is_uploaded else None
+        project_name = preserve_explicit_empty("project_name", project_name)
+        population = preserve_explicit_empty("population", population)
+        max_workers = int(preserve_explicit_empty("max_workers", max_workers))
+        is_uploaded = (
+            preserve_explicit_empty("is_uploaded", is_uploaded).lower() == "true"
+        )
 
-        maf_threshold: float = float(form.get("maf_threshold", 0.01))
-        seed: int = int(form.get("seed", 42))
-        window: int = int(form.get("window", 2000))
-        L: int = int(form.get("L", -1))
-        coverage: float = float(form.get("coverage", 0.95))
-        min_abs_corr: float = float(form.get("min_abs_corr", 0.5))
-        batch_size: int = int(form.get("batch_size", 5))
-        _ss = form.get("sample_size")
+        gwas_file_input = preserve_explicit_empty("gwas_file", gwas_file_input)
+        gwas_file = gwas_file_input if is_uploaded else None
+
+        maf_threshold = float(
+            preserve_explicit_empty("maf_threshold", maf_threshold)
+        )
+        seed = int(preserve_explicit_empty("seed", seed))
+        window = int(preserve_explicit_empty("window", window))
+        L = int(preserve_explicit_empty("L", L))
+        coverage = float(preserve_explicit_empty("coverage", coverage))
+        min_abs_corr = float(
+            preserve_explicit_empty("min_abs_corr", min_abs_corr)
+        )
+        batch_size = int(preserve_explicit_empty("batch_size", batch_size))
+        sample_size = preserve_explicit_empty("sample_size", sample_size)
+        _ss = sample_size
         try:
             form_sample_size: int | None = (
                 int(_ss) if _ss not in (None, "") else None
@@ -310,19 +338,20 @@ async def post_analysis_pipeline(
             )
 
         gwas_entry = None
-        file_id_param: str | None = form.get("gwas_file") if not is_uploaded else None
+        file_id_param = gwas_file_input if not is_uploaded else None
 
         if not is_uploaded and file_id_param and gwas_library:
             gwas_entry = gwas_library.get_gwas_entry(file_id=file_id_param)
 
-        phenotype: str | None = form.get("phenotype")
+        phenotype = preserve_explicit_empty("phenotype", phenotype)
         if not phenotype and gwas_entry:
             phenotype = gwas_entry.get("description") or gwas_entry.get("phenotype_code")
             # Clean up leading '#' if it exists in the library description
             if isinstance(phenotype, str) and phenotype.startswith("#"):
                 phenotype = phenotype.lstrip("#").strip()
 
-        raw_ref_genome = form.get("ref_genome")
+        ref_genome = preserve_explicit_empty("ref_genome", ref_genome)
+        raw_ref_genome = ref_genome
         ref_genome: str = raw_ref_genome or "GRCh37"
 
         if gwas_entry and (not raw_ref_genome or raw_ref_genome == "GRCh37"):
@@ -404,7 +433,7 @@ async def post_analysis_pipeline(
         _gwas_library_id: str | None = None
 
         if not is_uploaded:
-            file_id_param: str | None = form.get("gwas_file")
+            file_id_param = gwas_file_input
             if not file_id_param:
                 raise HTTPException(
                     status_code=400,
