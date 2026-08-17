@@ -9,10 +9,6 @@ from fastapi.openapi.utils import get_openapi
 
 from src.api.openapi_websocket import build_websocket_api_docs
 
-DEFAULT_PUBLIC_HOST = "dev.rejuve.bio"
-DEFAULT_PUBLIC_PORT = "5008"
-DEFAULT_PUBLIC_SCHEME = "https"
-
 OPENAPI_TAGS: list[dict[str, str]] = [
     {
         "name": "health",
@@ -60,7 +56,7 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
 ]
 
-_AUTH_AND_PUBLIC_DOCS = """\
+_AUTH_DOCS = """\
 ## Authentication
 
 Most endpoints require a **JWT Bearer token**. Click **Authorize** above and enter:
@@ -77,72 +73,19 @@ Authorization: Bearer <JWT>
 
 The token must be signed with HS256 using `JWT_SECRET` and include a `user_id` claim.
 Optional claims: `email`.
-
-**Public endpoints** (no token):
-
-| Method | Path |
-|--------|------|
-| GET | `/health` |
-| GET | `/gwas-files/sources` |
-| GET | `/gwas-files` |
-| GET | `/gwas-files/download/{file_id}` |
-| GET | `/phenotypes` |
-| POST | `/phenotypes` |
 """
-
-_INTERACTIVE_DOCS = """\
-## Interactive documentation
-
-This service exposes Swagger directly on its API port (same pattern as the annotation
-service at `:5005/docs`).
-
-| Resource | Dev URL |
-|----------|---------|
-| Swagger UI | `https://dev.rejuve.bio:5008/docs` |
-| ReDoc | `https://dev.rejuve.bio:5008/redoc` |
-| OpenAPI schema | `https://dev.rejuve.bio:5008/openapi.json` |
-
-Use the **Servers** dropdown above when trying requests from another host or port.
-"""
-
-# Operations that do not require JWT (method lowercase, OpenAPI path template).
-PUBLIC_OPERATIONS: set[tuple[str, str]] = {
-    ("get", "/health"),
-    ("get", "/gwas-files/sources"),
-    ("get", "/gwas-files"),
-    ("get", "/gwas-files/download/{file_id}"),
-    ("get", "/phenotypes"),
-    ("post", "/phenotypes"),
-}
-
 
 def get_api_servers() -> list[dict[str, str]]:
-    """OpenAPI server list for Swagger Try-it-out (direct API port, not nginx)."""
+    """OpenAPI `servers` list.
+
+    Empty by default so Swagger UI resolves requests against the origin the docs page
+    was loaded from (works behind nginx, a published port, or localhost with no config).
+    Set OPENAPI_SERVER_URL only when the docs must point at a different base URL.
+    """
     explicit = os.getenv("OPENAPI_SERVER_URL", "").strip().rstrip("/")
-    if explicit:
-        primary = explicit
-    else:
-        host = os.getenv("OPENAPI_SERVER_HOST", DEFAULT_PUBLIC_HOST)
-        port = os.getenv("OPENAPI_SERVER_PORT", DEFAULT_PUBLIC_PORT).strip()
-        scheme = os.getenv("OPENAPI_SERVER_SCHEME", DEFAULT_PUBLIC_SCHEME)
-        primary = f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
-
-    servers: list[dict[str, str]] = [
-        {
-            "url": primary,
-            "description": "Hypothesis Generation API (host port → container 5000)",
-        },
-    ]
-
-    local = os.getenv("OPENAPI_LOCAL_SERVER_URL", "").strip().rstrip("/")
-    if local and local != primary:
-        servers.append({"url": local, "description": "Local development override"})
-
-    return servers
-
-
-def _http_origin_from_server_url(url: str) -> str:
-    return url.rstrip("/")
+    if not explicit:
+        return []
+    return [{"url": explicit, "description": "Hypothesis Generation API"}]
 
 
 def _ws_origin_from_http(url: str) -> str:
@@ -155,23 +98,32 @@ def _ws_origin_from_http(url: str) -> str:
 
 
 def build_api_description() -> str:
-    """Compose the full OpenAPI description (auth + WebSocket + doc links)."""
-    http_origin = _http_origin_from_server_url(get_api_servers()[0]["url"])
-    ws_origin = _ws_origin_from_http(http_origin)
+    """Compose the OpenAPI description (authentication + WebSocket summary)."""
+    servers = get_api_servers()
+    ws_origin = _ws_origin_from_http(servers[0]["url"]) if servers else None
     return (
         "Hypothesis Generation API for GWAS-driven gene hypothesis and enrichment workflows.\n\n"
         "Integrates enrichment analysis, knowledge-graph reasoning (Prolog), and LLM summarization "
         "to produce hypothesis graphs and narratives from genetic association data.\n\n"
-        + _AUTH_AND_PUBLIC_DOCS
+        + _AUTH_DOCS
         + "\n"
         + build_websocket_api_docs(ws_origin)
-        + "\n"
-        + _INTERACTIVE_DOCS
     )
 
 
+_BEARER_DESCRIPTION = (
+    "JWT access token with a required `user_id` claim, signed with HS256 using the "
+    "server `JWT_SECRET`. Paste the raw token here; Swagger adds the `Bearer ` prefix."
+)
+
+
 def configure_openapi(app: FastAPI) -> None:
-    """Register a custom OpenAPI generator with Bearer JWT security metadata."""
+    """Register a custom OpenAPI generator that documents the Bearer JWT scheme.
+
+    Per-operation security requirements are left to FastAPI, which derives them from the
+    `HTTPBearer` dependency on each route, so protected and public endpoints stay accurate
+    without a hand-maintained list.
+    """
 
     def custom_openapi() -> dict:
         if app.openapi_schema:
@@ -187,31 +139,13 @@ def configure_openapi(app: FastAPI) -> None:
             servers=app.servers,
         )
 
-        components = schema.setdefault("components", {})
-        components.setdefault("securitySchemes", {})["BearerAuth"] = {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-            "description": (
-                "JWT access token with a required `user_id` claim. "
-                "Signed with HS256 using the server `JWT_SECRET`."
-            ),
-        }
-
-        for path, path_item in schema.get("paths", {}).items():
-            for method, operation in path_item.items():
-                if method.startswith("x-") or method not in {
-                    "get",
-                    "post",
-                    "put",
-                    "patch",
-                    "delete",
-                    "head",
-                    "options",
-                }:
-                    continue
-                if (method, path) not in PUBLIC_OPERATIONS:
-                    operation["security"] = [{"BearerAuth": []}]
+        security_schemes = schema.setdefault("components", {}).setdefault(
+            "securitySchemes", {}
+        )
+        for scheme in security_schemes.values():
+            if scheme.get("type") == "http" and scheme.get("scheme") == "bearer":
+                scheme.setdefault("bearerFormat", "JWT")
+                scheme["description"] = _BEARER_DESCRIPTION
 
         app.openapi_schema = schema
         return schema
