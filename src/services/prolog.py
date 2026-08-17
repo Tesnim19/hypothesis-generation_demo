@@ -29,7 +29,7 @@ class PrologQuery:
     
     def get_relevant_gene_proof(self, variant_id, seed, samples):
         payload = {"rsid": variant_id, "seed": seed,  "samples": samples}
-        res = requests.get(f"{self.server}/api/hypgen", params=payload)
+        res = requests.get(f"{self.server}/api/hypgen", params=payload, timeout=610)
         if not res.ok:
             logger.error(f"Prolog server error for variant {variant_id}: {res.status_code} - {res.text}")
             raise RuntimeError(f"get_relevant_gene_proof failed. Prolog server response: {res.text}")
