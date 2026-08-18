@@ -179,6 +179,10 @@ class CredibleSetsHandler:
                 return cur.fetchone() is not None
         except Exception as exc:
             logger.warning(f"[CredibleSets] study_has_credible_sets({study_id}): {exc}")
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
             return False
 
     def get_credible_sets_for_region(
