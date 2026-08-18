@@ -250,8 +250,6 @@ work/
 
 CLAUDE.md
 
-/data/ot_uc_sumstats
-
 # test_dir
 scratch/*
 tests/*
