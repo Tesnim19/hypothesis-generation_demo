@@ -80,16 +80,16 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             "status": "Running",
             "stage": "Harmonization",
             "progress": 10,
-            "message": "Starting Nextflow harmonization",
+            "message": "Harmonizing summary statistics (skipped automatically for confirmed OpenTargets studies)",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "flow_run_id": _prefect_flow_run.id,
         }
         save_analysis_state_task.submit(user_id, project_id, initial_state).result()
 
-        logger.info(f"[PIPELINE] Stage 1: Nextflow harmonization")
+        logger.info(f"[PIPELINE] Stage 1: Harmonization (Nextflow, or pass-through if opentargets_study_id is confirmed in OpenTargets' own tables)")
         harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
             gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
-            user_id=user_id, project_id=project_id
+            user_id=user_id, project_id=project_id, opentargets_study_id=opentargets_study_id
         ).result()
 
         # harmonize_sumstats_with_nextflow now returns just the file path.
