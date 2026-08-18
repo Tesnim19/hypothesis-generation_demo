@@ -567,6 +567,16 @@ async def post_analysis_pipeline(
         )
         sample_size_n = sample_size_resolution.pipeline_value
 
+        opentargets_study_id = GWASLibraryHandler.resolve_opentargets_study_id(
+            gwas_entry if not is_uploaded else None,
+            uploaded_filename=original_filename if is_uploaded else None,
+        )
+        if opentargets_study_id:
+            logger.info(
+                f"[API] Resolved OpenTargets study_id={opentargets_study_id} "
+                f"for project {project_name}"
+            )
+
         analysis_parameters = {
             "maf_threshold": maf_threshold,
             "seed": seed,
@@ -644,8 +654,9 @@ async def post_analysis_pipeline(
                 file_source_download_url=_source_download_url,
                 file_minio_cache_key=_minio_cache_key,
                 file_gwas_library_id=_gwas_library_id,
-                user_email=current_user_email,      
-                project_name=project_name,          
+                user_email=current_user_email,
+                project_name=project_name,
+                opentargets_study_id=opentargets_study_id,
             ),
         )
 

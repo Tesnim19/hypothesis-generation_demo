@@ -13,6 +13,12 @@ from loguru import logger
 from .base_handler import BaseHandler
 from src.utils import gwas_file_has_n_column
 
+# FinnGen release used by scripts/finngen_manifest_parser.py to build both our
+# library filenames and OpenTargets' study_id (see scripts/load_credible_sets_to_postgres.py).
+FINNGEN_RELEASE = "R12"
+
+_GCST_ACCESSION_RE = re.compile(r"(GCST\d+)", re.IGNORECASE)
+
 
 
 @dataclass(frozen=True)
@@ -121,6 +127,40 @@ class GWASLibraryHandler(BaseHandler):
                 f"when your file lacks an N column."
             ),
         )
+
+    @staticmethod
+    def resolve_opentargets_study_id(
+        entry: Optional[Dict] = None, uploaded_filename: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Best-effort resolution of the OpenTargets study_id for a selected GWAS
+        file, so the analysis pipeline can look up precomputed credible sets.
+
+        - FinnGen library entries: OpenTargets indexes FinnGen studies under
+          f"FINNGEN_{release}_{phenotype_code}" (verified against the
+          credible-sets DB, e.g. phenotype_code "K11_UC_STRICT2" ->
+          "FINNGEN_R12_K11_UC_STRICT2").
+        - GWAS-Catalog-accessioned uploads: if the filename still carries its
+          original GCST accession (OpenTargets/GWAS Catalog's own harmonised
+          file naming convention), that accession *is* the study_id.
+        - UK Biobank (Neale round 2) library entries have no corresponding
+          OpenTargets study under any known identifier, so this returns None
+          for them (verified: not just absent, never deposited under any
+          accession).
+        """
+        if entry and entry.get("source") == "FinnGen":
+            phenotype_code = entry.get("phenotype_code")
+            if phenotype_code:
+                return f"FINNGEN_{FINNGEN_RELEASE}_{phenotype_code.upper()}"
+
+        for filename in (uploaded_filename, entry.get("filename") if entry else None):
+            if not filename:
+                continue
+            match = _GCST_ACCESSION_RE.search(filename)
+            if match:
+                return match.group(1).upper()
+
+        return None
 
     @classmethod
     def resolve_upload_sample_size_info(
