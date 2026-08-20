@@ -11,13 +11,8 @@ dependencies = [
     "gunicorn",
     "redis",
     "python-multipart",
-<<<<<<< HEAD
-    "gseapy==1.1.8",
-    "faiss-gpu",
-=======
     "gseapy",
     #    "faiss-gpu",
->>>>>>> 3f6d4355 (Use postgresql backed knowledge base for inference)
     "python-dotenv",
     "PyJWT==2.9.0",
     "pymongo",
@@ -29,7 +24,6 @@ dependencies = [
     "llama-index-llms-anthropic",
     "pengines",
     "prefect>=2.14.0,<3.0.0",
-    "anyio>=3.7.1,<4.14",
     "asyncpg",
     "bokeh>=3.1.0",
     "requests",
@@ -61,9 +55,6 @@ dependencies = [
     "statsmodels>=0.14.0",
     "dependency-injector>=4.41",
     "fastapi-mail>=1.4.0",
-    "psycopg2-binary>=2.9.9",
-    "openpyxl>=3.1.5",
-    "duckdb>=1.5.2",
 ]
 
 [project.optional-dependencies]

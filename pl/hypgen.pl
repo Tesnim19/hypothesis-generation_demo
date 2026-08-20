@@ -19,7 +19,6 @@
 :- style_check(-discontiguous).
 :- style_check(-singleton).
 
-
 :- include('load_kbs.pl').
 :- include('queries.pl').
 :- include('utils.pl').

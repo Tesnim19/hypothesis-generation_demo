@@ -58,6 +58,7 @@
 :- multifile lower_resolution/2.
 :- multifile located_on_chain/2.
 :- multifile tfbs_snp/2.
+:- multifile tf_snp/2.
 :- multifile binds_to/2.
 :- multifile in_tad_region/2.
 :- multifile activity_by_contact/2.
@@ -65,12 +66,9 @@
 :- multifile in_dnase_I_hotspot/2.
 :- multifile histone_modification/2.
 :- multifile distance/2.
-<<<<<<< HEAD
-=======
 :- multifile pgboost/2.
 :- multifile development_stage/2.
 :- multifile accessible_in/2.
->>>>>>> 3f6d4355 (Use postgresql backed knowledge base for inference)
 
 % Properties
 :- multifile chr/2.
