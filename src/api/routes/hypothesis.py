@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -13,6 +14,7 @@ from src.api.dependencies import (
     get_gene_expression_handler,
     get_hypothesis_handler,
     get_llm,
+    get_project_handler,
 )
 from src.api.auth import get_current_user_id
 from src.db import (
@@ -20,8 +22,12 @@ from src.db import (
     EnrichmentHandler,
     GeneExpressionHandler,
     HypothesisHandler,
+    ProjectHandler,
 )
-from src.services.demo import resolve_hypothesis_data_user_id
+from src.services.demo import (
+    resolve_enrich_and_hypothesis_for_write,
+    resolve_hypothesis_data_user_id,
+)
 from src.services.llm import LLM
 from src.run_deployment import invoke_hypothesis_deployment
 from src.services.status_tracker import TaskState, status_tracker
@@ -37,12 +43,47 @@ router = APIRouter()
 _HYPOTHESIS_FLOW_WAIT_TIMEOUT = float(os.getenv("HYPOTHESIS_FLOW_WAIT_TIMEOUT", "120"))
 
 
-def _response_from_hypothesis_document(hypothesis_id: str, doc: dict | None) -> dict:
-    return {
+def _response_from_hypothesis_document(
+    hypothesis_id: str,
+    doc: dict | None,
+    *,
+    enrich_id: str | None = None,
+    project_id: str | None = None,
+    forked: bool = False,
+) -> dict:
+    response = {
         "id": hypothesis_id,
+        "hypothesis_id": hypothesis_id,
         "summary": doc.get("summary") if doc else None,
         "graph": doc.get("graph") if doc else None,
     }
+    if enrich_id is not None:
+        response["enrich_id"] = enrich_id
+    if project_id is not None:
+        response["project_id"] = project_id
+    response["forked"] = forked
+    return response
+
+
+def _mark_hypothesis_failed(
+    hypotheses: HypothesisHandler, hypothesis_id: str, error: str
+) -> None:
+    """Persist a failed status so the hypothesis never sits ambiguously
+    incomplete forever (e.g. a forked copy with no summary/graph yet)."""
+    try:
+        hypotheses.update_hypothesis(
+            hypothesis_id,
+            {
+                "status": "failed",
+                "error": error,
+                "updated_at": datetime.now(timezone.utc).isoformat(
+                    timespec="milliseconds"
+                )
+                + "Z",
+            },
+        )
+    except Exception:
+        logger.exception(f"Could not mark hypothesis {hypothesis_id} as failed")
 
 
 @router.get("/hypothesis")
@@ -167,9 +208,14 @@ async def get_hypothesis(
             status_data["status"] = "Failed"
             if hypothesis.get("error") is not None:
                 status_data["error"] = hypothesis.get("error")
+            if hypothesis.get("error_detail") is not None:
+                status_data["error_detail"] = hypothesis.get("error_detail")
         elif latest_state and latest_state.get("state") == "failed":
             status_data["status"] = "Failed"
             status_data["error"] = latest_state.get("error")
+            task_details = latest_state.get("details")
+            if isinstance(task_details, dict) and task_details.get("error_type"):
+                status_data["error_detail"] = task_details
 
         selected_tissue = None
         if gene_expression:
@@ -226,6 +272,10 @@ async def post_hypothesis(
     go: str | None = Query(None),
     current_user_id: str = Depends(get_current_user_id),
     hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
+    enrichment: EnrichmentHandler = Depends(get_enrichment_handler),
+    projects: ProjectHandler = Depends(get_project_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
+    gene_expression: GeneExpressionHandler = Depends(get_gene_expression_handler),
 ):
     """Generate hypothesis synchronously and return graph + summary immediately."""
     enrich_id = id
@@ -234,19 +284,27 @@ async def post_hypothesis(
     if not go_id:
         raise HTTPException(status_code=400, detail="go (GO term ID) is required")
 
-    hypothesis = hypotheses.get_hypothesis_by_enrich(current_user_id, enrich_id)
-    if not hypothesis:
+    resolved = resolve_enrich_and_hypothesis_for_write(
+        demo_templates=demo_templates,
+        projects=projects,
+        enrichment=enrichment,
+        hypotheses=hypotheses,
+        current_user_id=current_user_id,
+        enrich_id=enrich_id,
+        gene_expression=gene_expression,
+    )
+    if not resolved:
         raise HTTPException(
             status_code=404, detail="No hypothesis found for this enrichment"
         )
 
-    hypothesis_id = hypothesis["id"]
+    write_ctx = resolved
 
     def run_hypothesis_deployment_blocking():
         return invoke_hypothesis_deployment(
-            current_user_id,
-            hypothesis_id,
-            enrich_id,
+            write_ctx.data_user_id,
+            write_ctx.hypothesis_id,
+            write_ctx.enrich_id,
             go_id,
             wait_timeout=_HYPOTHESIS_FLOW_WAIT_TIMEOUT,
         )
@@ -256,6 +314,7 @@ async def post_hypothesis(
         flow_run = await loop.run_in_executor(None, run_hypothesis_deployment_blocking)
     except Exception as e:
         logger.exception("Hypothesis Prefect run_deployment failed")
+        _mark_hypothesis_failed(hypotheses, write_ctx.hypothesis_id, str(e))
         raise HTTPException(
             status_code=503,
             detail=(
@@ -269,6 +328,9 @@ async def post_hypothesis(
 
     state = flow_run.state
     if state is None:
+        _mark_hypothesis_failed(
+            hypotheses, write_ctx.hypothesis_id, "Hypothesis flow run has no state."
+        )
         raise HTTPException(
             status_code=502, detail="Hypothesis flow run has no state; check Prefect."
         )
@@ -283,21 +345,20 @@ async def post_hypothesis(
         )
 
     if state.is_failed() or state.is_crashed() or state.is_cancelled():
-        raise HTTPException(
-            status_code=500,
-            detail=state.message or "Hypothesis flow failed or was cancelled.",
-        )
+        error_detail = state.message or "Hypothesis flow failed or was cancelled."
+        _mark_hypothesis_failed(hypotheses, write_ctx.hypothesis_id, error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
     if not state.is_completed():
-        raise HTTPException(
-            status_code=500,
-            detail=state.message or "Hypothesis flow did not complete successfully.",
-        )
+        error_detail = state.message or "Hypothesis flow did not complete successfully."
+        _mark_hypothesis_failed(hypotheses, write_ctx.hypothesis_id, error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
     try:
         flow_return = state.result(raise_on_failure=True)
     except Exception as e:
         logger.exception("Could not load hypothesis flow result from Prefect state")
+        _mark_hypothesis_failed(hypotheses, write_ctx.hypothesis_id, str(e))
         raise HTTPException(
             status_code=500,
             detail=f"Hypothesis flow finished but result could not be read: {e}",
@@ -310,19 +371,32 @@ async def post_hypothesis(
     ):
         body, status_code = flow_return[0], flow_return[1]
         if status_code == 404:
-            raise HTTPException(
-                status_code=404, detail=body.get("message", "Not found")
-            )
+            error_detail = body.get("message", "Not found")
+            _mark_hypothesis_failed(hypotheses, write_ctx.hypothesis_id, error_detail)
+            raise HTTPException(status_code=404, detail=error_detail)
         if status_code in (200, 201):
-            refreshed = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
-            return _response_from_hypothesis_document(hypothesis_id, refreshed)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected hypothesis flow status code: {status_code}",
-        )
+            refreshed = hypotheses.get_hypotheses(
+                write_ctx.data_user_id, write_ctx.hypothesis_id
+            )
+            return _response_from_hypothesis_document(
+                write_ctx.hypothesis_id,
+                refreshed,
+                enrich_id=write_ctx.enrich_id,
+                project_id=write_ctx.project_id,
+                forked=write_ctx.forked,
+            )
+        error_detail = f"Unexpected hypothesis flow status code: {status_code}"
+        _mark_hypothesis_failed(hypotheses, write_ctx.hypothesis_id, error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
-    refreshed = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
-    return _response_from_hypothesis_document(hypothesis_id, refreshed)
+    refreshed = hypotheses.get_hypotheses(write_ctx.data_user_id, write_ctx.hypothesis_id)
+    return _response_from_hypothesis_document(
+        write_ctx.hypothesis_id,
+        refreshed,
+        enrich_id=write_ctx.enrich_id,
+        project_id=write_ctx.project_id,
+        forked=write_ctx.forked,
+    )
 
 
 @router.delete("/hypothesis")

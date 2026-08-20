@@ -26,8 +26,8 @@ services:
       - "4242:4242"
     volumes:
       - ../pl:/app/pl
-      - /mnt/hdd_1/biocypher-kg/output/human/prolog_out_v2:/mnt/prolog_out_v2
-      - /mnt/hdd_1/biocypher-kg/output/human/prolog_out_v3:/mnt/prolog_out_v3
+      - ${PROLOG_OUT_V2_PATH}:/mnt/prolog_out_v2
+      - ${PROLOG_OUT_V3_PATH}:/mnt/prolog_out_v3
     networks:
       - app_network
     restart: unless-stopped
@@ -74,23 +74,30 @@ services:
       - SKIP_SEED=true
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OpenAI}
+      - CREDIBLE_SETS_DB_HOST=credible-sets-postgres
+      - CREDIBLE_SETS_DB_PORT=5432
+      - CREDIBLE_SETS_DB_NAME=${CREDIBLE_SETS_DB_NAME}
+      - CREDIBLE_SETS_DB_USER=${CREDIBLE_SETS_DB_USER}
+      - CREDIBLE_SETS_DB_PASSWORD=${CREDIBLE_SETS_DB_PASSWORD}
     env_file:
       - ../.env
     volumes:
       - ..:/app
       - ../data:/app/data
-      - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
+      - ${EXTERNAL_DATA_PATH}:/app/data/external_data
     depends_on:
       dask-scheduler:
-        condition: service_healthy  
+        condition: service_healthy
       mongo:
         condition: service_healthy
       prolog-service:
         condition: service_started
       redis:
         condition: service_healthy
+      credible-sets-postgres:
+        condition: service_healthy
     command: >
-      uv run dask worker tcp://dask-scheduler:8786 
+      uv run dask worker tcp://dask-scheduler:8786
       --nworkers 4
       --nthreads 1 
       --memory-limit 40GB
@@ -171,6 +178,50 @@ services:
       retries: 5
     restart: unless-stopped
 
+  credible-sets-postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: ${CREDIBLE_SETS_DB_USER}
+      POSTGRES_PASSWORD: ${CREDIBLE_SETS_DB_PASSWORD}
+      POSTGRES_DB: ${CREDIBLE_SETS_DB_NAME}
+    ports:
+      - "5411:5432"
+    volumes:
+      - credible-sets-postgres-data:/var/lib/postgresql/data
+      - ./init-credible-sets.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CREDIBLE_SETS_DB_USER} -d ${CREDIBLE_SETS_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  credible-sets-loader:
+    profiles: ["tools"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    environment:
+      - CREDIBLE_SETS_DB_HOST=credible-sets-postgres
+      - CREDIBLE_SETS_DB_PORT=5432
+      - CREDIBLE_SETS_DB_NAME=${CREDIBLE_SETS_DB_NAME}
+      - CREDIBLE_SETS_DB_USER=${CREDIBLE_SETS_DB_USER}
+      - CREDIBLE_SETS_DB_PASSWORD=${CREDIBLE_SETS_DB_PASSWORD}
+      - PYTHONPATH=/app
+    volumes:
+      - ..:/app
+    entrypoint: []
+    depends_on:
+      credible-sets-postgres:
+        condition: service_healthy
+    command: >
+      uv run python scripts/load_credible_sets_to_postgres.py --release latest
+    networks:
+      - app_network
+    restart: "no"
+
   prefect-service:
     build:
       context: ..
@@ -214,7 +265,7 @@ services:
     volumes:
       - ..:/app
       - ../data:/app/data
-      - /mnt/hdd_1/rediet/hypothesis-generation-demo/data:/app/data/external_data
+      - ${EXTERNAL_DATA_PATH}:/app/data/external_data
     env_file:
       - ../.env
     command: >
@@ -246,6 +297,11 @@ services:
       - GO_MAP=/app/data/go_map.pkl
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OpenAI}
+      - CREDIBLE_SETS_DB_HOST=credible-sets-postgres
+      - CREDIBLE_SETS_DB_PORT=5432
+      - CREDIBLE_SETS_DB_NAME=${CREDIBLE_SETS_DB_NAME}
+      - CREDIBLE_SETS_DB_USER=${CREDIBLE_SETS_DB_USER}
+      - CREDIBLE_SETS_DB_PASSWORD=${CREDIBLE_SETS_DB_PASSWORD}
     depends_on:
       prefect-service:
         condition: service_healthy
@@ -255,9 +311,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      credible-sets-postgres:
+        condition: service_healthy
     networks:
       - app_network
-  
+
   redis:
     image: redis:7-alpine
     ports:
@@ -275,6 +333,7 @@ volumes:
   mongo-data:
   prefect-data:
   prefect-postgres-data:
+  credible-sets-postgres-data:
 
 networks:
   app_network:

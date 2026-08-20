@@ -3,8 +3,6 @@
     server_stop/1,
     candidate_genes/2,
     within_k_distance/3,
-    find_and_rank_tfs/3,
-    bgc/1,
     relevant_gene/2,
     hideme/1,
     load_atomspace/0, 
@@ -51,15 +49,6 @@
 
 init :- 
     format("Loading atomspace...~n", []),
-    % load_atomspace,
-    % set_prolog_flag(stack_limit, 103_079_215_104), 
-    % format("Asserting background rules & knowledge...~n", []),
-    % findall(F, bgc(F), Facts),
-    % findall(R, rules(R), Rs),
-    % append(Rs, Rules),
-    % append(Facts, Rules, Bg),
-    % assertz(bg(Bg)),
-    % length(Bg, L),
-    % format("Num of background facts/rules: ~d~n", [L]),
+    load_atomspace,
     format("Done!~n", []).
 

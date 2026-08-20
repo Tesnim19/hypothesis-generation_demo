@@ -32,6 +32,7 @@ from src.tasks.analysis import (
     run_cojo_per_chromosome,
     create_region_batches,
     finemap_region_batch_worker,
+    get_results_from_opentargets_task,
     save_sumstats_for_workers,
     cleanup_sumstats_file,
 )

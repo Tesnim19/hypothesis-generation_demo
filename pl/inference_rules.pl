@@ -1,7 +1,7 @@
 :- use_module(library(mcintyre)).
 :- mc.
 :- use_module(library(janus)).
-:- use_module(library(plstat)).
+:- use_module(library(plstat), []).
 :- use_module(library(solution_sequences)).
 :- begin_lpad.
 
