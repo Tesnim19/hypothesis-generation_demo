@@ -131,7 +131,6 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
     deps = get_deps()
     storage = deps["storage"]
 
-    logger.info(f"[HARMONIZE] Starting Nextflow harmonization for {gwas_file_path}")
     start_time = datetime.now()
     
     # Convert gwas_file_path to absolute path
@@ -172,6 +171,8 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                 shutil.copy2(gwas_file_path, harmonized_output_path)
                 logger.info(f"[HARMONIZE] Copied pre-harmonized file to: {harmonized_output_path}")
         else:
+            logger.info(f"[HARMONIZE] Starting Nextflow harmonization for {gwas_file_path}")
+
             # Path to harmonizer script
             harmonizer_script = os.path.join(script_dir, "6_harmoniser.sh")
 
