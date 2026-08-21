@@ -1236,12 +1236,10 @@ def finemap_region_batch_worker(batch_data):
 
     user_id = None
     project_id = None
-    opentargets_study_id = None
 
     if additional_params:
         user_id = additional_params.get('user_id', None)
         project_id = additional_params.get('project_id', None)
-        opentargets_study_id = additional_params.get('opentargets_study_id', None)
         finemap_params = additional_params.get('finemap_params', {})
         
         # Extract parameters
@@ -1268,31 +1266,6 @@ def finemap_region_batch_worker(batch_data):
     batch_results = []
     successful_regions = 0
     failed_regions = 0
-
-    # ── OpenTargets: one handler for the whole batch ──────────────────────────
-    ot_handler = None
-    if opentargets_study_id and analysis_handler and user_id and project_id:
-        try:
-            from src.db.credible_sets_handler import (
-                CredibleSetsHandler, convert_ot_row_to_credible_set,
-            )
-            ot_handler = CredibleSetsHandler()
-            if not ot_handler.study_has_credible_sets(opentargets_study_id):
-                logger.info(
-                    f"[BATCH-{batch_id}] OpenTargets: no credible sets for "
-                    f"{opentargets_study_id} — will run SuSiE for all regions"
-                )
-                ot_handler.close()
-                ot_handler = None
-            else:
-                logger.info(
-                    f"[BATCH-{batch_id}] OpenTargets: credible sets available for "
-                    f"{opentargets_study_id}"
-                )
-        except Exception as ot_init_exc:
-            logger.warning(f"[BATCH-{batch_id}] OpenTargets handler init failed: {ot_init_exc}")
-            ot_handler = None
-    # ─────────────────────────────────────────────────────────────────────────
 
     logger.info(f"[BATCH-{batch_id}] Initializing single R session for entire batch")
     
@@ -1340,61 +1313,6 @@ def finemap_region_batch_worker(batch_data):
         logger.info(f"[BATCH-{batch_id}] Processing region {region_idx+1}/{len(region_batch)}: {region_id}")
         
         try:
-            # ── OpenTargets pre-computed credible sets check ──────────────────
-            if ot_handler is not None:
-                try:
-                    ot_cs_rows = ot_handler.get_credible_sets_for_region(
-                        study_id=opentargets_study_id,
-                        chromosome=str(region['chr']),
-                        position_start=region['position'] - window * 1000,
-                        position_end=region['position'] + window * 1000,
-                    )
-                    if ot_cs_rows:
-                        logger.info(
-                            f"[BATCH-{batch_id}] OpenTargets: found {len(ot_cs_rows)} "
-                            f"credible set(s) for {region_id} — skipping SuSiE"
-                        )
-                        for ot_row in ot_cs_rows:
-                            cs = convert_ot_row_to_credible_set(ot_row, coverage=coverage)
-                            cs["completed_at"] = datetime.now().isoformat()
-                            analysis_handler.save_credible_set(user_id, project_id, cs)
-
-                        # Build a minimal DataFrame so all_results stays consistent
-                        import json as _json
-                        ot_rows_for_df = []
-                        for cs_idx, ot_row in enumerate(ot_cs_rows, 1):
-                            locus = ot_row.get("locus") or []
-                            if isinstance(locus, str):
-                                locus = _json.loads(locus)
-                            for v in locus:
-                                vid = v.get("variantId", "")
-                                parts = vid.split("_")
-                                ot_rows_for_df.append({
-                                    "variant_id": vid,
-                                    "chromosome": parts[0] if parts else str(region['chr']),
-                                    "position": int(parts[1]) if len(parts) > 1 else region['position'],
-                                    "beta": v.get("beta") or ot_row.get("beta"),
-                                    "PIP": float(v.get("posteriorProbability") or 0),
-                                    "cs": cs_idx,
-                                    "credible_set": cs_idx,
-                                    "source": "opentargets",
-                                })
-                        if ot_rows_for_df:
-                            import pandas as _pd
-                            ot_df = _pd.DataFrame(ot_rows_for_df)
-                            ot_df['batch_id'] = batch_id
-                            ot_df['region_idx'] = region_idx
-                            batch_results.append(ot_df)
-
-                        successful_regions += 1
-                        continue  # skip SuSiE for this region
-                except Exception as ot_exc:
-                    logger.warning(
-                        f"[BATCH-{batch_id}] OpenTargets lookup failed for {region_id} "
-                        f"({ot_exc}) — falling back to SuSiE"
-                    )
-            # ─────────────────────────────────────────────────────────────────
-
             # Use the shared R session with proper context management
             logger.info(f"[BATCH-{batch_id}] Running fine-mapping for {region_id} with shared R session")
 
@@ -1549,9 +1467,6 @@ def finemap_region_batch_worker(batch_data):
             logger.info(f"[BATCH-{batch_id}] Final R session cleanup completed")
         except Exception as final_cleanup_e:
             logger.warning(f"[BATCH-{batch_id}] Final cleanup error: {final_cleanup_e}")
-
-    if ot_handler is not None:
-        ot_handler.close()
 
     return batch_results
 

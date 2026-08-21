@@ -241,7 +241,6 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 batch_data = (batch, f"batch_{i}", sumstats_temp_file, {
                     'user_id': user_id,
                     'project_id': project_id,
-                    'opentargets_study_id': opentargets_study_id,
                     'finemap_params': {
                         'seed': seed,
                         'window': window,
