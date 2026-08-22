@@ -17,6 +17,44 @@ from src.tasks import (
 )
 
 
+def _normalize_hypothesis_graph(graph: dict, enrichr) -> dict:
+    """Uppercase Ensembl node/edge IDs so they match Prolog (ENSG…).
+
+    enrichr.to_ensembl_id() returns lowercase ids; Prolog graph nodes use ENSG….
+    React Flow requires edge source/target to match a node id exactly.
+    """
+    if not graph:
+        return graph
+
+    nodes = list(graph.get("nodes") or [])
+    edges = list(graph.get("edges") or [])
+    id_map = {}
+
+    for node in nodes:
+        nid = str(node.get("id", ""))
+        if enrichr.is_ensembl_id(nid):
+            new_id = nid.upper()
+            if nid != new_id:
+                id_map[nid] = new_id
+            node["id"] = new_id
+
+    for edge in edges:
+        src, tgt = edge.get("source"), edge.get("target")
+        if src in id_map:
+            edge["source"] = id_map[src]
+        elif enrichr.is_ensembl_id(str(src or "")):
+            edge["source"] = str(src).upper()
+        if tgt in id_map:
+            edge["target"] = id_map[tgt]
+        elif enrichr.is_ensembl_id(str(tgt or "")):
+            edge["target"] = str(tgt).upper()
+
+    out = dict(graph)
+    out["nodes"] = nodes
+    out["edges"] = edges
+    return out
+
+
 ### Hypothesis Flow
 @flow(
     log_prints=True,
@@ -29,9 +67,16 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
     enrichr = deps['enrichr']
 
     hypothesis = check_hypothesis.submit(current_user_id, enrich_id, go_id, hypothesis_id).result()
-    if hypothesis:
+    saved_graph = hypothesis.get("graph") if hypothesis else None
+    if saved_graph and saved_graph.get("nodes"):
         logger.info("Retrieved hypothesis data from saved db")
-        return {"summary": hypothesis.get('summary'), "graph": hypothesis.get('graph')}, 200
+        graph = _normalize_hypothesis_graph(saved_graph, enrichr)
+        return {"summary": hypothesis.get("summary"), "graph": graph}, 200
+    if hypothesis:
+        logger.info(
+            "Hypothesis record exists but has no graph yet; generating "
+            f"(status={hypothesis.get('status')})"
+        )
 
     # Check if this hypothesis has child enrichments and trigger background processing
     parent_hypothesis = hypotheses.get_hypotheses(current_user_id, hypothesis_id)
@@ -77,9 +122,20 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
     ).result()
 
     nodes, edges = causal_graph["nodes"], causal_graph["edges"]
+    for node in nodes:
+        nid = str(node.get("id", ""))
+        if enrichr.is_ensembl_id(nid):
+            node["id"] = nid.upper()
+    for edge in edges:
+        if enrichr.is_ensembl_id(str(edge.get("source") or "")):
+            edge["source"] = str(edge["source"]).upper()
+        if enrichr.is_ensembl_id(str(edge.get("target") or "")):
+            edge["target"] = str(edge["target"]).upper()
 
     causal_gene_symbol = enrichr.to_symbol(causal_gene)
-    causal_gene_ensembl = enrichr.to_ensembl_id(causal_gene_symbol) or causal_gene.lower()
+    causal_gene_ensembl = enrichr.to_ensembl_id(causal_gene_symbol) or causal_gene
+    if enrichr.is_ensembl_id(str(causal_gene_ensembl)):
+        causal_gene_ensembl = str(causal_gene_ensembl).upper()
     logger.info(
         f"Using causal gene from enrichment: {causal_gene_symbol} "
         f"(Ensembl: {causal_gene_ensembl})"
@@ -140,14 +196,30 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
     phenotype_result = execute_phenotype_query.submit(phenotype, hypothesis_id).result()
     phenotype_id = phenotype_result[0] if isinstance(phenotype_result, list) and phenotype_result else phenotype_result
 
-    if not any(n.get("id") == go_id for n in nodes):
+    existing_ids = {n.get("id") for n in nodes}
+
+    if causal_gene_ensembl not in existing_ids:
+        nodes.append({
+            "id": causal_gene_ensembl,
+            "type": "gene",
+            "name": causal_gene_symbol,
+        })
+        existing_ids.add(causal_gene_ensembl)
+
+    if go_id not in existing_ids:
         nodes.append({"id": go_id, "type": "go", "name": go_name})
+        existing_ids.add(go_id)
 
     nodes.append({"id": phenotype_id, "type": "phenotype", "name": phenotype})
+    existing_ids.add(phenotype_id)
     edges.append({"source": go_id, "target": phenotype_id, "label": "involved_in"})
     for gene_id, gene_name in zip(coexpressed_gene_ids, coexpressed_gene_names):
+        if enrichr.is_ensembl_id(str(gene_id)):
+            gene_id = str(gene_id).upper()
         symbol = enrichr.to_symbol(gene_name)
-        nodes.append({"id": gene_id, "type": "gene", "name": symbol})
+        if gene_id not in existing_ids:
+            nodes.append({"id": gene_id, "type": "gene", "name": symbol})
+            existing_ids.add(gene_id)
         edges.append({"source": gene_id, "target": go_id, "label": "enriched_in"})
         edges.append({
             "source": causal_gene_ensembl,
@@ -155,7 +227,10 @@ def hypothesis_flow(current_user_id, hypothesis_id, enrich_id, go_id):
             "label": "coexpressed_with",
         })
 
-    final_causal_graph = {"nodes": nodes, "edges": edges, "probability": graph_prob}
+    final_causal_graph = _normalize_hypothesis_graph(
+        {"nodes": nodes, "edges": edges, "probability": graph_prob},
+        enrichr,
+    )
 
     summary = summarize_graph.submit({"nodes": nodes, "edges": edges}, hypothesis_id).result()
 
