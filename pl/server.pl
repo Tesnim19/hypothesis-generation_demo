@@ -8,7 +8,7 @@ server_start(Port) :- http_server(http_dispatch, [port(Port)]).
 server_stop(Port) :- http_stop_server(Port, []).
 
 
-:- http_handler('/api/hypgen', handle_hypgen, [time_limit(600)]).
+:- http_handler('/api/hypgen', handle_hypgen, [time_limit(900)]).
 :- http_handler('/api/hypgen/candidate_genes', handle_candidate_genes, []).
 :- http_handler('/api/query', handle_query, []).
 

@@ -94,7 +94,7 @@ async def post_enrich(
     variant = request.query_params.get("variant") or body.get("variant")
     project_id = request.query_params.get("project_id") or body.get("project_id")
     seed = int(body.get("seed", request.query_params.get("seed", 42)))
-    samples = int(body.get("samples", request.query_params.get("samples", 1000)))
+    samples = int(body.get("samples", request.query_params.get("samples", 10)))
 
     if not project_id:
         raise HTTPException(status_code=400, detail="project_id is required")

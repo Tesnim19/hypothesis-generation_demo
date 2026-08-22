@@ -27,7 +27,7 @@ from src.utils import emit_task_update
     persist_result=False,
     task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
 )
-def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_id, seed, samples=1000):
+def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_id, seed, samples=10):
     """
     Fully project-based enrichment flow that initializes dependencies from centralized config
     """

@@ -178,7 +178,7 @@ def predict_causal_gene(phenotype, candidate_genes, hypothesis_id):
 
 
 @task(retries=2)
-def get_relevant_gene_proof(variant, hypothesis_id, seed, samples=1000):
+def get_relevant_gene_proof(variant, hypothesis_id, seed, samples=10):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
@@ -244,7 +244,7 @@ def retry_predict_causal_gene(phenotype, candidate_genes, proof, causal_gene, hy
 
 
 @task(retries=2)
-def retry_get_relevant_gene_proof(variant, hypothesis_id, seed, samples=1):
+def retry_get_relevant_gene_proof(variant, hypothesis_id, seed, samples=10):
     try:
         emit_task_update(
             hypothesis_id=hypothesis_id,
