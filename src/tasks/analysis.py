@@ -126,6 +126,14 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
     tables — i.e. this file is confirmed to have come from OpenTargets, which
     pre-harmonizes everything it publishes. If no study_id is given, or it
     isn't found in either table, harmonization proceeds as normal.
+
+    OpenTargets confirms provenance, not file format: some OT-confirmed
+    studies (e.g. FinnGen's native export) still ship non-SSF columns. In
+    that case the file is remapped to GWAS-SSF via the shared
+    `to_gwas_ssf()` column-remap (scripts/1000Genomes_phase3/ssf_remap.sh)
+    instead of a raw copy — a cheap rename/reshape with no allele-flipping,
+    strand-resolution, or reference-panel lookup, so it's still far cheaper
+    than running Nextflow.
     """
 
     deps = get_deps()
@@ -166,10 +174,48 @@ def harmonize_sumstats_with_nextflow(gwas_file_path, output_dir, ref_genome="GRC
                 f"[HARMONIZE] {gwas_file_path}: confirmed OpenTargets provenance "
                 f"(study_id={opentargets_study_id}) — skipping Nextflow harmonization"
             )
-            harmonized_output_path = os.path.join(output_dir, os.path.basename(gwas_file_path))
-            if os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_output_path):
-                shutil.copy2(gwas_file_path, harmonized_output_path)
-                logger.info(f"[HARMONIZE] Copied pre-harmonized file to: {harmonized_output_path}")
+            required_ssf_cols = {
+                'chromosome', 'base_pair_location', 'effect_allele',
+                'other_allele', 'beta', 'standard_error', 'p_value',
+            }
+            peek_cols = set(pd.read_csv(
+                gwas_file_path, sep='\t', compression='infer', nrows=0, low_memory=False,
+            ).columns)
+
+            if required_ssf_cols.issubset(peek_cols):
+                harmonized_output_path = os.path.join(output_dir, os.path.basename(gwas_file_path))
+                if os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_output_path):
+                    shutil.copy2(gwas_file_path, harmonized_output_path)
+                    logger.info(f"[HARMONIZE] Copied pre-harmonized file to: {harmonized_output_path}")
+            else:
+                # OpenTargets confirms provenance, not file format — some OT-confirmed
+                # studies (e.g. FinnGen's native export) still need their columns
+                # remapped to GWAS-SSF. This is a cheap column-rename (no allele-flip/
+                # strand-resolution/reference-panel lookup), so it's still far cheaper
+                # than running Nextflow, and downstream LDSC expects SSF columns anyway.
+                logger.info(
+                    f"[HARMONIZE] {gwas_file_path} is not in GWAS-SSF format — "
+                    "remapping columns instead of running Nextflow"
+                )
+                ssf_remap_script = os.path.join(script_dir, "ssf_remap.sh")
+                remap_cmd = (
+                    f"BASEDIR={shlex.quote(output_dir)} "
+                    f"SUMSTATS={shlex.quote(gwas_file_path)} "
+                    f"SUMSTATS_DIR={shlex.quote(output_dir)} "
+                    f"BUILD={shlex.quote(ref_genome)} "
+                    f"bash -c 'source {shlex.quote(ssf_remap_script)} && to_gwas_ssf'"
+                )
+                remap_result = subprocess.run(remap_cmd, shell=True, capture_output=True, text=True)
+                if remap_result.returncode != 0:
+                    logger.error(f"[HARMONIZE] SSF remap failed: {remap_result.stderr}")
+                    raise RuntimeError(f"SSF remap failed: {remap_result.stderr}")
+
+                harmonized_output_path = remap_result.stdout.strip().splitlines()[-1]
+                if not os.path.exists(harmonized_output_path):
+                    raise FileNotFoundError(
+                        f"SSF remap did not produce expected output: {harmonized_output_path}"
+                    )
+                logger.info(f"[HARMONIZE] Remapped to GWAS-SSF: {harmonized_output_path}")
         else:
             logger.info(f"[HARMONIZE] Starting Nextflow harmonization for {gwas_file_path}")
 
