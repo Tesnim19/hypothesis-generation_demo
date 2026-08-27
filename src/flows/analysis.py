@@ -99,12 +99,26 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
         else:
             harmonized_file = harmonized_file_result
 
-        # Clean up the raw GWAS input file
-        if gwas_file_path and os.path.exists(gwas_file_path):
+        # Clean up the raw GWAS input file. For direct uploads it lives in its own
+        # data/uploads/<user_id>/ dir (safe to rmtree). But cache/library downloads
+        # (source_minio_path / source_download_url — e.g. OT-confirmed FinnGen
+        # studies) land the raw file directly in output_dir alongside the
+        # harmonized/remapped output, so rmtree-ing its parent would delete that
+        # output too. Only rmtree when the raw file's directory isn't output_dir
+        # (or the harmonized output itself); otherwise just remove the raw file.
+        if (
+            gwas_file_path
+            and os.path.exists(gwas_file_path)
+            and os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_file)
+        ):
             try:
                 parent_dir = os.path.dirname(gwas_file_path)
-                _shutil.rmtree(parent_dir, ignore_errors=True)
-                logger.info(f"[PIPELINE] Cleaned up raw GWAS temp dir: {parent_dir}")
+                if os.path.abspath(parent_dir) == os.path.abspath(output_dir):
+                    os.remove(gwas_file_path)
+                    logger.info(f"[PIPELINE] Cleaned up raw GWAS input file: {gwas_file_path}")
+                else:
+                    _shutil.rmtree(parent_dir, ignore_errors=True)
+                    logger.info(f"[PIPELINE] Cleaned up raw GWAS temp dir: {parent_dir}")
             except Exception as _cleanup_e:
                 logger.warning(f"[PIPELINE] Could not clean up {gwas_file_path}: {_cleanup_e}")
 
