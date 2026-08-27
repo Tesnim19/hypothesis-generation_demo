@@ -242,12 +242,22 @@ def map_tissues_to_cellxgene(top_tissues):
     config = Config.from_env()
     results = {}
     for ldsc_name in top_tissues:
-        resolved = resolve_ldsc_for_census(
-            ldsc_name,
-            repo_root=config.repo_root,
-            mapping_json_rel=config.catlas_celltype_cl_mapping_json,
-            catlas_aliases_rel=config.catlas_abc_aliases_tsv,
-        )
+        try:
+            resolved = resolve_ldsc_for_census(
+                ldsc_name,
+                repo_root=config.repo_root,
+                mapping_json_rel=config.catlas_celltype_cl_mapping_json,
+                catlas_aliases_rel=config.catlas_abc_aliases_tsv,
+            )
+        except CatlasMappingError as e:
+            # Defensive backstop: resolve() itself no longer raises for
+            # match_method=="no_match", but a genuinely-missing mapping entry
+            # (no key in the mapping JSON at all) still does — don't let one
+            # bad/missing entry abort mapping for the rest of the batch.
+            logger.warning(f"[Mapping] {ldsc_name!r} → skip (unresolvable: {e})")
+            resolved = ResolvedCensusCellFilter(
+                ldsc_name=ldsc_name, skip_coexpression=True, skip_reason=str(e),
+            )
         results[ldsc_name] = {
             "cell_type": ldsc_name,
             "census_mapping_source": resolved.source,
@@ -551,26 +561,39 @@ def run_combined_ldsc_tissue_analysis(munged_file, output_dir, project_id, user_
 
         # Map cell-type labels for CellxGene queries
         ontology_mapping_results = map_tissues_to_cellxgene(top_tissues)
-        
-        # Step 5: Save comprehensive results to database        
-        gene_expression.save_ldsc_results(analysis_run_id, ldsc_results_data)
-        
-        # Save tissue mappings
+
+        # Exclude tissues with no Census mapping from what gets saved as LDSC
+        # results — the tissue picker (get_ldsc_results_for_project,
+        # format='selection') sources its list solely from ldsc_results_collection,
+        # so unmapped tissues must not end up there even though LDSC computed
+        # valid numbers for them.
+        mapped_ldsc_results_data = [
+            r for r in ldsc_results_data
+            if not ontology_mapping_results.get(r.get('Name', ''), {}).get('census_skip_coexpression')
+        ]
+        skipped_n = len(ldsc_results_data) - len(mapped_ldsc_results_data)
+        if skipped_n:
+            logger.info(f"[PIPELINE] Excluding {skipped_n} unmapped tissue(s) from saved LDSC results")
+
+        # Step 5: Save comprehensive results to database
+        gene_expression.save_ldsc_results(analysis_run_id, mapped_ldsc_results_data)
+
+        # Save tissue mappings (full set, including skipped, for debugging visibility)
         gene_expression.save_tissue_mappings(analysis_run_id, ontology_mapping_results)
-        
+
         # Update status to completed
         gene_expression.update_gene_expression_run_status(analysis_run_id, 'ldsc_tissue_completed')
-        
-        significant_count = len([t for t in ldsc_results_data if t.get('Coefficient_P_value', 1) < 0.05])
-        
-        logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!, Analyzed {len(ldsc_results_data)} tissues, found {significant_count} significant")
-        
+
+        significant_count = len([t for t in mapped_ldsc_results_data if t.get('Coefficient_P_value', 1) < 0.05])
+
+        logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!, Analyzed {len(mapped_ldsc_results_data)} tissues, found {significant_count} significant")
+
         return {
             "success": True,
             "analysis_run_id": analysis_run_id,
-            "tissues_analyzed": len(ldsc_results_data),
+            "tissues_analyzed": len(mapped_ldsc_results_data),
             "significant_tissues": significant_count,
-            "top_tissues": ldsc_results_data[:10]
+            "top_tissues": mapped_ldsc_results_data[:10]
         }
         
     except CatlasMappingError as e:
