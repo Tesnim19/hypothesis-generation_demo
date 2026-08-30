@@ -44,6 +44,7 @@ from src.api.schemas import (
     BulkDeleteProjectsOkResponse,
     BulkDeleteProjectsPartialResponse,
     BulkDeleteProjectsRequest,
+    ErrorResponse,
     FlexibleDict,
     ProjectDeleteMessage,
     ProjectsListResponse,
@@ -222,6 +223,7 @@ async def delete_project(
 @router.post(
     "/projects/delete",
     response_model=Union[BulkDeleteProjectsOkResponse, BulkDeleteProjectsPartialResponse],
+    responses={400: {"model": ErrorResponse}},
     summary="Bulk delete projects",
 )
 async def bulk_delete_projects(
@@ -231,6 +233,12 @@ async def bulk_delete_projects(
     demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
 ):
     project_ids = data.project_ids
+    if not project_ids:
+        raise HTTPException(
+            status_code=400, detail="project_ids is required in request body"
+        )
+    if not isinstance(project_ids, list):
+        raise HTTPException(status_code=400, detail="project_ids must be a list")
 
     protected = [
         pid for pid in project_ids if demo_templates.is_registered_template_project(pid)

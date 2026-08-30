@@ -21,6 +21,7 @@ from src.api.auth import get_current_user_id
 from src.api.schemas import (
     BulkDeleteHypothesesRequest,
     BulkDeleteHypothesesResponse,
+    ErrorResponse,
     FlexibleDict,
     FlexibleList,
     HypothesisChatForm,
@@ -448,7 +449,7 @@ async def delete_hypothesis(
     response_model=BulkDeleteHypothesesResponse,
     responses={
         207: {"model": BulkDeleteHypothesesResponse},
-        400: {"model": MessageResponse},
+        400: {"model": ErrorResponse},
         404: {"model": MessageResponse},
     },
     summary="Bulk delete hypotheses",
@@ -458,8 +459,16 @@ async def bulk_delete_hypotheses(
     current_user_id: str = Depends(get_current_user_id),
     hypotheses: HypothesisHandler = Depends(get_hypothesis_handler),
 ):
+    hypothesis_ids = data.hypothesis_ids
+    if not hypothesis_ids:
+        raise HTTPException(
+            status_code=400, detail="hypothesis_ids is required in request body"
+        )
+    if not isinstance(hypothesis_ids, list):
+        raise HTTPException(status_code=400, detail="hypothesis_ids must be a list")
+
     result, status_code = hypotheses.bulk_delete_hypotheses(
-        current_user_id, data.hypothesis_ids
+        current_user_id, hypothesis_ids
     )
     return JSONResponse(content=result, status_code=status_code)
 

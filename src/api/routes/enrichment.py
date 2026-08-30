@@ -22,6 +22,7 @@ from src.api.schemas import (
     EnrichPostBody,
     EnrichmentsListResponse,
     FlexibleDict,
+    FlexibleList,
     MessageResponse,
 )
 from src.db import (
@@ -46,7 +47,7 @@ router = APIRouter(tags=["enrichment"])
 
 @router.get(
     "/enrich",
-    response_model=Union[FlexibleDict, EnrichmentsListResponse],
+    response_model=Union[FlexibleDict, FlexibleList, EnrichmentsListResponse],
     summary="Get enrichment record(s)",
 )
 async def get_enrich(
@@ -90,7 +91,7 @@ async def get_enrich(
             return EnrichmentsListResponse(enrichments=[])
 
     enrich = enrichment.get_enrich(user_id=current_user_id)
-    return FlexibleDict.model_validate(serialize_datetime_fields(enrich))
+    return FlexibleList.model_validate(serialize_datetime_fields(enrich))
 
 
 @router.post(

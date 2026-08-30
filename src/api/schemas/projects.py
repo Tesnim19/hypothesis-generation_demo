@@ -14,7 +14,17 @@ class ProjectDeleteMessage(BaseModel):
 
 
 class BulkDeleteProjectsRequest(BaseModel):
-    project_ids: list[str] = Field(..., min_length=1)
+    model_config = ConfigDict(json_schema_extra={"required": ["project_ids"]})
+
+    project_ids: Any = Field(
+        default=None,
+        description="Non-empty list of project IDs.",
+        json_schema_extra={
+            "type": "array",
+            "items": {"type": "string"},
+            "minItems": 1,
+        },
+    )
 
 
 class BulkDeleteProjectsOkResponse(BaseModel):
