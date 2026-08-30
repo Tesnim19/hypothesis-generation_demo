@@ -17,7 +17,7 @@ class BulkDeleteProjectsRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"required": ["project_ids"]})
 
     project_ids: Any = Field(
-        default=None,
+        default_factory=lambda: None,
         description="Non-empty list of project IDs.",
         json_schema_extra={
             "type": "array",

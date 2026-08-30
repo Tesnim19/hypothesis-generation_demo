@@ -25,7 +25,7 @@ class BulkDeleteHypothesesRequest(BaseModel):
     model_config = ConfigDict(json_schema_extra={"required": ["hypothesis_ids"]})
 
     hypothesis_ids: Any = Field(
-        default=None,
+        default_factory=lambda: None,
         description="Non-empty list of hypothesis IDs.",
         json_schema_extra={
             "type": "array",
