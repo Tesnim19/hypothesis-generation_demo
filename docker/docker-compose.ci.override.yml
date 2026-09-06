@@ -1,9 +1,26 @@
 version: '3.8'
 
-# CI-only deltas on top of docker-compose.yml: a scaled-down dask-worker
-# and the local Prefect UI URL. Host ports come from .env.ci.example so the
-# localhost bindings in the base Compose file also apply to CI.
+# CI uses the Compose network and container healthchecks, so no service needs
+# a published host port. Reset inherited ports to avoid shared-runner conflicts.
 services:
+  prolog-service:
+    ports: !reset []
+
+  dask-scheduler:
+    ports: !reset []
+
+  prefect-postgres:
+    ports: !reset []
+
+  credible-sets-postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  api-service:
+    ports: !reset []
+
   dask-worker:
     command: >
       uv run dask worker tcp://dask-scheduler:8786
@@ -13,5 +30,6 @@ services:
       --preload src.dask_preload
 
   prefect-service:
+    ports: !reset []
     environment:
       - PREFECT_UI_API_URL=http://localhost:${PREFECT_UI_PORT}/api
