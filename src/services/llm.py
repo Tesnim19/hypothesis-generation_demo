@@ -11,7 +11,6 @@ from llama_index.llms.openai import OpenAI
 from loguru import logger
 from pydantic import BaseModel
 
-_DEFAULT_GO_LLM_URL = "http://202.181.159.222:8001/v1"
 _DEFAULT_GO_LLM_KEY = "ollama"
 _DEFAULT_GO_LLM_MODEL = "gemma4"
 _DEFAULT_OPENAI_GO_LLM_MODEL = "gpt-4o"
@@ -20,17 +19,28 @@ _DEFAULT_LLM_MAX_OUTPUT_TOKENS = 4096
 
 
 def _make_go_llm_client() -> openai.OpenAI:
-    """OpenAI-compatible client for the hosted open-source GO ranking model."""
-    client_kwargs: dict[str, str] = {
-        "api_key": os.getenv("GO_LLM_KEY", _DEFAULT_GO_LLM_KEY),
-    }
-    url = (os.getenv("GO_LLM_URL") or _DEFAULT_GO_LLM_URL).strip()
-    if url:
-        base = url.rstrip("/")
-        if not base.endswith("/v1"):
-            base = f"{base}/v1"
-        client_kwargs["base_url"] = base
-    return openai.OpenAI(**client_kwargs)
+    """OpenAI-compatible client for the local GO ranking model (e.g. Ollama).
+
+    There is no baked-in default host: the local LLM endpoint is specific to
+    each environment. GO_LLM_URL must be set whenever GO_LLM_BACKEND=local
+    (the default); this raises immediately with a clear message otherwise,
+    rather than silently pointing at a fixed personal/lab host.
+    """
+    url = os.getenv("GO_LLM_URL", "").strip()
+    if not url:
+        raise RuntimeError(
+            "GO_LLM_URL is not set. GO_LLM_BACKEND=local requires the URL of an "
+            "OpenAI-compatible local LLM endpoint (e.g. Ollama) for this "
+            "environment. Set GO_LLM_URL, or set GO_LLM_BACKEND=openai to use "
+            "OpenAI instead."
+        )
+    base = url.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return openai.OpenAI(
+        api_key=os.getenv("GO_LLM_KEY", _DEFAULT_GO_LLM_KEY),
+        base_url=base,
+    )
 
 
 def _strip_json_fence(raw: str) -> str:

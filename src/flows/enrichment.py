@@ -239,13 +239,27 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                     logger.warning(f"No enrichment results found for gene {this_causal_gene}. Skipping GO relevance scoring.")
                     relevant_gos = []
                 else:
-                    relevant_gos = rank_go_terms_by_strategy(
-                        phenotype,
-                        semantic_input,
-                        k=10,
-                        causal_gene=this_causal_gene,
-                        llm=llm,
-                    )
+                    try:
+                        relevant_gos = rank_go_terms_by_strategy(
+                            phenotype,
+                            semantic_input,
+                            k=10,
+                            strategy=config.go_semantic_strategy,
+                            causal_gene=this_causal_gene,
+                            max_candidates=config.go_llm_prefilter_k,
+                            llm=llm,
+                        )
+                    except Exception as exc:
+                        # A down/misconfigured local LLM shouldn't fail the whole
+                        # enrichment step — degrade to the embedding-only ranking
+                        # (semantic_input, not just the significant-only enrich_tbl,
+                        # so the fallback still benefits from the full candidate pool).
+                        logger.warning(
+                            f"GO term LLM ranking failed for gene {this_causal_gene} "
+                            f"(strategy={config.go_semantic_strategy}): {exc}. "
+                            "Falling back to embedding-only ranking."
+                        )
+                        relevant_gos = llm.get_relevant_go(phenotype, semantic_input)
 
                 # Cache if shared
                 if use_shared_enrichment:

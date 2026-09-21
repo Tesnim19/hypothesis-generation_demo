@@ -65,6 +65,46 @@ def test_run_returns_empty_frame_without_calling_api():
         service.gp.enrichr = original
 
 
+def test_run_with_tables_returns_filtered_and_full_tables(monkeypatch):
+    enrich = _enrich()
+    enrich.get_coexpression_net = MagicMock(return_value=["GENE1"])
+    enrich._load_fallback_background_data = MagicMock(return_value=["BG"])
+    raw = pd.DataFrame(
+        {
+            "Gene_set": ["s", "s"],
+            "Term": ["significant (GO:1)", "not significant (GO:2)"],
+            "Adjusted P-value": [0.01, 0.5],
+            "Genes": ["GENE1;GENE2", "GENE1"],
+        }
+    )
+    monkeypatch.setattr(service.gp, "enrichr", MagicMock(return_value=MagicMock(results=raw)))
+
+    filtered, all_terms = enrich.run_with_tables("GENE1")
+
+    assert list(filtered["ID"]) == ["GO:1"]
+    assert list(all_terms["ID"]) == ["GO:1", "GO:2"]
+    # go_map only knows GO:1; GO:2 must fall back to "NA", not raise.
+    assert dict(zip(all_terms["ID"], all_terms["Desc"])) == {
+        "GO:1": "description",
+        "GO:2": "NA",
+    }
+
+
+def test_run_with_tables_returns_empty_frames_when_no_coexpressed_genes():
+    enrich = _enrich()
+    enrich.get_coexpression_net = MagicMock(return_value=[])
+    enrich._load_fallback_background_data = MagicMock(return_value=["BG"])
+    original = service.gp.enrichr
+    service.gp.enrichr = MagicMock()
+    try:
+        filtered, all_terms = enrich.run_with_tables("GENE1")
+        assert list(filtered.columns) == ["ID", "Term", "Desc", "Adjusted P-value", "Genes"]
+        assert filtered.empty and all_terms.empty
+        service.gp.enrichr.assert_not_called()
+    finally:
+        service.gp.enrichr = original
+
+
 def test_retry_api_contract_is_available():
     assert hasattr(service, "EnrichrAPIUnavailableError")
     assert hasattr(service.Enrich, "_run_enrichr_with_retry")
