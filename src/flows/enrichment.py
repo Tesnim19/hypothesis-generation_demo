@@ -11,6 +11,7 @@ from src.config import Config, create_dependencies
 from src.catlas_census_mapping import CatlasMappingError
 from src.services.enrich import EnrichrAPIUnavailableError
 from src.services.prolog import PrologNoEvidenceError, PrologServiceError
+from src.services.go_semantic_search import rank_go_terms_by_strategy
 from src.tasks import (
     check_enrich,
     get_candidate_genes,
@@ -187,7 +188,7 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                         coexpression_data = get_coexpression_matrix_for_tissue.submit(
                             ensembl_gene, selected_tissue, k=500
                         ).result()
-                        enrich_tbl = enrichr.run(
+                        enrich_tbl, enrich_tbl_all = enrichr.run_with_tables(
                             this_causal_gene, tissue_name=selected_tissue,
                             coexpression_data=coexpression_data
                         )
@@ -196,11 +197,11 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                                 f"Tissue '{selected_tissue}' produced no enrichment for {this_causal_gene}; "
                                 f"retrying with non–tissue-specific enrichment (fallback reference network)."
                             )
-                            enrich_tbl = enrichr.run(this_causal_gene)
+                            enrich_tbl, enrich_tbl_all = enrichr.run_with_tables(this_causal_gene)
                             enrichment_run_meta["non_tissue_specific_fallback"] = True
                             enrichment_run_meta["effective_enrichment_mode"] = "non_tissue_fallback_from_tissue"
                     else:
-                        enrich_tbl = enrichr.run(this_causal_gene)
+                        enrich_tbl, enrich_tbl_all = enrichr.run_with_tables(this_causal_gene)
                 except EnrichrAPIUnavailableError as exc:
                     skip_reason = (
                         f"Enrichr API unavailable after retries for causal gene "
@@ -229,12 +230,22 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                     skipped_enrich_ids.append(skipped_id)
                     continue
 
+                semantic_input = enrich_tbl
+                if enrich_tbl_all is not None and len(enrich_tbl_all) > 0:
+                    semantic_input = enrich_tbl_all
+
                 # Check if enrichment table is empty
-                if enrich_tbl is None or len(enrich_tbl) == 0:
-                    logger.warning(f"No enrichment results found for gene {this_causal_gene}. Skipping LLM relevance scoring.")
+                if semantic_input is None or len(semantic_input) == 0:
+                    logger.warning(f"No enrichment results found for gene {this_causal_gene}. Skipping GO relevance scoring.")
                     relevant_gos = []
                 else:
-                    relevant_gos = llm.get_relevant_go(phenotype, enrich_tbl)
+                    relevant_gos = rank_go_terms_by_strategy(
+                        phenotype,
+                        semantic_input,
+                        k=10,
+                        causal_gene=this_causal_gene,
+                        llm=llm,
+                    )
 
                 # Cache if shared
                 if use_shared_enrichment:
