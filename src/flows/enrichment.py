@@ -250,10 +250,6 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                             llm=llm,
                         )
                     except Exception as exc:
-                        # A down/misconfigured local LLM shouldn't fail the whole
-                        # enrichment step — degrade to the embedding-only ranking
-                        # (semantic_input, not just the significant-only enrich_tbl,
-                        # so the fallback still benefits from the full candidate pool).
                         logger.warning(
                             f"GO term LLM ranking failed for gene {this_causal_gene} "
                             f"(strategy={config.go_semantic_strategy}): {exc}. "

@@ -172,8 +172,8 @@ def test_prefilter_union_guarantees_top_pvalue_terms_even_with_low_similarity(mo
     tbl = _enrich_tbl(
         [
             ("GO:1", "strong signal, semantically distant", 1e-8, "GENE1"),
-            ("GO:2", "weak signal, semantically close", 0.2, "GENE2"),
-            ("GO:3", "mid signal, semantically close", 0.1, "GENE3"),
+            ("GO:2", "weak signal, semantically close", 0.02, "GENE2"),
+            ("GO:3", "mid signal, semantically close", 0.01, "GENE3"),
         ]
     )
 
@@ -192,8 +192,8 @@ def test_prefilter_union_deduplicates_between_pvalue_and_semantic_arms(monkeypat
     tbl = _enrich_tbl(
         [
             ("GO:1", "best of both", 1e-8, "GENE1"),
-            ("GO:2", "weak everything", 0.5, "GENE2"),
-            ("GO:3", "second best semantic", 0.2, "GENE3"),
+            ("GO:2", "weak everything", 0.03, "GENE2"),
+            ("GO:3", "second best semantic", 0.02, "GENE3"),
         ]
     )
 
@@ -240,3 +240,194 @@ def test_load_enrich_table_from_csv_requires_expected_columns(tmp_path):
     pd.DataFrame({"ID": ["GO:1"]}).to_csv(path, index=False)
     with pytest.raises(ValueError, match="missing columns"):
         service.load_enrich_table(str(path))
+
+
+# --- specificity weighting: stop broad terms winning on size alone ---------------
+
+
+def test_normalize_specificity_favours_narrow_terms():
+    # 20-gene term is far more informative than a 5000-gene one.
+    spec = service.normalize_specificity(pd.Series([20, 500, 5000]))
+    assert spec.iloc[0] == pytest.approx(1.0)
+    assert spec.iloc[-1] == pytest.approx(0.0)
+    assert spec.iloc[0] > spec.iloc[1] > spec.iloc[2]
+
+
+def test_normalize_specificity_handles_missing_sizes():
+    spec = service.normalize_specificity(pd.Series([None, None]))
+    assert (spec == 0.5).all()
+
+
+def test_hybrid_score_without_term_sizes_keeps_original_two_term_behaviour():
+    similarity = pd.Series([1.0, 0.0])
+    pvalues = pd.Series([0.5, 0.5])
+    assert list(service.hybrid_score(similarity, pvalues, alpha=1.0)) == [1.0, 0.0]
+
+
+def test_specificity_lifts_narrow_terms_above_broad_ones_ranked_by_pvalue():
+    """The DHODH failure in miniature.
+
+    Broad "regulation of transcription"-style terms annotate thousands of genes
+    and win on raw p-value in almost any coexpression network, crowding out
+    narrower, more mechanistically informative hits. Specificity weighting must
+    move the narrow term up relative to pure p-value ordering.
+    """
+    similarity = pd.Series([0.5, 0.5, 0.5, 0.5])
+    pvalues = pd.Series([1e-15, 1e-12, 1e-9, 1e-3])
+    term_sizes = pd.Series([5200, 4100, 3800, 22])  # last one is the specific hit
+
+    pvalue_rank = pvalues.rank().iloc[-1]          # 4th of 4 by p-value
+    score = service.hybrid_score(similarity, pvalues, term_sizes=term_sizes)
+    new_rank = score.rank(ascending=False).iloc[-1]
+
+    # The significance floor already establishes that every candidate here is
+    # a real hit, so specificity is weighted to out-argue raw p-value extremity
+    # and the narrow term takes the lead outright.
+    assert new_rank < pvalue_rank
+    assert new_rank == 1
+
+
+# --- significance floor: the model-independent guarantee ------------------------
+
+
+def _shortlist(rows):
+    """rows: list of (go_id, term, adj_p, genes, score)"""
+    return pd.DataFrame(
+        [
+            {
+                "ID": go_id, "Term": term, "Desc": term,
+                "Adjusted P-value": adj_p, "Genes": genes, "score": score,
+            }
+            for go_id, term, adj_p, genes, score in rows
+        ]
+    )
+
+
+def test_enforce_floor_swaps_null_pick_for_unused_significant_candidate():
+    shortlisted = _shortlist([
+        ("GO:1", "real hit", 1e-8, "GENE1;GENE2", 0.9),
+        ("GO:2", "also real", 1e-4, "GENE3", 0.8),
+        ("GO:3", "statistical noise", 0.68, "GENE4", 0.7),
+    ])
+    llm_results = [
+        {"id": "GO:1", "name": "real hit", "p": 1e-8, "rank": 1, "genes": ["GENE1", "GENE2"]},
+        {"id": "GO:3", "name": "statistical noise", "p": 0.68, "rank": 2, "genes": ["GENE4"]},
+    ]
+
+    repaired = service.enforce_significance_floor(llm_results, shortlisted, k=2)
+
+    assert [r["id"] for r in repaired] == ["GO:1", "GO:2"]
+    assert repaired[1]["floor_substituted"] is True
+    assert repaired[1]["p"] == 1e-4
+    assert repaired[1]["genes"] == ["GENE3"]
+    assert [r["rank"] for r in repaired] == [1, 2]
+
+
+def test_enforce_floor_keeps_null_pick_when_no_real_candidate_is_left():
+    # Gene genuinely has only one significant term -- padding is unavoidable,
+    # but it must be marked rather than silently passed off as a real hit.
+    shortlisted = _shortlist([
+        ("GO:1", "only real hit", 1e-8, "GENE1", 0.9),
+        ("GO:3", "noise", 0.68, "GENE4", 0.7),
+    ])
+    llm_results = [
+        {"id": "GO:1", "name": "only real hit", "p": 1e-8, "rank": 1, "genes": ["GENE1"]},
+        {"id": "GO:3", "name": "noise", "p": 0.68, "rank": 2, "genes": ["GENE4"]},
+    ]
+
+    repaired = service.enforce_significance_floor(llm_results, shortlisted, k=2)
+
+    assert [r["id"] for r in repaired] == ["GO:1", "GO:3"]
+    assert repaired[1]["below_significance_floor"] is True
+    assert "floor_substituted" not in repaired[1]
+
+
+def test_enforce_floor_leaves_all_significant_results_untouched():
+    shortlisted = _shortlist([
+        ("GO:1", "a", 1e-8, "G1", 0.9),
+        ("GO:2", "b", 1e-4, "G2", 0.8),
+    ])
+    llm_results = [
+        {"id": "GO:1", "name": "a", "p": 1e-8, "rank": 1, "genes": ["G1"]},
+        {"id": "GO:2", "name": "b", "p": 1e-4, "rank": 2, "genes": ["G2"]},
+    ]
+
+    repaired = service.enforce_significance_floor(llm_results, shortlisted, k=2)
+
+    assert repaired == llm_results
+    assert not any("floor_substituted" in r for r in repaired)
+
+
+def test_enforce_floor_respects_configurable_threshold(monkeypatch):
+    monkeypatch.setenv("GO_SIGNIFICANCE_MAX_P", "0.001")
+    shortlisted = _shortlist([
+        ("GO:1", "very strong", 1e-8, "G1", 0.9),
+        ("GO:2", "strong enough at 0.05 but not 0.001", 1e-2, "G2", 0.8),
+    ])
+    llm_results = [{"id": "GO:2", "name": "x", "p": 1e-2, "rank": 1, "genes": ["G2"]}]
+
+    repaired = service.enforce_significance_floor(llm_results, shortlisted, k=1)
+
+    # Under the stricter floor, p=1e-2 is no longer acceptable and gets swapped.
+    assert repaired[0]["id"] == "GO:1"
+
+
+def test_prefilter_excludes_sub_floor_terms_when_real_hits_exist(monkeypatch):
+    _patch_score_enrichment_table(
+        monkeypatch, {"GO:1": 0.1, "GO:2": 0.1, "GO:noise": 0.99}
+    )
+    tbl = _enrich_tbl([
+        ("GO:1", "real hit", 1e-8, "G1"),
+        ("GO:2", "real hit two", 1e-3, "G2"),
+        ("GO:noise", "semantically perfect but null", 0.8, "G3"),
+    ])
+
+    shortlist = service.prefilter_go_candidates_union("phenotype", tbl, top_n=2, pvalue_k=1)
+
+    # The null term must not make the shortlist while real hits are available,
+    # no matter how well it embeds against the phenotype text.
+    assert "GO:noise" not in set(shortlist["ID"])
+
+
+def test_prefilter_does_not_pad_shortlist_with_sub_floor_terms(monkeypatch):
+    """top_n is a cap, not a quota.
+
+    A gene with two real hits must yield a shortlist of two, not two hits
+    padded with statistical noise. Padding is actively harmful: a narrow but
+    insignificant term outranks a broad but real one on specificity, so the
+    ranker is handed noise that reads as a more satisfying answer.
+    """
+    _patch_score_enrichment_table(
+        monkeypatch, {"GO:1": 0.1, "GO:2": 0.2, "GO:3": 0.99, "GO:4": 0.98}
+    )
+    tbl = _enrich_tbl(
+        [
+            ("GO:1", "real hit", 1e-8, "GENE1"),
+            ("GO:2", "real hit", 0.001, "GENE2"),
+            ("GO:3", "noise, semantically irresistible", 0.44, "GENE3"),
+            ("GO:4", "noise, semantically irresistible", 0.51, "GENE4"),
+        ]
+    )
+
+    shortlist = service.prefilter_go_candidates_union(
+        "phenotype", tbl, top_n=50, pvalue_k=1
+    )
+
+    assert set(shortlist["ID"]) == {"GO:1", "GO:2"}
+
+
+def test_prefilter_falls_back_to_full_pool_when_nothing_is_significant(monkeypatch):
+    """With no real hits at all, returning nothing would be worse than noise."""
+    _patch_score_enrichment_table(monkeypatch, {"GO:3": 0.9, "GO:4": 0.1})
+    tbl = _enrich_tbl(
+        [
+            ("GO:3", "noise", 0.44, "GENE3"),
+            ("GO:4", "noise", 0.51, "GENE4"),
+        ]
+    )
+
+    shortlist = service.prefilter_go_candidates_union(
+        "phenotype", tbl, top_n=50, pvalue_k=1
+    )
+
+    assert set(shortlist["ID"]) == {"GO:3", "GO:4"}

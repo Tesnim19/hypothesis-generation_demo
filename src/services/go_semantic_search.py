@@ -14,6 +14,7 @@ scripts/replay_go_semantic_search.py but are not the production default.
 
 from __future__ import annotations
 
+import math
 import json
 import os
 import re
@@ -135,12 +136,59 @@ def normalize_neg_log_p(pvalues: pd.Series) -> pd.Series:
     return (neg_log - min_v) / (max_v - min_v)
 
 
+def normalize_specificity(term_sizes: pd.Series) -> pd.Series:
+    sizes = pd.to_numeric(term_sizes, errors="coerce")
+    if sizes.notna().sum() == 0:
+        return pd.Series(0.5, index=term_sizes.index)
+    ic = -np.log10(sizes.clip(lower=1).astype(float))
+    ic = ic.fillna(ic.median())
+    min_v, max_v = ic.min(), ic.max()
+    if max_v == min_v:
+        return pd.Series(0.5, index=term_sizes.index)
+    return (ic - min_v) / (max_v - min_v)
+
+
 def hybrid_score(
     similarity: pd.Series,
     pvalues: pd.Series,
     alpha: float = DEFAULT_HYBRID_ALPHA,
+    term_sizes: pd.Series | None = None,
+    weights: tuple[float, float, float] | None = None,
 ) -> pd.Series:
-    return alpha * similarity + (1.0 - alpha) * normalize_neg_log_p(pvalues)
+    """Blend semantic similarity, statistical signal and term specificity.
+    """
+    significance = normalize_neg_log_p(pvalues)
+    if term_sizes is None:
+        return alpha * similarity + (1.0 - alpha) * significance
+    w_sim, w_sig, w_spec = weights or _resolve_score_weights()
+    return (
+        w_sim * similarity
+        + w_sig * significance
+        + w_spec * normalize_specificity(term_sizes)
+    )
+
+
+_DEFAULT_SCORE_WEIGHTS = (0.40, 0.20, 0.40)  # similarity, significance, specificity
+
+
+def _resolve_score_weights() -> tuple[float, float, float]:
+    """(similarity, significance, specificity) weights, normalized to sum 1.
+    """
+    raw = (
+        float(os.getenv("GO_SCORE_W_SIMILARITY", str(_DEFAULT_SCORE_WEIGHTS[0]))),
+        float(os.getenv("GO_SCORE_W_SIGNIFICANCE", str(_DEFAULT_SCORE_WEIGHTS[1]))),
+        float(os.getenv("GO_SCORE_W_SPECIFICITY", str(_DEFAULT_SCORE_WEIGHTS[2]))),
+    )
+    total = sum(raw)
+    if total <= 0:
+        return _DEFAULT_SCORE_WEIGHTS
+    return tuple(w / total for w in raw)
+
+
+def significance_floor() -> float:
+    """Max adjusted p-value for a term to count as a real enrichment hit.
+    """
+    return float(os.getenv("GO_SIGNIFICANCE_MAX_P", "0.05"))
 
 
 def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
@@ -223,7 +271,10 @@ def _score_enrichment_table(
         for emb in doc_embeddings
     ]
     data["score"] = hybrid_score(
-        data["similarity"], data["Adjusted P-value"], alpha=hybrid_alpha
+        data["similarity"],
+        data["Adjusted P-value"],
+        alpha=hybrid_alpha,
+        term_sizes=data["Term Size"] if "Term Size" in data.columns else None,
     )
     return data
 
@@ -266,13 +317,20 @@ def prefilter_go_candidates_union(
     if len(data) == 0:
         return data
 
-    by_pvalue = data.sort_values("Adjusted P-value", ascending=True).head(pvalue_k)
+    floor = significance_floor()
+    above = data[data["Adjusted P-value"] < floor]
+    pool = above if len(above) > 0 else data
+    top_n = min(top_n, len(pool))
+
+    by_pvalue = pool.sort_values("Adjusted P-value", ascending=True).head(
+        min(pvalue_k, len(pool))
+    )
     selected_ids = {str(row["ID"]).strip() for _, row in by_pvalue.iterrows()}
     remaining = top_n - len(by_pvalue)
 
     extras = []
     if remaining > 0:
-        for _, row in data.sort_values("score", ascending=False).iterrows():
+        for _, row in pool.sort_values("score", ascending=False).iterrows():
             go_id = str(row["ID"]).strip()
             if go_id in selected_ids:
                 continue
@@ -286,12 +344,145 @@ def prefilter_go_candidates_union(
     else:
         shortlisted = by_pvalue.reset_index(drop=True)
 
+    n_below = int((shortlisted["Adjusted P-value"] >= floor).sum())
     logger.info(
         f"Hybrid prefilter union: {len(by_pvalue)} by adj p-value + "
         f"{len(shortlisted) - len(by_pvalue)} by semantic score = "
-        f"{len(shortlisted)} total (cap {top_n})"
+        f"{len(shortlisted)} total (cap {top_n}); {len(above)} of {len(data)} "
+        f"pool terms pass p<{floor}"
+        + (
+            f"; no term cleared the floor, falling back to the full pool "
+            f"({n_below} sub-floor terms shortlisted)"
+            if len(above) == 0
+            else ""
+        )
     )
     return shortlisted
+
+
+def _go_eval_log_enabled() -> bool:
+    return os.getenv("GO_EVAL_LOG", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _go_eval_log_dir() -> Path:
+    return Path(os.getenv("GO_EVAL_LOG_DIR", "data/go_eval"))
+
+
+def _maybe_log_go_eval_snapshot(
+    *,
+    phenotype: str,
+    causal_gene: Optional[str],
+    full_tbl: pd.DataFrame,
+    shortlisted_tbl: pd.DataFrame,
+    results: list[dict],
+    error: Optional[str] = None,
+) -> None:
+    """Opt-in (GO_EVAL_LOG=1) audit trail for judging ranking quality.
+
+    Writes the full candidate pool, the shortlist sent to the LLM and what it
+    picked to one JSON file per call. Off by default, so it costs nothing in
+    production. It also fires on the failure path, which is what makes a silent
+    fallback to embedding-only ranking visible after the fact.
+    """
+    if not _go_eval_log_enabled():
+        return
+    out_dir = _go_eval_log_dir()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = _safe_snapshot_part(f"{phenotype}_{causal_gene or 'nogene'}")
+    ts = pd.Timestamp.now(tz="UTC").strftime("%Y%m%dT%H%M%S")
+    path = out_dir / f"{ts}_{stem}.json"
+    base_cols = ["ID", "Term", "Desc", "Adjusted P-value", "Genes"]
+    diag_cols = ["Term Size", "similarity", "score"]
+
+    def _rows(df: pd.DataFrame) -> list[dict]:
+        if not len(df):
+            return []
+        cols = base_cols + [c for c in diag_cols if c in df.columns]
+        return df[cols].to_dict(orient="records")
+
+    payload = {
+        "phenotype": phenotype,
+        "causal_gene": causal_gene,
+        "full_pool_size": len(full_tbl),
+        "shortlist_size": len(shortlisted_tbl),
+        "full_pool": _rows(full_tbl),
+        "shortlist": _rows(shortlisted_tbl),
+        "llm_results": results,
+        "error": error,
+    }
+    if error:
+        path = path.with_name(f"{path.stem}_FAILED{path.suffix}")
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    status = f"FAILED ({error})" if error else "ok"
+    logger.info(f"[GO_EVAL_LOG] wrote {path} (full_pool={len(full_tbl)}, shortlist={len(shortlisted_tbl)}, status={status})")
+
+
+def _safe_snapshot_part(value: str | None, fallback: str = "unknown") -> str:
+    if not value or not str(value).strip():
+        return fallback
+    return re.sub(r"[^\w.-]", "_", str(value).strip()).strip("_") or fallback
+
+
+def enforce_significance_floor(
+    results: list[dict], shortlisted: pd.DataFrame, k: int
+) -> list[dict]:
+    """Replace sub-floor picks with the best unused real hits.
+    """
+    if not results or shortlisted is None or len(shortlisted) == 0:
+        return results
+    if "Adjusted P-value" not in shortlisted.columns:
+        return results
+
+    floor = significance_floor()
+    picked_ids = {str(r.get("id", "")).strip() for r in results}
+    sort_col = "score" if "score" in shortlisted.columns else "Adjusted P-value"
+    ascending = sort_col == "Adjusted P-value"
+    spare = [
+        row
+        for _, row in shortlisted.sort_values(sort_col, ascending=ascending).iterrows()
+        if str(row["ID"]).strip() not in picked_ids
+        and float(row["Adjusted P-value"]) < floor
+    ]
+
+    repaired, swaps = [], 0
+    for entry in results:
+        p = entry.get("p")
+        if p is not None and float(p) >= floor and spare:
+            row = spare.pop(0)
+            genes_raw = str(row.get("Genes", ""))
+            repaired.append(
+                {
+                    **entry,
+                    "id": str(row["ID"]).strip(),
+                    "name": str(row["Term"]).strip(),
+                    "genes": [
+                        g.strip()
+                        for g in genes_raw.replace(",", ";").split(";")
+                        if g.strip()
+                    ],
+                    "p": float(row["Adjusted P-value"]),
+                    "reason": (
+                        f"Substituted by significance floor (p<{floor}): the model's "
+                        f"pick had adjusted p={float(p):.3g} with no enrichment signal, "
+                        "while this candidate does."
+                    ),
+                    "floor_substituted": True,
+                }
+            )
+            swaps += 1
+        else:
+            if p is not None and float(p) >= floor:
+                entry = {**entry, "below_significance_floor": True}
+            repaired.append(entry)
+
+    for rank, entry in enumerate(repaired[:k], start=1):
+        entry["rank"] = rank
+    if swaps:
+        logger.info(
+            f"Significance floor: replaced {swaps} of {len(results)} LLM picks "
+            f"that had adj p >= {floor} with unused candidates that pass it"
+        )
+    return repaired[:k]
 
 
 def rank_go_terms_hybrid_llm(
@@ -346,19 +537,39 @@ def rank_go_terms_hybrid_llm(
             model = os.getenv("GO_LLM_MODEL", DEFAULT_LLM_MODEL)
 
     llm = LLM()
-    results = llm.rank_relevant_go_by_llm(
-        phenotype=phenotype,
-        enrich_tbl=shortlisted,
-        k=k,
-        causal_gene=causal_gene,
-        max_candidates=len(shortlisted),
-        model=model,
-        backend=backend,
-        prefiltered=True,
-    )
+    try:
+        results = llm.rank_relevant_go_by_llm(
+            phenotype=phenotype,
+            enrich_tbl=shortlisted,
+            k=k,
+            causal_gene=causal_gene,
+            max_candidates=len(shortlisted),
+            model=model,
+            backend=backend,
+            prefiltered=True,
+        )
+    except Exception as exc:
+        _maybe_log_go_eval_snapshot(
+            phenotype=phenotype,
+            causal_gene=causal_gene,
+            full_tbl=enrich_tbl,
+            shortlisted_tbl=shortlisted,
+            results=[],
+            error=str(exc),
+        )
+        raise
+
+    results = enforce_significance_floor(results, shortlisted, k=k)
     for entry in results:
         entry["prefilter"] = "pvalue_embedding_union"
         entry["prefilter_pool"] = pool_size
+    _maybe_log_go_eval_snapshot(
+        phenotype=phenotype,
+        causal_gene=causal_gene,
+        full_tbl=enrich_tbl,
+        shortlisted_tbl=shortlisted,
+        results=results,
+    )
     return results
 
 

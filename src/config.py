@@ -48,10 +48,6 @@ class Config:
         self.catlas_celltype_cl_mapping_json = (
             "data/catlas_celltype_cl_mapping.json"
         )
-        # go_llm_url has no hardcoded default: it's a personal/lab endpoint that
-        # differs per environment, so it must be set explicitly (GO_LLM_URL) in
-        # any environment that uses the "local" GO_LLM_BACKEND. Left unset here;
-        # src.services.llm raises a clear error if it's needed but missing.
         self.go_llm_url = ""
         self.go_llm_key = "ollama"
         self.go_llm_model = "gemma4"
