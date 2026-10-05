@@ -248,9 +248,47 @@ def test_load_enrich_table_from_csv_requires_expected_columns(tmp_path):
 def test_normalize_specificity_favours_narrow_terms():
     # 20-gene term is far more informative than a 5000-gene one.
     spec = service.normalize_specificity(pd.Series([20, 500, 5000]))
-    assert spec.iloc[0] == pytest.approx(1.0)
-    assert spec.iloc[-1] == pytest.approx(0.0)
     assert spec.iloc[0] > spec.iloc[1] > spec.iloc[2]
+    assert (spec >= 0).all() and (spec <= 1).all()
+
+
+def test_normalize_specificity_is_independent_of_the_rest_of_the_pool():
+    """A term's specificity must not depend on what it is ranked beside.
+
+    Min-maxing over the candidate pool made the narrowest term in any pool
+    score 1.0 -- so a 525-gene term looked maximally specific whenever it
+    happened to sit among broader ones, and the same term scored differently
+    from one run to the next.
+    """
+    alone = service.normalize_specificity(pd.Series([500]))
+    with_narrow = service.normalize_specificity(pd.Series([500, 5, 10]))
+    with_broad = service.normalize_specificity(pd.Series([500, 4000, 9000]))
+
+    assert alone.iloc[0] == pytest.approx(with_narrow.iloc[0])
+    assert alone.iloc[0] == pytest.approx(with_broad.iloc[0])
+
+
+def test_normalize_specificity_anchors_to_the_library_size_range(monkeypatch):
+    """Endpoints are the library's own widest and narrowest terms.
+
+    Raw information content only spans ~0.21-0.83, too compressed to weigh
+    against similarity and significance. Anchoring to the library's size range
+    restores the full [0, 1] scale while keeping it fixed across pools.
+    """
+    monkeypatch.setattr(service, "_SPECIFICITY_SCALE", None)
+    monkeypatch.setattr(
+        "src.services.enrich.go_corpus_gene_count", lambda *a, **k: 10000
+    )
+    monkeypatch.setattr(
+        "src.services.enrich.go_term_sizes",
+        lambda *a, **k: {"GO:wide": 1000, "GO:mid": 100, "GO:narrow": 10},
+    )
+
+    spec = service.normalize_specificity(pd.Series([1000, 100, 10]))
+
+    assert spec.iloc[0] == pytest.approx(0.0)   # widest term in the library
+    assert spec.iloc[-1] == pytest.approx(1.0)  # narrowest term in the library
+    assert 0.0 < spec.iloc[1] < 1.0
 
 
 def test_normalize_specificity_handles_missing_sizes():

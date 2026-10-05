@@ -170,7 +170,10 @@ def test_go_term_sizes_parses_library_and_caches_to_disk(monkeypatch, tmp_path):
     sizes = service.go_term_sizes()
 
     assert sizes == {"GO:0006355": 3, "GO:0060964": 1}
-    assert json.loads(cache.read_text()) == {"GO:0006355": 3, "GO:0060964": 1}
+    cached = json.loads(cache.read_text())
+    assert cached["sizes"] == {"GO:0006355": 3, "GO:0060964": 1}
+    # distinct genes across the whole library, the IC denominator
+    assert cached["corpus_genes"] == 3
 
 
 def test_go_term_sizes_reads_cache_without_hitting_the_network(monkeypatch, tmp_path):

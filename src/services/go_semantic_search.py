@@ -41,6 +41,7 @@ DEFAULT_LLM_PREFILTER_K = 250
 DEFAULT_LLM_PREFILTER_PVALUE_K = 150
 DEFAULT_LLM_MODEL = "gemma4"
 DEFAULT_OPENAI_LLM_MODEL = "gpt-4o"
+_SPECIFICITY_SCALE: tuple[int, float, float] | None = None
 
 ALL_AB_STRATEGIES = (
     "baseline",
@@ -142,15 +143,59 @@ def normalize_neg_log_p(pvalues: pd.Series) -> pd.Series:
 
 
 def normalize_specificity(term_sizes: pd.Series) -> pd.Series:
+    """Information content from GO term size, on a fixed [0, 1] scale.
+
+    Resnik information content, IC(t) = -log(p(t)) with p(t) the share of the
+    annotation corpus the term covers, divided by log(N) to land in [0, 1].
+
+    The scale is deliberately fixed to the corpus rather than min-maxed over
+    the candidate pool. Pool-relative scaling made a term's specificity depend
+    on its neighbours: in a pool of uniformly broad terms the least-broad one
+    scored 1.0 and looked specific, and the same term scored differently from
+    one run to the next. Against the corpus, 1922 genes always scores 0.21 and
+    15 genes always scores 0.72.
+
+    Terms of unknown size take the pool median, so they are neither rewarded
+    nor punished.
+    """
     sizes = pd.to_numeric(term_sizes, errors="coerce")
     if sizes.notna().sum() == 0:
         return pd.Series(0.5, index=term_sizes.index)
-    ic = -np.log10(sizes.clip(lower=1).astype(float))
-    ic = ic.fillna(ic.median())
-    min_v, max_v = ic.min(), ic.max()
-    if max_v == min_v:
-        return pd.Series(0.5, index=term_sizes.index)
-    return (ic - min_v) / (max_v - min_v)
+
+    corpus, lo_ic, hi_ic = _specificity_scale()
+    clipped = sizes.clip(lower=1, upper=corpus).astype(float)
+    ic = np.log(corpus / clipped) / np.log(corpus)
+    if hi_ic > lo_ic:
+        ic = (ic - lo_ic) / (hi_ic - lo_ic)
+    return ic.fillna(ic.median()).clip(lower=0.0, upper=1.0)
+
+
+def _specificity_scale() -> tuple[int, float, float]:
+    """(corpus size, IC of the broadest term, IC of the narrowest term).
+
+    The endpoints come from the library's own size distribution, so they are
+    constant for a given library. Scaling to them keeps a term's specificity
+    independent of its pool while still using the full [0, 1] range -- raw IC
+    only spans about 0.21 to 0.83, which left specificity too compressed to
+    weigh against similarity and significance.
+    """
+    global _SPECIFICITY_SCALE
+    if _SPECIFICITY_SCALE is not None:
+        return _SPECIFICITY_SCALE
+
+    from src.services.enrich import go_corpus_gene_count, go_term_sizes
+
+    corpus = max(int(go_corpus_gene_count()), 2)
+    observed = [s for s in go_term_sizes().values() if s and s > 0]
+    if observed:
+        widest = min(max(observed), corpus)
+        narrowest = max(min(observed), 1)
+    else:
+        widest, narrowest = corpus, 1
+    lo = np.log(corpus / widest) / np.log(corpus)
+    hi = np.log(corpus / narrowest) / np.log(corpus)
+    _SPECIFICITY_SCALE = (corpus, float(lo), float(hi))
+    return _SPECIFICITY_SCALE
 
 
 def hybrid_score(

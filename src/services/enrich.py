@@ -31,8 +31,11 @@ def significance_floor() -> float:
 
 
 _GO_ID_IN_TERM_RE = re.compile(r"\((GO:\d+)\)")
-_GO_TERM_SIZES: dict[str, int] | None = None
+_GO_TERM_SIZES: dict | None = None
 _GO_TERM_SIZES_LOCK = threading.Lock()
+# Distinct genes in GO_Biological_Process_2023 (Human); fallback when a
+# cache predates the corpus count or the library cannot be reached.
+_GO_CORPUS_GENES_DEFAULT = 14697
 
 
 def _parse_term_size(overlap: pd.Series) -> pd.Series:
@@ -53,49 +56,69 @@ def go_term_sizes(library: str = "GO_Biological_Process_2023") -> dict[str, int]
     Failure is non-fatal: callers fall back to size-agnostic ranking.
     """
     global _GO_TERM_SIZES
-    if _GO_TERM_SIZES is not None:
-        return _GO_TERM_SIZES
+    if _GO_TERM_SIZES is None:
+        # Dask runs tasks on threads; without this two workers can both miss
+        # the memo and fetch the library concurrently on first use.
+        with _GO_TERM_SIZES_LOCK:
+            if _GO_TERM_SIZES is None:
+                _GO_TERM_SIZES = _load_go_term_sizes(library)
+    return _GO_TERM_SIZES["sizes"]
 
-    # Dask runs tasks on threads; without this two workers can both miss the
-    # memo and fetch the library concurrently on first use.
-    with _GO_TERM_SIZES_LOCK:
-        if _GO_TERM_SIZES is not None:
-            return _GO_TERM_SIZES
-        _GO_TERM_SIZES = _load_go_term_sizes(library)
-    return _GO_TERM_SIZES
+
+def go_corpus_gene_count(library: str = "GO_Biological_Process_2023") -> int:
+    """Distinct genes annotated anywhere in the library.
+
+    The denominator for information content. Fixed per library, so a term's
+    specificity does not depend on which other terms happen to be ranked
+    alongside it.
+    """
+    go_term_sizes(library)
+    return (_GO_TERM_SIZES or {}).get("corpus_genes") or _GO_CORPUS_GENES_DEFAULT
 
 
 def _load_go_term_sizes(library: str) -> dict[str, int]:
     cache_path = os.getenv("GO_TERM_SIZES_CACHE", "data/go_term_sizes.json")
     try:
         with open(cache_path) as fh:
-            return {k: int(v) for k, v in json.load(fh).items()}
+            cached = json.load(fh)
+        if isinstance(cached, dict) and "sizes" in cached:
+            return {
+                "sizes": {k: int(v) for k, v in cached["sizes"].items()},
+                "corpus_genes": int(cached.get("corpus_genes") or 0) or None,
+            }
+        # pre-corpus-count cache: sizes only
+        return {"sizes": {k: int(v) for k, v in cached.items()}, "corpus_genes": None}
     except (OSError, ValueError, TypeError):
         pass
 
     try:
         sizes: dict[str, int] = {}
+        corpus: set[str] = set()
         for term, genes in gp.get_library(name=library, organism="Human").items():
+            corpus.update(str(g).strip().upper() for g in genes)
             match = _GO_ID_IN_TERM_RE.search(term)
             if match:
                 sizes[match.group(1)] = len(genes)
         if not sizes:
             raise ValueError(f"no GO ids parsed from library {library}")
+        record = {"sizes": sizes, "corpus_genes": len(corpus)}
         try:
             os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
             with open(cache_path, "w") as fh:
-                json.dump(sizes, fh)
+                json.dump(record, fh)
         except OSError as exc:
             logger.warning(f"Could not cache GO term sizes to {cache_path}: {exc}")
-        logger.info(f"Loaded {len(sizes)} GO term sizes from {library}")
+        logger.info(
+            f"Loaded {len(sizes)} GO term sizes from {library} "
+            f"({len(corpus)} distinct genes)"
+        )
+        return record
     except Exception as exc:
         logger.warning(
             f"Could not load GO term sizes from {library}: {exc}. "
             "Ranking will fall back to size-agnostic scoring."
         )
-        sizes = {}
-
-    return sizes
+        return {"sizes": {}, "corpus_genes": None}
 
 
 class EnrichrAPIUnavailableError(RuntimeError):
