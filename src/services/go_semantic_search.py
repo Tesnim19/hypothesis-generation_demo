@@ -155,8 +155,20 @@ def normalize_specificity(term_sizes: pd.Series) -> pd.Series:
     one run to the next. Against the corpus, 1922 genes always scores 0.21 and
     15 genes always scores 0.72.
 
-    Terms of unknown size take the pool median, so they are neither rewarded
-    nor punished.
+    Terms of unknown size are treated as the broadest the library knows of,
+    not as average. The asymmetry is deliberate: a term Enrichr scores but
+    does not publish a gene set for is unmeasurable here, and guessing
+    "average" hands it a reserved slot. GO:0006357 "regulation of
+    transcription by RNA polymerase II" -- absent from every published
+    Enrichr GO library -- took the top scored slot in both recorded cases on
+    nothing but that default. Wrongly demoting an unmeasurable term costs one
+    candidate; wrongly promoting one puts a truism in a slot reserved for
+    specific biology, which is the failure this weighting exists to prevent.
+
+    QuickGO was evaluated as a way to fill the gap properly and rejected: its
+    counts agree with the library for small terms but diverge unpredictably
+    for the rest (0.1x to 4.9x across sampled terms), so the two cannot be
+    mixed on one scale.
     """
     sizes = pd.to_numeric(term_sizes, errors="coerce")
     if sizes.notna().sum() == 0:
@@ -167,7 +179,13 @@ def normalize_specificity(term_sizes: pd.Series) -> pd.Series:
     ic = np.log(corpus / clipped) / np.log(corpus)
     if hi_ic > lo_ic:
         ic = (ic - lo_ic) / (hi_ic - lo_ic)
-    return ic.fillna(ic.median()).clip(lower=0.0, upper=1.0)
+    unmeasured = int(ic.isna().sum())
+    if unmeasured:
+        logger.info(
+            f"{unmeasured} of {len(ic)} terms have no known size; scoring them "
+            "as the broadest rather than average"
+        )
+    return ic.fillna(0.0).clip(lower=0.0, upper=1.0)
 
 
 def _specificity_scale() -> tuple[int, float, float]:

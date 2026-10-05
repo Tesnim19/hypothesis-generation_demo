@@ -720,3 +720,29 @@ def test_resilient_tries_the_opt_in_backend_before_degrading(monkeypatch):
     assert out == [{"id": "GO:via-openai", "p": 0.01}]
     assert calls[1] == GoSemanticStrategy.HYBRID_OPENAI
     degraded.assert_not_called()
+
+
+def test_unknown_size_is_scored_as_broad_not_average(monkeypatch):
+    """GO:0006357 is scored by Enrichr but absent from every published
+    library. Treating unknown as average handed it a reserved slot in both
+    recorded cases; it must be treated as broad instead."""
+    monkeypatch.setattr(service, "_SPECIFICITY_SCALE", None)
+    monkeypatch.setattr(
+        "src.services.enrich.go_corpus_gene_count", lambda *a, **k: 10000
+    )
+    monkeypatch.setattr(
+        "src.services.enrich.go_term_sizes",
+        lambda *a, **k: {"GO:wide": 1000, "GO:narrow": 10},
+    )
+
+    spec = service.normalize_specificity(pd.Series([10, None, 1000]))
+
+    assert spec.iloc[0] == pytest.approx(1.0)   # narrowest
+    assert spec.iloc[1] == pytest.approx(0.0)   # unknown -> broad, not 0.5
+    assert spec.iloc[2] == pytest.approx(0.0)   # broadest
+
+
+def test_all_sizes_unknown_stays_neutral():
+    """With nothing measurable at all, flat 0.5 is right -- demoting every
+    term equally is the same ranking, but 0.0 would distort the blend."""
+    assert (service.normalize_specificity(pd.Series([None, None])) == 0.5).all()
