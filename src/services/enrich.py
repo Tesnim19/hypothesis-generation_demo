@@ -3,6 +3,7 @@ import json
 import os
 import pickle
 import re
+import threading
 from typing import List, Optional
 
 import gseapy as gp
@@ -16,8 +17,22 @@ from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
 _ENSG_RE = re.compile(r"^ENSG\d+$", re.IGNORECASE)
 
 
+_SIGNIFICANCE_DEFAULT = object()
+
+
+def significance_floor() -> float:
+    """Max adjusted p-value for a GO term to count as a real enrichment hit.
+
+    Single source of truth: the enrichment filter and the ranking layer's
+    floor must agree, or lowering GO_SIGNIFICANCE_MAX_P silently tightens one
+    and not the other.
+    """
+    return float(os.getenv("GO_SIGNIFICANCE_MAX_P", "0.05"))
+
+
 _GO_ID_IN_TERM_RE = re.compile(r"\((GO:\d+)\)")
 _GO_TERM_SIZES: dict[str, int] | None = None
+_GO_TERM_SIZES_LOCK = threading.Lock()
 
 
 def _parse_term_size(overlap: pd.Series) -> pd.Series:
@@ -41,11 +56,20 @@ def go_term_sizes(library: str = "GO_Biological_Process_2023") -> dict[str, int]
     if _GO_TERM_SIZES is not None:
         return _GO_TERM_SIZES
 
+    # Dask runs tasks on threads; without this two workers can both miss the
+    # memo and fetch the library concurrently on first use.
+    with _GO_TERM_SIZES_LOCK:
+        if _GO_TERM_SIZES is not None:
+            return _GO_TERM_SIZES
+        _GO_TERM_SIZES = _load_go_term_sizes(library)
+    return _GO_TERM_SIZES
+
+
+def _load_go_term_sizes(library: str) -> dict[str, int]:
     cache_path = os.getenv("GO_TERM_SIZES_CACHE", "data/go_term_sizes.json")
     try:
         with open(cache_path) as fh:
-            _GO_TERM_SIZES = {k: int(v) for k, v in json.load(fh).items()}
-            return _GO_TERM_SIZES
+            return {k: int(v) for k, v in json.load(fh).items()}
     except (OSError, ValueError, TypeError):
         pass
 
@@ -71,8 +95,7 @@ def go_term_sizes(library: str = "GO_Biological_Process_2023") -> dict[str, int]
         )
         sizes = {}
 
-    _GO_TERM_SIZES = sizes
-    return _GO_TERM_SIZES
+    return sizes
 
 
 class EnrichrAPIUnavailableError(RuntimeError):
@@ -205,7 +228,7 @@ class Enrich:
 
 
     def _process_enrichment_results(
-        self, res: pd.DataFrame, p_threshold: float | None = 0.05
+        self, res: pd.DataFrame, p_threshold=_SIGNIFICANCE_DEFAULT
     ) -> pd.DataFrame:
         """
         Process and filter enrichment results from gseapy.
@@ -216,6 +239,8 @@ class Enrich:
         res.insert(1, "ID", res["Term"].apply(
             lambda x: x.split("(")[1].split(")")[0]))
         res["Term"] = res["Term"].apply(lambda x: x.split("(")[0])
+        if p_threshold is _SIGNIFICANCE_DEFAULT:
+            p_threshold = significance_floor()
         if p_threshold is not None:
             res = res[res["Adjusted P-value"] < p_threshold].copy()
         desc = []
@@ -237,6 +262,19 @@ class Enrich:
             res["Term Size"] = (
                 res["ID"].map(sizes).astype("Float64") if sizes else pd.NA
             )
+            # Enrichr's server-side library is not guaranteed to match the
+            # published one we read sizes from, so a term can be scored here
+            # and absent there. Unmatched terms fall back to neutral median
+            # specificity, which is safe but silent -- warn if it stops being
+            # a handful of terms.
+            if sizes is not None and len(res):
+                matched = int(pd.to_numeric(res["Term Size"], errors="coerce").notna().sum())
+                if matched < len(res) * 0.9:
+                    logger.warning(
+                        f"GO term sizes matched only {matched}/{len(res)} enriched "
+                        f"terms; specificity weighting is degraded. The Enrichr "
+                        f"library version may have diverged from the cached sizes."
+                    )
         return res[
             ["ID", "Term", "Desc", "Adjusted P-value", "Genes", "Term Size"]
         ].copy()
@@ -361,7 +399,7 @@ class Enrich:
         raw = self._run_enrichr(relevant_gene, tissue_name, coexpression_data)
         if raw is None:
             return empty, empty
-        filtered = self._process_enrichment_results(raw, p_threshold=0.05)
+        filtered = self._process_enrichment_results(raw)
         all_terms = self._process_enrichment_results(raw, p_threshold=None)
         logger.info(
             f"Enrichr returned {len(all_terms)} GO terms; "

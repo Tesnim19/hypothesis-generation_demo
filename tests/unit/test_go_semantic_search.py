@@ -511,3 +511,69 @@ def test_specificity_quota_orders_final_results_by_score(monkeypatch):
 
     assert [e["id"] for e in out] == ["GO:spec1", "GO:broad1"]
     assert [e["rank"] for e in out] == [1, 2]
+
+
+# --- composed guarantees: the property that actually ships ----------------------
+
+
+def test_significance_floor_does_not_mutate_the_callers_results():
+    """The enforce_* helpers are called on the model's own list; stamping rank
+    onto those dicts in place corrupts the caller's copy."""
+    shortlist = _quota_shortlist()
+    results = [{"id": "GO:broad1", "name": "broad", "p": 1e-9}]
+
+    service.enforce_significance_floor(results, shortlist, k=1)
+    service.enforce_specificity_quota(results, shortlist, k=1)
+
+    assert results == [{"id": "GO:broad1", "name": "broad", "p": 1e-9}]
+
+
+def test_full_chain_returns_only_real_hits_and_honours_the_quota(monkeypatch):
+    """End-to-end property, over a pool that is mostly noise.
+
+    Unit tests cover each guarantee alone; this pins the composition, which is
+    what production actually runs: 4 real hits buried in 40 null ones, a ranker
+    that picks badly, and an output that must still be all-real and contain the
+    top-scored candidates.
+    """
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.5")
+    real = [
+        ("GO:r1", "narrow real", 0.001, "A;B"),
+        ("GO:r2", "narrow real", 0.004, "C"),
+        ("GO:r3", "broad real", 1e-12, "D"),
+        ("GO:r4", "broad real", 1e-10, "E"),
+    ]
+    noise = [(f"GO:n{i}", "null but narrow", 0.4 + i / 1000, "Z") for i in range(40)]
+    sims = {go_id: 0.9 for go_id, *_ in noise}
+    sims.update({"GO:r1": 0.8, "GO:r2": 0.7, "GO:r3": 0.1, "GO:r4": 0.1})
+    _patch_score_enrichment_table(monkeypatch, sims)
+
+    shortlist = service.prefilter_go_candidates_union(
+        "phenotype", _enrich_tbl(real + noise), top_n=20, pvalue_k=2
+    )
+    assert set(shortlist["ID"]) == {"GO:r1", "GO:r2", "GO:r3", "GO:r4"}
+
+    # a ranker that returns the two broad terms plus two sub-floor inventions
+    picks = [
+        {"id": "GO:r3", "name": "broad real", "p": 1e-12},
+        {"id": "GO:r4", "name": "broad real", "p": 1e-10},
+        {"id": "GO:n0", "name": "null but narrow", "p": 0.4},
+        {"id": "GO:n1", "name": "null but narrow", "p": 0.401},
+    ]
+    out = service.enforce_specificity_quota(
+        service.enforce_significance_floor(picks, shortlist, k=4), shortlist, k=4
+    )
+
+    assert all(entry["p"] < 0.05 for entry in out), "a sub-floor term survived"
+    top_two = set(shortlist.sort_values("score", ascending=False).head(2)["ID"])
+    assert top_two <= {str(e["id"]) for e in out}, "quota did not seat the top-scored"
+    assert [e["rank"] for e in out] == [1, 2, 3, 4]
+
+
+def test_significance_floor_is_shared_with_the_enrichment_filter(monkeypatch):
+    """One env var must move both, or the shortlist filter and the floor drift."""
+    from src.services import enrich as enrich_service
+
+    monkeypatch.setenv("GO_SIGNIFICANCE_MAX_P", "0.01")
+    assert service.significance_floor() == 0.01
+    assert enrich_service.significance_floor() == 0.01

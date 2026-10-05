@@ -2,9 +2,14 @@
 
 Primary strategy: **hybrid** (GO_SEMANTIC_STRATEGY=llm or hybrid).
     1. Score the full enrichment table (embedding similarity + p-value hybrid score).
-    2. Build a shortlist via `prefilter_go_candidates_union`: guaranteed top-N by
-       adjusted p-value, topped up with the highest-scoring remaining terms.
+    2. Build a shortlist via `prefilter_go_candidates_union`: top-N by adjusted
+       p-value, topped up with the highest-scoring remaining terms that also
+       clear the significance floor. The cap is a ceiling, not a quota -- a gene
+       with 18 real hits yields a shortlist of 18, never padded out with noise.
     3. Send the shortlist to an LLM (local gemma4 or OpenAI) for a single rerank call.
+    4. Enforce two guarantees in code, independent of the model: no sub-floor
+       term survives, and the highest-scoring candidates keep a share of the
+       returned slots.
 Switch model backend with GO_LLM_BACKEND=local|openai; no code change required.
 
 `baseline` / `improved` / `embedding` and the legacy `llm-local` / `llm-openai`
@@ -187,8 +192,14 @@ def _resolve_score_weights() -> tuple[float, float, float]:
 
 def significance_floor() -> float:
     """Max adjusted p-value for a term to count as a real enrichment hit.
+
+    Delegates to the enrichment layer so the shortlist filter and this floor
+    cannot drift apart. Imported lazily, as the other cross-service imports in
+    this module are, to keep import cost off the module path.
     """
-    return float(os.getenv("GO_SIGNIFICANCE_MAX_P", "0.05"))
+    from src.services.enrich import significance_floor as _floor
+
+    return _floor()
 
 
 def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
@@ -475,14 +486,13 @@ def enforce_significance_floor(
                 entry = {**entry, "below_significance_floor": True}
             repaired.append(entry)
 
-    for rank, entry in enumerate(repaired[:k], start=1):
-        entry["rank"] = rank
+    repaired = [{**entry, "rank": rank} for rank, entry in enumerate(repaired[:k], start=1)]
     if swaps:
         logger.info(
             f"Significance floor: replaced {swaps} of {len(results)} LLM picks "
             f"that had adj p >= {floor} with unused candidates that pass it"
         )
-    return repaired[:k]
+    return repaired
 
 
 def specificity_quota(k: int) -> int:
@@ -557,8 +567,7 @@ def enforce_specificity_quota(
         key=lambda e: score_by_id.get(str(e.get("id", "")).strip(), float("-inf")),
         reverse=True,
     )
-    for rank, entry in enumerate(merged, start=1):
-        entry["rank"] = rank
+    merged = [{**entry, "rank": rank} for rank, entry in enumerate(merged, start=1)]
     logger.info(
         f"Specificity quota: promoted {len(promoted)} of the top {quota} "
         f"highest-scoring candidates the ranker had omitted"

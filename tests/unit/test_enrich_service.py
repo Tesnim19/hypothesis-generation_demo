@@ -222,3 +222,19 @@ def test_process_results_falls_back_to_library_sizes_without_overlap(monkeypatch
     out = enrich._process_enrichment_results(raw, p_threshold=None)
 
     assert out["Term Size"].tolist() == [1922, 15]
+
+
+def test_process_results_filters_at_the_shared_significance_floor(monkeypatch):
+    monkeypatch.setenv("GO_SIGNIFICANCE_MAX_P", "0.01")
+    enrich = _enrich()
+    enrich.go_map = {"GO:1": {"desc": "a"}, "GO:2": {"desc": "b"}}
+    raw = pd.DataFrame([
+        {"Gene_set": "GO", "Term": "kept (GO:1)", "Adjusted P-value": 0.005,
+         "Genes": "A", "Overlap": "1/10"},
+        {"Gene_set": "GO", "Term": "dropped (GO:2)", "Adjusted P-value": 0.03,
+         "Genes": "B", "Overlap": "1/20"},
+    ])
+
+    out = enrich._process_enrichment_results(raw)
+
+    assert list(out["ID"]) == ["GO:1"]
