@@ -126,3 +126,61 @@ def test_rank_relevant_go_by_llm_once_wraps_client_errors():
             "phenotype", _candidates(), k=1, causal_gene=None,
             llm_model="gemma4", client=client, llm_backend="local",
         )
+
+
+# --- term size in the prompt: the model cannot prefer specific terms blind -------
+
+
+def _sized_candidates():
+    return pd.DataFrame(
+        [
+            {"ID": "GO:1", "Term": "ER-associated degradation", "Desc": "d",
+             "Adjusted P-value": 0.02, "Genes": "GENE1", "Term Size": 8},
+            {"ID": "GO:2", "Term": "regulation of gene expression", "Desc": "d",
+             "Adjusted P-value": 1e-9, "Genes": "GENE2", "Term Size": 1127},
+        ]
+    )
+
+
+def _sent_user_prompt(client):
+    messages = client.chat.completions.create.call_args.kwargs["messages"]
+    return next(m["content"] for m in messages if m["role"] == "user")
+
+
+def test_candidate_lines_state_each_terms_gene_count():
+    llm = _llm()
+    client = MagicMock()
+    client.chat.completions.create.return_value = _chat_response(
+        json.dumps({"terms": [{"rank": 1, "go_id": "GO:1", "name": "x", "reason": "ok"}]})
+    )
+
+    llm._rank_relevant_go_by_llm_once(
+        "phenotype", _sized_candidates(), k=1, causal_gene=None,
+        llm_model="gemma4", client=client, llm_backend="local",
+    )
+
+    prompt = _sent_user_prompt(client)
+    assert "annotates 8 genes" in prompt
+    assert "annotates 1127 genes" in prompt
+
+
+def test_candidate_lines_omit_gene_count_when_unavailable():
+    """Term Size is absent when Enrichr's library lookup failed; no crash, no noise."""
+    llm = _llm()
+    client = MagicMock()
+    client.chat.completions.create.return_value = _chat_response(
+        json.dumps({"terms": [{"rank": 1, "go_id": "GO:1", "name": "x", "reason": "ok"}]})
+    )
+
+    llm._rank_relevant_go_by_llm_once(
+        "phenotype", _candidates(), k=1, causal_gene=None,
+        llm_model="gemma4", client=client, llm_backend="local",
+    )
+
+    assert "annotates" not in _sent_user_prompt(client)
+
+
+def test_system_prompt_states_the_specificity_rule():
+    prompt = service._go_llm_system_prompt(10)
+    assert "fewer than 100 genes" in prompt
+    assert "more than 500 genes" in prompt

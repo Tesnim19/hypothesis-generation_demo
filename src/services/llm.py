@@ -4,6 +4,7 @@ import re
 from typing import List
 
 import openai
+import pandas as pd
 import scipy.spatial
 from llama_index.core.llms import ChatMessage
 from llama_index.llms.anthropic import Anthropic
@@ -89,18 +90,47 @@ def _go_llm_system_prompt(k: int) -> str:
     return (
         "You are an expert in GWAS functional follow-up and Gene Ontology (GO) enrichment analysis. "
         f"From the candidate GO biological process terms provided, select exactly {k} terms.\n\n"
-        "Rules:\n"
+        "CRITICAL — quality of the LAST-ranked terms matters as much as the first:\n"
+        "- Every one of the k terms must be a genuine, defensible enrichment result. Do NOT fill out "
+        "the list with weak or statistically null terms just to reach k. A term with adjusted p-value "
+        "not meaningfully below 1 (e.g. p > 0.1) has NO real enrichment signal in this analysis and "
+        "must not be selected UNLESS every other candidate is equally or more null — never prefer a "
+        "statistically null term over an available term with real signal (even modest, e.g. p < 0.05), "
+        "no matter how thematically appealing the null term's name sounds.\n"
+        "- If you are tempted to justify a low-ranked pick purely by the causal gene's textbook/canonical "
+        "function (e.g. 'this gene is broadly known for X') rather than by this specific enrichment's "
+        "statistics, that is a warning sign — check whether a candidate with stronger adjusted p-value "
+        "was available instead and prefer it.\n"
+        "- Rank ALL k terms by the same standard: adjusted p-value strength combined with mechanistic "
+        "plausibility for the phenotype. Do not relax this standard for ranks toward the bottom of the "
+        "list.\n"
+        "- If fewer than k candidates are well-justified, still return k terms, but fill remaining slots "
+        "with the next-highest adjusted p-value candidates from the list rather than arbitrary or "
+        "thematically-associated-but-statistically-unsupported ones.\n\n"
+        "Other rules:\n"
         "- Choose ONLY from the candidate list (use the exact go_id from the list).\n"
         "- Prioritize terms whose biology is mechanistically plausible for the stated GWAS phenotype.\n"
-        "- Treat adjusted p-value as supporting evidence: when several terms are comparably relevant, "
-        "prefer stronger enrichment.\n"
         "- When a causal gene is provided, treat it as supporting context only. Prioritize phenotype "
-        "fit over repeating the gene's canonical functions unless those functions explain the phenotype.\n"
+        "fit and this enrichment's actual statistics over repeating the gene's canonical functions "
+        "unless those functions are also statistically well-supported here.\n"
         "- Deprioritize generic housekeeping processes (e.g. RNA polymerase II transcription, ribosome "
-        "biogenesis, generic cell cycle) when more specific, phenotype-linked processes are available.\n"
+        "biogenesis, generic cell cycle) when more specific, phenotype-linked processes with comparable "
+        "statistical support are available.\n"
+        "\nTERM SPECIFICITY — treat this as the primary ordering rule:\n"
+        "Candidates state how many genes they annotate. A term annotating more than 500 genes "
+        "(e.g. 'regulation of gene expression', 'regulation of DNA-templated transcription') is a "
+        "generic truism: it is enriched in almost any gene network and says nothing specific about "
+        "this gene. A term annotating fewer than 100 genes names a concrete mechanism.\n"
+        f"- At least half of your {k} selections must annotate fewer than 100 genes, whenever that "
+        "many such candidates exist with adjusted p < 0.05.\n"
+        "- Never rank a >500-gene term above a <100-gene term that is also significant "
+        "(adj p < 0.05), however many orders of magnitude smaller the broad term's p-value is. A tiny "
+        "p-value on a huge term reflects its breadth, not its biological informativeness.\n"
+        "- Broad terms belong at the bottom of the list as context, never at the top.\n"
         "- Prefer a diverse set of distinct mechanisms over multiple near-duplicate or tightly "
-        "hierarchical sibling terms.\n\n"
-        'Return JSON only: {"terms": [{"rank": 1, "go_id": "GO:...", "name": "...", "reason": "..."}]}'
+        "hierarchical sibling terms, but never sacrifice statistical support for diversity alone.\n\n"
+        'Return JSON only: {"terms": [{"rank": 1, "go_id": "GO:...", "name": "...", "reason": "..."}]}. '
+        "The \"reason\" for each term must cite its adjusted p-value or score, not just its thematic fit."
     )
 
 def _llm_batched_ranking_enabled() -> bool:
@@ -350,15 +380,19 @@ class LLM:
             score_bit = ""
             if show_score:
                 score_bit = f" | score={float(row['score']):.3f}"
+            size_bit = ""
+            size = pd.to_numeric(row.get("Term Size"), errors="coerce")
+            if pd.notna(size):
+                size_bit = f" | annotates {int(size)} genes"
             if compact:
                 lines.append(
                     f"- {row['ID']} | {term} | adj_p={float(row['Adjusted P-value']):.2e}"
-                    f"{score_bit} | genes: {gene_preview}"
+                    f"{score_bit}{size_bit} | genes: {gene_preview}"
                 )
             else:
                 lines.append(
                     f"- {row['ID']} | {term} | adj_p={float(row['Adjusted P-value']):.2e}"
-                    f"{score_bit} | genes: {gene_preview} | desc: {desc[:120]}"
+                    f"{score_bit}{size_bit} | genes: {gene_preview} | desc: {desc[:120]}"
                 )
 
         gene_line = f"Causal gene at locus: {causal_gene}.\n" if causal_gene else ""
