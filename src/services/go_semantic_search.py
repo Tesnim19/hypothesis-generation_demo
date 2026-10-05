@@ -485,6 +485,87 @@ def enforce_significance_floor(
     return repaired[:k]
 
 
+def specificity_quota(k: int) -> int:
+    """How many of the k returned slots are reserved for top-scored terms."""
+    raw = os.getenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.4")
+    try:
+        fraction = float(raw)
+    except ValueError:
+        fraction = 0.4
+    fraction = min(max(fraction, 0.0), 1.0)
+    return int(math.floor(k * fraction))
+
+
+def enforce_specificity_quota(
+    results: list[dict], shortlisted: pd.DataFrame, k: int
+) -> list[dict]:
+    """Guarantee the highest-scoring candidates a share of the returned slots.
+    """
+    if not results or shortlisted is None or len(shortlisted) == 0:
+        return results
+    if "score" not in shortlisted.columns:
+        return results
+
+    quota = specificity_quota(k)
+    if quota <= 0:
+        return results
+
+    ranked = shortlisted.sort_values("score", ascending=False)
+    picked_ids = {str(r.get("id", "")).strip() for r in results[:k]}
+    missing = [
+        row
+        for _, row in ranked.head(quota).iterrows()
+        if str(row["ID"]).strip() not in picked_ids
+    ]
+    if not missing:
+        return results
+
+    # Drop the model's lowest-scored picks to make room, never its best ones.
+    score_by_id = {
+        str(row["ID"]).strip(): float(row["score"]) for _, row in ranked.iterrows()
+    }
+    kept = sorted(
+        results[:k],
+        key=lambda e: score_by_id.get(str(e.get("id", "")).strip(), float("-inf")),
+        reverse=True,
+    )[: k - len(missing)]
+
+    promoted = []
+    for row in missing:
+        genes_raw = str(row.get("Genes", ""))
+        promoted.append(
+            {
+                "id": str(row["ID"]).strip(),
+                "name": str(row["Term"]).strip(),
+                "genes": [
+                    g.strip()
+                    for g in genes_raw.replace(",", ";").split(";")
+                    if g.strip()
+                ],
+                "p": float(row["Adjusted P-value"]),
+                "reason": (
+                    "Promoted by specificity quota: among the most specific "
+                    "significantly-enriched terms for this gene, which the "
+                    "ranker passed over in favour of broader ones."
+                ),
+                "quota_promoted": True,
+            }
+        )
+
+    merged = sorted(
+        kept + promoted,
+        key=lambda e: score_by_id.get(str(e.get("id", "")).strip(), float("-inf")),
+        reverse=True,
+    )
+    for rank, entry in enumerate(merged, start=1):
+        entry["rank"] = rank
+    logger.info(
+        f"Specificity quota: promoted {len(promoted)} of the top {quota} "
+        f"highest-scoring candidates the ranker had omitted"
+    )
+    return merged
+
+
 def rank_go_terms_hybrid_llm(
     phenotype: str,
     enrich_tbl: pd.DataFrame,
@@ -560,6 +641,7 @@ def rank_go_terms_hybrid_llm(
         raise
 
     results = enforce_significance_floor(results, shortlisted, k=k)
+    results = enforce_specificity_quota(results, shortlisted, k=k)
     for entry in results:
         entry["prefilter"] = "pvalue_embedding_union"
         entry["prefilter_pool"] = pool_size

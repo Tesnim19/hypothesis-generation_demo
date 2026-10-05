@@ -431,3 +431,83 @@ def test_prefilter_falls_back_to_full_pool_when_nothing_is_significant(monkeypat
     )
 
     assert set(shortlist["ID"]) == {"GO:3", "GO:4"}
+
+
+# --- specificity quota: the model-independent ordering guarantee -----------------
+
+
+def _quota_shortlist():
+    """Four candidates, all significant; the two highest-scoring are specific."""
+    return pd.DataFrame(
+        [
+            {"ID": "GO:spec1", "Term": "ER-associated degradation", "Desc": "d",
+             "Adjusted P-value": 0.02, "Genes": "A;B", "score": 0.95},
+            {"ID": "GO:spec2", "Term": "miRNA-mediated silencing", "Desc": "d",
+             "Adjusted P-value": 0.001, "Genes": "C", "score": 0.90},
+            {"ID": "GO:broad1", "Term": "regulation of gene expression", "Desc": "d",
+             "Adjusted P-value": 1e-9, "Genes": "D", "score": 0.30},
+            {"ID": "GO:broad2", "Term": "regulation of transcription", "Desc": "d",
+             "Adjusted P-value": 1e-10, "Genes": "E", "score": 0.20},
+        ]
+    )
+
+
+def test_specificity_quota_promotes_top_scored_terms_the_model_skipped(monkeypatch):
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.5")
+    results = [
+        {"id": "GO:broad1", "name": "regulation of gene expression", "p": 1e-9},
+        {"id": "GO:broad2", "name": "regulation of transcription", "p": 1e-10},
+    ]
+
+    out = service.enforce_specificity_quota(results, _quota_shortlist(), k=2)
+
+    # quota = floor(2 * 0.5) = 1, so the single best-scoring term must appear.
+    assert "GO:spec1" in {e["id"] for e in out}
+    assert len(out) == 2
+    assert next(e for e in out if e["id"] == "GO:spec1")["quota_promoted"] is True
+
+
+def test_specificity_quota_drops_the_models_worst_pick_not_its_best(monkeypatch):
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.5")
+    results = [
+        {"id": "GO:broad1", "name": "keeps: better score", "p": 1e-9},
+        {"id": "GO:broad2", "name": "dropped: worst score", "p": 1e-10},
+    ]
+
+    out = service.enforce_specificity_quota(results, _quota_shortlist(), k=2)
+
+    ids = {e["id"] for e in out}
+    assert "GO:broad1" in ids
+    assert "GO:broad2" not in ids
+
+
+def test_specificity_quota_is_a_noop_when_model_already_picked_top_terms(monkeypatch):
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.5")
+    results = [
+        {"id": "GO:spec1", "name": "already top", "p": 0.02},
+        {"id": "GO:broad1", "name": "broad", "p": 1e-9},
+    ]
+
+    out = service.enforce_specificity_quota(results, _quota_shortlist(), k=2)
+
+    assert out == results
+
+
+def test_specificity_quota_disabled_by_zero_fraction(monkeypatch):
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0")
+    results = [{"id": "GO:broad1", "name": "broad", "p": 1e-9}]
+
+    assert service.enforce_specificity_quota(results, _quota_shortlist(), k=10) == results
+
+
+def test_specificity_quota_orders_final_results_by_score(monkeypatch):
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.5")
+    results = [
+        {"id": "GO:broad1", "name": "broad", "p": 1e-9},
+        {"id": "GO:broad2", "name": "broader", "p": 1e-10},
+    ]
+
+    out = service.enforce_specificity_quota(results, _quota_shortlist(), k=2)
+
+    assert [e["id"] for e in out] == ["GO:spec1", "GO:broad1"]
+    assert [e["rank"] for e in out] == [1, 2]
