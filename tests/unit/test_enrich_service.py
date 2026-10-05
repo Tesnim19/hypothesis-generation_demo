@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from unittest.mock import MagicMock
 
@@ -59,7 +60,7 @@ def test_run_returns_empty_frame_without_calling_api():
     service.gp.enrichr = MagicMock()
     try:
         result = enrich.run("GENE1")
-        assert list(result.columns) == ["ID", "Term", "Desc", "Adjusted P-value", "Genes"]
+        assert list(result.columns) == ["ID", "Term", "Desc", "Adjusted P-value", "Genes", "Term Size"]
         service.gp.enrichr.assert_not_called()
     finally:
         service.gp.enrichr = original
@@ -98,7 +99,7 @@ def test_run_with_tables_returns_empty_frames_when_no_coexpressed_genes():
     service.gp.enrichr = MagicMock()
     try:
         filtered, all_terms = enrich.run_with_tables("GENE1")
-        assert list(filtered.columns) == ["ID", "Term", "Desc", "Adjusted P-value", "Genes"]
+        assert list(filtered.columns) == ["ID", "Term", "Desc", "Adjusted P-value", "Genes", "Term Size"]
         assert filtered.empty and all_terms.empty
         service.gp.enrichr.assert_not_called()
     finally:
@@ -146,3 +147,78 @@ def test_enrichr_retry_raises_typed_error_after_exhaustion(monkeypatch):
             background=[f"GENE-{index}" for index in range(6000)],
             organism="human",
         )
+
+
+@pytest.fixture(autouse=True)
+def _reset_go_term_size_cache():
+    """Keep the module-level size memo from leaking between tests."""
+    service._GO_TERM_SIZES = None
+    yield
+    service._GO_TERM_SIZES = None
+
+
+def test_go_term_sizes_parses_library_and_caches_to_disk(monkeypatch, tmp_path):
+    cache = tmp_path / "sizes.json"
+    monkeypatch.setenv("GO_TERM_SIZES_CACHE", str(cache))
+    library = MagicMock(return_value={
+        "Regulation Of DNA-templated Transcription (GO:0006355)": ["A", "B", "C"],
+        "Regulation Of miRNA-mediated Gene Silencing (GO:0060964)": ["A"],
+        "Term without an id": ["A", "B"],
+    })
+    monkeypatch.setattr(service.gp, "get_library", library)
+
+    sizes = service.go_term_sizes()
+
+    assert sizes == {"GO:0006355": 3, "GO:0060964": 1}
+    assert json.loads(cache.read_text()) == {"GO:0006355": 3, "GO:0060964": 1}
+
+
+def test_go_term_sizes_reads_cache_without_hitting_the_network(monkeypatch, tmp_path):
+    cache = tmp_path / "sizes.json"
+    cache.write_text(json.dumps({"GO:0006355": 1922}))
+    monkeypatch.setenv("GO_TERM_SIZES_CACHE", str(cache))
+    library = MagicMock(side_effect=AssertionError("network should not be used"))
+    monkeypatch.setattr(service.gp, "get_library", library)
+
+    assert service.go_term_sizes() == {"GO:0006355": 1922}
+    library.assert_not_called()
+
+
+def test_go_term_sizes_degrades_to_empty_when_library_unavailable(monkeypatch, tmp_path):
+    monkeypatch.setenv("GO_TERM_SIZES_CACHE", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(
+        service.gp, "get_library", MagicMock(side_effect=RuntimeError("offline"))
+    )
+
+    assert service.go_term_sizes() == {}
+
+
+def test_process_results_falls_back_to_library_sizes_without_overlap(monkeypatch, tmp_path):
+    """The background-corrected Enrichr endpoint omits Overlap entirely."""
+    monkeypatch.setenv("GO_TERM_SIZES_CACHE", str(tmp_path / "sizes.json"))
+    monkeypatch.setattr(service.gp, "get_library", MagicMock(return_value={
+        "Regulation Of DNA-templated Transcription (GO:0006355)": ["G"] * 1922,
+        "Regulation Of miRNA-mediated Gene Silencing (GO:0060964)": ["G"] * 15,
+    }))
+    enrich = _enrich()
+    enrich.go_map = {
+        "GO:0006355": {"desc": "broad"}, "GO:0060964": {"desc": "narrow"}
+    }
+    raw = pd.DataFrame([
+        {
+            "Gene_set": "GO_Biological_Process_2023",
+            "Term": "Regulation Of DNA-templated Transcription (GO:0006355)",
+            "Adjusted P-value": 1e-9,
+            "Genes": "A;B",
+        },
+        {
+            "Gene_set": "GO_Biological_Process_2023",
+            "Term": "Regulation Of miRNA-mediated Gene Silencing (GO:0060964)",
+            "Adjusted P-value": 1e-4,
+            "Genes": "C",
+        },
+    ])
+
+    out = enrich._process_enrichment_results(raw, p_threshold=None)
+
+    assert out["Term Size"].tolist() == [1922, 15]

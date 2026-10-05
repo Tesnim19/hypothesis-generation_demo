@@ -1,4 +1,6 @@
 import copy
+import json
+import os
 import pickle
 import re
 from typing import List, Optional
@@ -12,6 +14,65 @@ from src.catlas_census_mapping import CatlasMappingError
 from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
 
 _ENSG_RE = re.compile(r"^ENSG\d+$", re.IGNORECASE)
+
+
+_GO_ID_IN_TERM_RE = re.compile(r"\((GO:\d+)\)")
+_GO_TERM_SIZES: dict[str, int] | None = None
+
+
+def _parse_term_size(overlap: pd.Series) -> pd.Series:
+    """Extract the GO term's total gene count from Enrichr's "k/n" Overlap."""
+    return pd.to_numeric(
+        overlap.astype(str).str.split("/").str[-1], errors="coerce"
+    )
+
+
+def go_term_sizes(library: str = "GO_Biological_Process_2023") -> dict[str, int]:
+    """Map GO id -> number of genes annotated to it, from the Enrichr library.
+
+    Enrichr's background-corrected endpoint (the one used whenever a custom
+    background is supplied, i.e. always here) omits the Overlap column, so the
+    term's size is not recoverable from the results themselves. Downstream
+    ranking needs it as a specificity signal, so it is read once from the same
+    gene-set library the enrichment was scored against and cached on disk.
+    Failure is non-fatal: callers fall back to size-agnostic ranking.
+    """
+    global _GO_TERM_SIZES
+    if _GO_TERM_SIZES is not None:
+        return _GO_TERM_SIZES
+
+    cache_path = os.getenv("GO_TERM_SIZES_CACHE", "data/go_term_sizes.json")
+    try:
+        with open(cache_path) as fh:
+            _GO_TERM_SIZES = {k: int(v) for k, v in json.load(fh).items()}
+            return _GO_TERM_SIZES
+    except (OSError, ValueError, TypeError):
+        pass
+
+    try:
+        sizes: dict[str, int] = {}
+        for term, genes in gp.get_library(name=library, organism="Human").items():
+            match = _GO_ID_IN_TERM_RE.search(term)
+            if match:
+                sizes[match.group(1)] = len(genes)
+        if not sizes:
+            raise ValueError(f"no GO ids parsed from library {library}")
+        try:
+            os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+            with open(cache_path, "w") as fh:
+                json.dump(sizes, fh)
+        except OSError as exc:
+            logger.warning(f"Could not cache GO term sizes to {cache_path}: {exc}")
+        logger.info(f"Loaded {len(sizes)} GO term sizes from {library}")
+    except Exception as exc:
+        logger.warning(
+            f"Could not load GO term sizes from {library}: {exc}. "
+            "Ranking will fall back to size-agnostic scoring."
+        )
+        sizes = {}
+
+    _GO_TERM_SIZES = sizes
+    return _GO_TERM_SIZES
 
 
 class EnrichrAPIUnavailableError(RuntimeError):
@@ -168,7 +229,17 @@ class Enrich:
                 logger.warning(f"Couldn't find term {go_id}, {go_name} in go_map")
                 desc.append("NA")
         res["Desc"] = desc
-        return res[["ID", "Term", "Desc", "Adjusted P-value", "Genes"]].copy()
+
+        if "Overlap" in res.columns:
+            res["Term Size"] = _parse_term_size(res["Overlap"])
+        else:
+            sizes = go_term_sizes()
+            res["Term Size"] = (
+                res["ID"].map(sizes).astype("Float64") if sizes else pd.NA
+            )
+        return res[
+            ["ID", "Term", "Desc", "Adjusted P-value", "Genes", "Term Size"]
+        ].copy()
 
     def _run_enrichr_with_retry(
         self,
@@ -279,14 +350,14 @@ class Enrich:
         """
         raw = self._run_enrichr(relevant_gene, tissue_name, coexpression_data)
         if raw is None:
-            return pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes"])
+            return pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes", "Term Size"])
         return self._process_enrichment_results(raw)
 
     def run_with_tables(self, relevant_gene, tissue_name=None, coexpression_data=None):
         """
         Like run(), but also returns the full parsed enrichr table (no p-value filter).
         """
-        empty = pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes"])
+        empty = pd.DataFrame(columns=["ID", "Term", "Desc", "Adjusted P-value", "Genes", "Term Size"])
         raw = self._run_enrichr(relevant_gene, tissue_name, coexpression_data)
         if raw is None:
             return empty, empty
