@@ -31,6 +31,29 @@ def significance_floor() -> float:
 
 
 _GO_ID_IN_TERM_RE = re.compile(r"\((GO:\d+)\)")
+# Enrichr labels terms "<name> (GO:0001234)", but plenty of GO names contain
+# their own parentheses -- "Poly(A) Tail Shortening", "Chemokine (C-X-C Motif)
+# Ligand 2". Anchoring to the trailing id is the only safe split; taking the
+# first "(" yields ids like "A" and names truncated mid-word.
+_GO_ID_SUFFIX_RE = re.compile(r"^(?P<name>.*?)\s*\((?P<go_id>GO:\d+)\)\s*$")
+
+
+def split_term_and_go_id(term: str) -> tuple[str, str]:
+    """Split "<name> (GO:0001234)" into its name and id.
+
+    Falls back to the last parenthesised group, then to the whole string, so a
+    label in an unexpected shape degrades to a wrong-but-harmless name rather
+    than a wrong id.
+    """
+    text = str(term).strip()
+    match = _GO_ID_SUFFIX_RE.match(text)
+    if match:
+        return match.group("name").strip(), match.group("go_id")
+    found = _GO_ID_IN_TERM_RE.findall(text)
+    if found:
+        go_id = found[-1]
+        return text.replace(f"({go_id})", "").strip(), go_id
+    return text, text
 _GO_TERM_SIZES: dict | None = None
 _GO_TERM_SIZES_LOCK = threading.Lock()
 # Distinct genes in GO_Biological_Process_2023 (Human); fallback when a
@@ -259,9 +282,9 @@ class Enrich:
         """
         res = res.copy()  # Avoid SettingWithCopyWarning
         res.drop("Gene_set", axis=1, inplace=True)
-        res.insert(1, "ID", res["Term"].apply(
-            lambda x: x.split("(")[1].split(")")[0]))
-        res["Term"] = res["Term"].apply(lambda x: x.split("(")[0])
+        split = res["Term"].apply(split_term_and_go_id)
+        res.insert(1, "ID", [go_id for _, go_id in split])
+        res["Term"] = [name for name, _ in split]
         if p_threshold is _SIGNIFICANCE_DEFAULT:
             p_threshold = significance_floor()
         if p_threshold is not None:

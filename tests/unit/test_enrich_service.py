@@ -241,3 +241,47 @@ def test_process_results_filters_at_the_shared_significance_floor(monkeypatch):
     out = enrich._process_enrichment_results(raw)
 
     assert list(out["ID"]) == ["GO:1"]
+
+
+# --- GO id parsing: names contain their own parentheses -------------------------
+
+
+@pytest.mark.parametrize("label,expected_id,expected_name", [
+    ("Regulation Of Transcription By RNA Polymerase II (GO:0006357)",
+     "GO:0006357", "Regulation Of Transcription By RNA Polymerase II"),
+    # "Poly(A)" used to yield id "A" and a name truncated at "Poly"
+    ("Regulation Of Nuclear-Transcribed mRNA Poly(A) Tail Shortening (GO:0060211)",
+     "GO:0060211", "Regulation Of Nuclear-Transcribed mRNA Poly(A) Tail Shortening"),
+    # "(C-X-C Motif)" used to yield id "C-X-C Motif"
+    ("Regulation Of Chemokine (C-X-C Motif) Ligand 2 Production (GO:2000342)",
+     "GO:2000342", "Regulation Of Chemokine (C-X-C Motif) Ligand 2 Production"),
+    ("Maturation Of SSU-rRNA (SSU-rRNA, 5.8S rRNA, LSU-rRNA) (GO:0000462)",
+     "GO:0000462", "Maturation Of SSU-rRNA (SSU-rRNA, 5.8S rRNA, LSU-rRNA)"),
+])
+def test_split_term_and_go_id_anchors_to_the_trailing_id(label, expected_id, expected_name):
+    name, go_id = service.split_term_and_go_id(label)
+    assert go_id == expected_id
+    assert name == expected_name
+
+
+def test_split_term_and_go_id_degrades_on_an_unexpected_label():
+    name, go_id = service.split_term_and_go_id("no identifier here")
+    assert name == "no identifier here"
+    assert go_id == "no identifier here"
+
+
+def test_process_results_never_emits_a_malformed_go_id(monkeypatch):
+    monkeypatch.setenv("GO_TERM_SIZES_CACHE", "/nonexistent/sizes.json")
+    monkeypatch.setattr(service.gp, "get_library", MagicMock(return_value={}))
+    enrich = _enrich()
+    enrich.go_map = {}
+    raw = pd.DataFrame([
+        {"Gene_set": "GO", "Adjusted P-value": 0.001, "Genes": "A", "Overlap": "1/9",
+         "Term": "Regulation Of Nuclear-Transcribed mRNA Poly(A) Tail Shortening (GO:0060211)"},
+        {"Gene_set": "GO", "Adjusted P-value": 0.002, "Genes": "B", "Overlap": "1/9",
+         "Term": "Regulation Of Chemokine (C-X-C Motif) Ligand 2 Production (GO:2000342)"},
+    ])
+
+    out = enrich._process_enrichment_results(raw)
+
+    assert list(out["ID"]) == ["GO:0060211", "GO:2000342"]
