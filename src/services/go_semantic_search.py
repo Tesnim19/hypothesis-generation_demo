@@ -620,6 +620,157 @@ def enforce_specificity_quota(
     return merged
 
 
+def go_llm_fallback_backend() -> Optional[str]:
+    """Opt-in second-tier model, used only if the primary backend is unreachable.
+
+    Off by default: a local backend is usually chosen for cost or privacy
+    reasons, and silently spending on a hosted model every time that host
+    blinks is not a decision this code should make on its own.
+    """
+    raw = os.getenv("GO_LLM_FALLBACK_BACKEND", "").strip().lower()
+    return raw or None
+
+
+def rank_go_terms_degraded(
+    phenotype: str,
+    enrich_tbl: pd.DataFrame,
+    k: int = 10,
+    causal_gene: Optional[str] = None,
+    embedding_model: Optional[str] = None,
+    hybrid_alpha: float = DEFAULT_HYBRID_ALPHA,
+) -> list[dict]:
+    """Rank without any LLM, keeping every guarantee the normal path gives.
+
+    The significance floor and the specificity quota are arithmetic; they do
+    not need a model. Only the *ordering within* the real hits, and the written
+    reasons, are lost when no model is reachable.
+
+    This exists because the previous fallback ranked the FULL unfiltered pool
+    by embedding similarity alone -- no floor, no quota. On a live ulcerative
+    colitis run that returned ten terms with adjusted p from 0.28 to 0.88,
+    including TNF and NF-kB signalling: flawless-sounding disease biology with
+    no statistical support whatsoever, reported as a successful run.
+
+    Results are marked `ranking_degraded` so a caller can tell this apart from
+    a real ranking.
+    """
+    if enrich_tbl is None or len(enrich_tbl) == 0:
+        return []
+    try:
+        shortlisted = prefilter_go_candidates_union(
+            phenotype,
+            enrich_tbl,
+            top_n=min(
+                int(os.getenv("GO_LLM_PREFILTER_K", str(DEFAULT_LLM_PREFILTER_K))),
+                len(enrich_tbl),
+            ),
+            causal_gene=causal_gene,
+            embedding_model=embedding_model,
+            hybrid_alpha=hybrid_alpha,
+        )
+    except Exception as exc:
+        # Embeddings are a separate service and may be down too.
+        logger.warning(
+            f"Embedding scoring unavailable during degraded ranking ({exc}); "
+            "falling back to significance and specificity only."
+        )
+        shortlisted = _score_without_embeddings(enrich_tbl)
+    if shortlisted is None or len(shortlisted) == 0:
+        return []
+
+    ranked = shortlisted.sort_values("score", ascending=False).head(k)
+    results = _rows_to_results(ranked, "score")
+    results = enforce_significance_floor(results, shortlisted, k=k)
+    results = enforce_specificity_quota(results, shortlisted, k=k)
+    logger.info(
+        f"Degraded GO ranking: {len(results)} terms chosen by score from "
+        f"{len(shortlisted)} candidates, no LLM involved"
+    )
+    return [
+        {
+            **entry,
+            "ranking_degraded": True,
+            "reason": entry.get("reason")
+            or "Selected by enrichment statistics and term specificity; "
+            "no language model was reachable to rank these.",
+        }
+        for entry in results
+    ]
+
+
+def _score_without_embeddings(enrich_tbl: pd.DataFrame) -> pd.DataFrame:
+    """Shortlist scored on statistics and specificity, with no embedding call."""
+    data = enrich_tbl.copy()
+    pvalues = pd.to_numeric(data["Adjusted P-value"], errors="coerce")
+    floor = significance_floor()
+    above = data[pvalues < floor]
+    pool = (above if len(above) > 0 else data).copy()
+    pool["similarity"] = 0.0
+    pool["score"] = hybrid_score(
+        pool["similarity"],
+        pd.to_numeric(pool["Adjusted P-value"], errors="coerce"),
+        term_sizes=pool["Term Size"] if "Term Size" in pool.columns else None,
+    )
+    return pool
+
+
+def rank_go_terms_resilient(
+    phenotype: str,
+    enrich_tbl: pd.DataFrame,
+    k: int = 10,
+    strategy=None,
+    causal_gene: Optional[str] = None,
+    max_candidates: Optional[int] = None,
+    llm=None,
+) -> list[dict]:
+    """Normal ranking, then an opt-in second model, then a model-free ranking.
+
+    Every tier keeps the significance floor and the specificity quota, so a
+    degraded answer is weaker but never statistically unsupported.
+    """
+    try:
+        return rank_go_terms_by_strategy(
+            phenotype,
+            enrich_tbl,
+            k=k,
+            strategy=strategy,
+            causal_gene=causal_gene,
+            max_candidates=max_candidates,
+            llm=llm,
+        )
+    except Exception as exc:
+        logger.warning(f"GO ranking failed (strategy={strategy}): {exc}")
+
+    fallback = go_llm_fallback_backend()
+    if fallback:
+        parsed = parse_go_semantic_strategy(
+            strategy if isinstance(strategy, str) else None
+        )
+        if fallback != llm_backend_for_strategy(parsed):
+            alt = (
+                GoSemanticStrategy.HYBRID_OPENAI
+                if fallback == "openai"
+                else GoSemanticStrategy.HYBRID_LOCAL
+            )
+            try:
+                logger.info(f"Retrying GO ranking on fallback backend {fallback}")
+                return rank_go_terms_by_strategy(
+                    phenotype,
+                    enrich_tbl,
+                    k=k,
+                    strategy=alt,
+                    causal_gene=causal_gene,
+                    max_candidates=max_candidates,
+                    llm=llm,
+                )
+            except Exception as exc:
+                logger.warning(f"Fallback backend {fallback} also failed: {exc}")
+
+    return rank_go_terms_degraded(
+        phenotype, enrich_tbl, k=k, causal_gene=causal_gene
+    )
+
+
 def rank_go_terms_hybrid_llm(
     phenotype: str,
     enrich_tbl: pd.DataFrame,

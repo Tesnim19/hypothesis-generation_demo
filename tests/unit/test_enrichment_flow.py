@@ -52,11 +52,11 @@ def _configure_flow(monkeypatch, immediate_task_factory, graphs, *, enrich_table
     monkeypatch.setattr(flow_module, "get_relevant_gene_proof", immediate_task_factory(lambda *_: deepcopy(graphs)))
     monkeypatch.setattr(flow_module, "retry_get_relevant_gene_proof", immediate_task_factory(lambda *_: []))
     monkeypatch.setattr(flow_module, "get_coexpression_matrix_for_tissue", immediate_task_factory(lambda *_args, **_kwargs: "coexpression"))
-    rank_go_terms_by_strategy = MagicMock(
+    rank_go_terms_resilient = MagicMock(
         return_value=[{"id": "GO:1", "name": "response", "genes": ["STAT1"]}]
     )
-    monkeypatch.setattr(flow_module, "rank_go_terms_by_strategy", rank_go_terms_by_strategy)
-    deps["rank_go_terms_by_strategy"] = rank_go_terms_by_strategy
+    monkeypatch.setattr(flow_module, "rank_go_terms_resilient", rank_go_terms_resilient)
+    deps["rank_go_terms_resilient"] = rank_go_terms_resilient
     created = []
 
     def save(*args):
@@ -78,7 +78,7 @@ def test_happy_path_runs_enrichr_filters_go_and_saves(
 
     assert result == ({"id": "enrich-1"}, 200)
     deps["enrichr"].run_with_tables.assert_called_once_with("IRF8")
-    deps["rank_go_terms_by_strategy"].assert_called_once_with(
+    deps["rank_go_terms_resilient"].assert_called_once_with(
         "Ulcerative colitis",
         [{"Term": "inflammatory response"}],
         k=10,
@@ -160,26 +160,27 @@ def test_graph_without_direct_causal_gene_is_skipped_while_valid_graph_proceeds(
     assert final_patch["skipped_enrich_ids"] == ["enrich-1"]
 
 
-def test_go_ranking_failure_falls_back_to_embedding_only_ranking(
+def test_degraded_ranking_is_persisted_and_flagged(
     monkeypatch, immediate_task_factory, sample_graph
 ):
-    """A down/misconfigured local LLM (e.g. GO_LLM_URL unset, endpoint
-    unreachable) must degrade to the old embedding-only ranking, not crash
-    the whole enrichment step for that gene."""
+    """When no model is reachable the service returns a degraded ranking.
+
+    The flow must persist it as normal -- a weaker answer still beats failing
+    the whole enrichment -- while the `ranking_degraded` marker travels with
+    the result so a reader can tell it apart from a real ranking.
+    """
     deps, created = _configure_flow(monkeypatch, immediate_task_factory, [sample_graph])
-    deps["rank_go_terms_by_strategy"].side_effect = RuntimeError("GO_LLM_URL is not set")
+    deps["rank_go_terms_resilient"].return_value = [
+        {"id": "GO:0060964", "name": "narrow real hit", "genes": [],
+         "p": 0.0006, "ranking_degraded": True}
+    ]
 
     result = flow_module.enrichment_flow.fn(
         "user-1", "Ulcerative colitis", "rs16940186", "hyp-1", "project-1", 3
     )
 
     assert result == ({"id": "enrich-1"}, 200)
-    deps["llm"].get_relevant_go.assert_called_once_with(
-        "Ulcerative colitis", [{"Term": "inflammatory response"}]
-    )
-    assert created[0][5] == [
-        {"id": "GO:fallback", "name": "fallback", "genes": []}
-    ]
+    assert created[0][5][0]["ranking_degraded"] is True
 
 
 def test_empty_enrichr_result_saves_graph_with_empty_go_terms(
@@ -193,7 +194,7 @@ def test_empty_enrichr_result_saves_graph_with_empty_go_terms(
     )
     assert result == ({"id": "enrich-1"}, 200)
     assert created[0][5] == []
-    deps["rank_go_terms_by_strategy"].assert_not_called()
+    deps["rank_go_terms_resilient"].assert_not_called()
 
 
 def test_enrichr_failure_for_one_graph_does_not_abort_other_graphs(

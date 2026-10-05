@@ -11,7 +11,7 @@ from src.config import Config, create_dependencies
 from src.catlas_census_mapping import CatlasMappingError
 from src.services.enrich import EnrichrAPIUnavailableError
 from src.services.prolog import PrologNoEvidenceError, PrologServiceError
-from src.services.go_semantic_search import rank_go_terms_by_strategy
+from src.services.go_semantic_search import rank_go_terms_resilient
 from src.tasks import (
     check_enrich,
     get_candidate_genes,
@@ -239,23 +239,25 @@ def enrichment_flow(current_user_id, phenotype, variant, hypothesis_id, project_
                     logger.warning(f"No enrichment results found for gene {this_causal_gene}. Skipping GO relevance scoring.")
                     relevant_gos = []
                 else:
-                    try:
-                        relevant_gos = rank_go_terms_by_strategy(
-                            phenotype,
-                            semantic_input,
-                            k=10,
-                            strategy=config.go_semantic_strategy,
-                            causal_gene=this_causal_gene,
-                            max_candidates=config.go_llm_prefilter_k,
-                            llm=llm,
-                        )
-                    except Exception as exc:
+                    # Resilient: normal ranking, then an opt-in second model,
+                    # then a model-free ranking. Every tier keeps the
+                    # significance floor and the specificity quota, so a
+                    # degraded answer is weaker but never unsupported.
+                    relevant_gos = rank_go_terms_resilient(
+                        phenotype,
+                        semantic_input,
+                        k=10,
+                        strategy=config.go_semantic_strategy,
+                        causal_gene=this_causal_gene,
+                        max_candidates=config.go_llm_prefilter_k,
+                        llm=llm,
+                    )
+                    if any(g.get("ranking_degraded") for g in relevant_gos or []):
                         logger.warning(
-                            f"GO term LLM ranking failed for gene {this_causal_gene} "
-                            f"(strategy={config.go_semantic_strategy}): {exc}. "
-                            "Falling back to embedding-only ranking."
+                            f"GO terms for gene {this_causal_gene} were ranked "
+                            "without a language model; results are marked "
+                            "ranking_degraded."
                         )
-                        relevant_gos = llm.get_relevant_go(phenotype, semantic_input)
 
                 # Cache if shared
                 if use_shared_enrichment:

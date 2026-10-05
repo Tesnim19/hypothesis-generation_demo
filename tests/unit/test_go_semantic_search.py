@@ -615,3 +615,108 @@ def test_significance_floor_is_shared_with_the_enrichment_filter(monkeypatch):
     monkeypatch.setenv("GO_SIGNIFICANCE_MAX_P", "0.01")
     assert service.significance_floor() == 0.01
     assert enrich_service.significance_floor() == 0.01
+
+
+# --- degraded ranking: the fallback must keep the guarantees --------------------
+
+
+def _noisy_pool():
+    """4 real hits buried in 40 null ones whose names scream the phenotype."""
+    real = [
+        ("GO:r1", "narrow real", 0.001, "A;B"),
+        ("GO:r2", "narrow real", 0.004, "C"),
+        ("GO:r3", "broad real", 1e-12, "D"),
+        ("GO:r4", "broad real", 1e-10, "E"),
+    ]
+    noise = [
+        (f"GO:n{i}", "tumor necrosis factor signalling", 0.3 + i / 100, "Z")
+        for i in range(40)
+    ]
+    return _enrich_tbl(real + noise)
+
+
+def test_degraded_ranking_never_returns_sub_floor_terms(monkeypatch):
+    """The defect this replaced: the old fallback ranked the FULL pool by
+    embedding similarity, no floor and no quota. A live UC run returned ten
+    terms with adjusted p from 0.28 to 0.88 -- TNF and NF-kB signalling, which
+    read as perfect disease biology and had no support at all."""
+    sims = {f"GO:n{i}": 0.99 for i in range(40)}
+    sims.update({"GO:r1": 0.1, "GO:r2": 0.1, "GO:r3": 0.05, "GO:r4": 0.05})
+    _patch_score_enrichment_table(monkeypatch, sims)
+
+    out = service.rank_go_terms_degraded("phenotype", _noisy_pool(), k=10)
+
+    assert out, "degraded ranking returned nothing"
+    assert all(e["p"] < 0.05 for e in out), "a statistically null term survived"
+    assert all(e["ranking_degraded"] for e in out)
+
+
+def test_degraded_ranking_works_when_embeddings_are_down_too(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("embedding service unreachable")
+
+    monkeypatch.setattr(service, "_score_enrichment_table", boom)
+
+    out = service.rank_go_terms_degraded("phenotype", _noisy_pool(), k=5)
+
+    assert out
+    assert all(e["p"] < 0.05 for e in out)
+
+
+def test_degraded_ranking_returns_empty_for_empty_input():
+    assert service.rank_go_terms_degraded("phenotype", _enrich_tbl([]), k=5) == []
+
+
+def test_fallback_backend_is_off_unless_configured(monkeypatch):
+    monkeypatch.delenv("GO_LLM_FALLBACK_BACKEND", raising=False)
+    assert service.go_llm_fallback_backend() is None
+    monkeypatch.setenv("GO_LLM_FALLBACK_BACKEND", "openai")
+    assert service.go_llm_fallback_backend() == "openai"
+
+
+def test_resilient_uses_normal_ranking_when_it_works(monkeypatch):
+    ok = MagicMock(return_value=[{"id": "GO:1", "name": "fine", "p": 0.01}])
+    monkeypatch.setattr(service, "rank_go_terms_by_strategy", ok)
+
+    out = service.rank_go_terms_resilient("phenotype", _noisy_pool(), k=5)
+
+    assert out == [{"id": "GO:1", "name": "fine", "p": 0.01}]
+    ok.assert_called_once()
+
+
+def test_resilient_degrades_when_no_fallback_backend_is_set(monkeypatch):
+    monkeypatch.delenv("GO_LLM_FALLBACK_BACKEND", raising=False)
+    monkeypatch.setattr(
+        service, "rank_go_terms_by_strategy",
+        MagicMock(side_effect=RuntimeError("endpoint unreachable")),
+    )
+    degraded = MagicMock(return_value=[{"id": "GO:x", "ranking_degraded": True}])
+    monkeypatch.setattr(service, "rank_go_terms_degraded", degraded)
+
+    out = service.rank_go_terms_resilient("phenotype", _noisy_pool(), k=5)
+
+    assert out[0]["ranking_degraded"] is True
+    degraded.assert_called_once()
+
+
+def test_resilient_tries_the_opt_in_backend_before_degrading(monkeypatch):
+    monkeypatch.setenv("GO_LLM_FALLBACK_BACKEND", "openai")
+    calls = []
+
+    def ranker(phenotype, tbl, **kw):
+        calls.append(kw.get("strategy"))
+        if len(calls) == 1:
+            raise RuntimeError("local endpoint unreachable")
+        return [{"id": "GO:via-openai", "p": 0.01}]
+
+    monkeypatch.setattr(service, "rank_go_terms_by_strategy", ranker)
+    degraded = MagicMock()
+    monkeypatch.setattr(service, "rank_go_terms_degraded", degraded)
+
+    out = service.rank_go_terms_resilient(
+        "phenotype", _noisy_pool(), k=5, strategy="llm"
+    )
+
+    assert out == [{"id": "GO:via-openai", "p": 0.01}]
+    assert calls[1] == GoSemanticStrategy.HYBRID_OPENAI
+    degraded.assert_not_called()
