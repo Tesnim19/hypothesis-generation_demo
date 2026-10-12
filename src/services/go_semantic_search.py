@@ -265,10 +265,18 @@ def significance_floor() -> float:
     return _floor()
 
 
+EMBEDDING_BATCH_SIZE = 1024
+
+
 def _embed_texts(texts: list[str], model: str) -> list[list[float]]:
+    """Embed in batches; the API rejects arrays longer than 2048."""
     client = openai.Client()
-    response = client.embeddings.create(input=texts, model=model)
-    return [item.embedding for item in response.data]
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+        chunk = texts[start : start + EMBEDDING_BATCH_SIZE]
+        response = client.embeddings.create(input=chunk, model=model)
+        vectors.extend(item.embedding for item in response.data)
+    return vectors
 
 
 def _rows_to_results(ranked: pd.DataFrame, score_column: str) -> list[dict]:

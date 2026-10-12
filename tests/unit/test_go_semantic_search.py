@@ -746,3 +746,28 @@ def test_all_sizes_unknown_stays_neutral():
     """With nothing measurable at all, flat 0.5 is right -- demoting every
     term equally is the same ranking, but 0.0 would distort the blend."""
     assert (service.normalize_specificity(pd.Series([None, None])) == 0.5).all()
+
+
+def test_embed_texts_batches_above_the_api_limit(monkeypatch):
+    """The API rejects arrays longer than 2048; the pool can exceed that."""
+    calls = []
+
+    class _Resp:
+        def __init__(self, n):
+            self.data = [MagicMock(embedding=[0.0]) for _ in range(n)]
+
+    class _Client:
+        def __init__(self):
+            self.embeddings = self
+
+        def create(self, input, model):
+            calls.append(len(input))
+            return _Resp(len(input))
+
+    monkeypatch.setattr(service.openai, "Client", lambda *a, **k: _Client())
+
+    out = service._embed_texts([f"t{i}" for i in range(2591)], "m")
+
+    assert len(out) == 2591
+    assert max(calls) <= 2048, f"a batch exceeded the API limit: {calls}"
+    assert sum(calls) == 2591
