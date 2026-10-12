@@ -567,8 +567,12 @@ def enforce_significance_floor(
 
 
 def specificity_quota(k: int) -> int:
-    """How many of the k returned slots are reserved for top-scored terms."""
-    raw = os.getenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.4")
+    """Reserved slots for top-scored terms; off unless configured.
+
+    Promotes on score alone, so without a redundancy check it seats nested
+    variants of the same term. Re-enable via GO_SPECIFICITY_QUOTA_FRACTION.
+    """
+    raw = os.getenv("GO_SPECIFICITY_QUOTA_FRACTION", "0")
     try:
         fraction = float(raw)
     except ValueError:

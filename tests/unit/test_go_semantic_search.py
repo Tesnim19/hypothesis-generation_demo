@@ -748,6 +748,18 @@ def test_all_sizes_unknown_stays_neutral():
     assert (service.normalize_specificity(pd.Series([None, None])) == 0.5).all()
 
 
+def test_specificity_quota_is_off_by_default(monkeypatch):
+    """Default off; promoting on score alone seats redundant sibling terms."""
+    monkeypatch.delenv("GO_SPECIFICITY_QUOTA_FRACTION", raising=False)
+    assert service.specificity_quota(10) == 0
+
+    results = [{"id": "GO:broad1", "name": "broad", "p": 1e-9}]
+    assert service.enforce_specificity_quota(results, _quota_shortlist(), k=10) == results
+
+    monkeypatch.setenv("GO_SPECIFICITY_QUOTA_FRACTION", "0.4")
+    assert service.specificity_quota(10) == 4
+
+
 def test_embed_texts_batches_above_the_api_limit(monkeypatch):
     """The API rejects arrays longer than 2048; the pool can exceed that."""
     calls = []
