@@ -17,6 +17,10 @@ from src.tasks.gene_expression import get_coexpression_matrix_for_tissue
 _ENSG_RE = re.compile(r"^ENSG\d+$", re.IGNORECASE)
 
 
+# Fits the tissue-filtered set (~15k) while staying clear of the all-NaN
+# response Enrichr returns for genome-scale backgrounds.
+_MAX_BACKGROUND_SIZE = 20000
+
 _SIGNIFICANCE_DEFAULT = object()
 
 
@@ -334,12 +338,18 @@ class Enrich:
         organism,
         outdir=None,
     ) -> pd.DataFrame:
-        """Call Enrichr with progressively smaller backgrounds."""
+        """Call Enrichr, shrinking the background only if a call fails.
+
+        Rungs stop at 2000; the backgroundenrich endpoint returns a non-JSON
+        body below roughly that size, so smaller rungs can never succeed.
+        """
         background_sizes = []
-        for limit in (5000, 2500, 1000):
+        for limit in (len(background), 5000, 2000):
             size = min(len(background), limit)
-            if size not in background_sizes:
+            if size >= 2000 and size not in background_sizes:
                 background_sizes.append(size)
+        if not background_sizes:
+            background_sizes = [len(background)]
 
         last_error = None
         for background_size in background_sizes:
@@ -384,23 +394,30 @@ class Enrich:
         if isinstance(coexpression_result, tuple):
             gene_list_ensembl, all_tissue_genes = coexpression_result
             gene_list = self.get_hgnc_syms(gene_list_ensembl)
-            max_background_size = 5000
+            max_background_size = int(
+                os.getenv("GO_MAX_BACKGROUND_SIZE", str(_MAX_BACKGROUND_SIZE))
+            )
             if len(all_tissue_genes) > max_background_size:
                 logger.info(
                     f"Limiting background from {len(all_tissue_genes)} to "
-                    f"{max_background_size} genes for better enrichment signal"
+                    f"{max_background_size} genes"
                 )
                 background_genes_ensembl = all_tissue_genes[:max_background_size]
             else:
                 background_genes_ensembl = all_tissue_genes
+            # Enrichr drops query genes absent from the background.
+            background_genes_ensembl = list(
+                dict.fromkeys(list(background_genes_ensembl) + list(gene_list_ensembl))
+            )
             background_genes = self.get_hgnc_syms(background_genes_ensembl)
+            missing = len(set(gene_list) - set(background_genes))
             logger.info(
                 f"Running tissue-specific enrichment for {causal_gene_symbol} "
                 f"in {tissue_name}"
             )
             logger.info(
-                f"Using tissue-specific background: {len(background_genes)} genes "
-                "from CellxGene analysis"
+                f"Background: {len(background_genes)} tissue-expressed genes "
+                f"(query genes not covered: {missing})"
             )
             logger.info(
                 f"Converted {len(gene_list_ensembl)} Ensembl IDs to "

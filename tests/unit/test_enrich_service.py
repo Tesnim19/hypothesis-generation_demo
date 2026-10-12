@@ -34,22 +34,50 @@ def test_annotate_graph_gene_names_returns_copy(sample_graph):
     assert sample_graph == original
 
 
-def test_run_uses_tissue_gene_list_and_caps_background(monkeypatch):
+def _run_with_background(monkeypatch, query, tissue_genes):
     enrich = _enrich()
-    enrich.get_coexpression_net = MagicMock(
-        return_value=(["ENSG1", "ENSG2"], ["ENSG1"] * 6000)
-    )
+    # map every id used so get_hgnc_syms resolves them all
+    enrich.ensembl_hgnc_map = {
+        gid: f"SYM{gid}" for gid in set(list(query) + list(tissue_genes))
+    }
+    enrich.get_coexpression_net = MagicMock(return_value=(query, tissue_genes))
     enrich._process_enrichment_results = MagicMock(return_value="processed")
     api = MagicMock()
     api.return_value.results = pd.DataFrame()
     monkeypatch.setattr(service.gp, "enrichr", api)
-
     result = enrich.run("GENE1", tissue_name="Liver", coexpression_data="matrix")
-
     assert result == "processed"
-    assert len(api.call_args.kwargs["background"]) == 5000
-    assert api.call_args.kwargs["gene_list"] == ["GENE1", "GENE2"]
-    assert api.call_args.kwargs["outdir"] is None
+    return api.call_args.kwargs
+
+
+def test_run_uses_tissue_gene_list_without_truncating_it(monkeypatch):
+    """The tissue-filtered set (~15k) must survive intact."""
+    tissue = [f"ENSG{i:05d}" for i in range(15000)]
+    kwargs = _run_with_background(monkeypatch, ["ENSG1", "ENSG2"], tissue)
+
+    assert len(kwargs["background"]) >= 15000
+    assert kwargs["gene_list"] == ["SYMENSG1", "SYMENSG2"]
+    assert kwargs["outdir"] is None
+
+
+def test_run_always_includes_the_query_genes_in_the_background(monkeypatch):
+    """Enrichr silently drops query genes missing from the background."""
+    tissue = [f"ENSG{i:05d}" for i in range(100)]
+    query = ["ENSGQUERY1", "ENSGQUERY2"]  # deliberately outside the tissue set
+    kwargs = _run_with_background(monkeypatch, query, tissue)
+
+    background = set(kwargs["background"])
+    assert set(kwargs["gene_list"]) <= background, "query genes missing from background"
+
+
+def test_run_caps_a_pathological_background(monkeypatch):
+    """A genome-scale background makes Enrichr return all-NaN p-values."""
+    monkeypatch.setenv("GO_MAX_BACKGROUND_SIZE", "1000")
+    tissue = [f"ENSG{i:05d}" for i in range(60000)]
+    kwargs = _run_with_background(monkeypatch, ["ENSG1"], tissue)
+
+    # cap applies, plus the unioned query genes
+    assert len(kwargs["background"]) <= 1000 + 2
 
 
 def test_run_returns_empty_frame_without_calling_api():
@@ -127,8 +155,10 @@ def test_enrichr_retry_shrinks_background_until_success(monkeypatch):
     )
 
     assert result == "results"
+    # full background first, then shrink; nothing below 2000, where the
+    # Enrichr endpoint cannot succeed
     assert [len(entry.kwargs["background"]) for entry in api.call_args_list] == [
-        5000, 2500, 1000
+        6000, 5000, 2000
     ]
 
 
@@ -139,7 +169,7 @@ def test_enrichr_retry_raises_typed_error_after_exhaustion(monkeypatch):
 
     with pytest.raises(
         service.EnrichrAPIUnavailableError,
-        match=r"background sizes \[5000, 2500, 1000\]",
+        match=r"background sizes \[6000, 5000, 2000\]",
     ):
         enrich._run_enrichr_with_retry(
             gene_list=["GENE1"],

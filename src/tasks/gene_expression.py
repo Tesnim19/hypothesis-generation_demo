@@ -500,8 +500,11 @@ def get_coexpression_matrix_for_tissue(gene, cell_type, k=500, batch_size=1000):
         
         top_positive = sorted_correlations[:k]
         top_negative = sorted_correlations[-k:]
-        
-        return top_positive, top_negative, all_genes_list
+
+        # Third element is the enrichment background: the tissue-filtered set,
+        # not all_genes_list (the full Census feature table, ordered by Ensembl
+        # id, so a slice of it is an alphabetical sample of the genome).
+        return top_positive, top_negative, genes_filtered
 
 @task(log_prints=True)
 def run_combined_ldsc_tissue_analysis(munged_file, output_dir, project_id, user_id):
