@@ -1,0 +1,79 @@
+# Species profile: Drosophila melanogaster (dm6 / BDGP6), DGRP genotype input.
+# Defaults reproduce the reference DGRP female-lifespan analysis (197 lines).
+species: drosophila_melanogaster
+genome_build: dm6
+supported_input_types: [genotype]
+
+# Chromosome arm labels, in order, and their numeric PLINK/GCTA codes.
+# Codes <= 22 are autosomes for plink/gcta; 23 is chrX.
+chromosomes: ["2L", "2R", "3L", "3R", "4", "X"]
+chrom_code_map: {"2L": 1, "2R": 2, "3L": 3, "3R": 4, "4": 5, "X": 23}
+# Labels plink may write instead of ours (plink normalises X to 23 on merge,
+# and DGRP's merged_qc.bim uses 23 for X).
+chrom_aliases: {"23": "X", "chrX": "X", "chr2L": "2L", "chr2R": "2R",
+                "chr3L": "3L", "chr3R": "3R", "chr4": "4"}
+plink_chr_set: null
+
+ld_reference:
+  kind: per_run                # written by the genotype stage
+
+thresholds:
+  p_threshold: 1.0e-5
+  cojo_p: 1.0e-5
+  cojo_maf: 0.05
+  # One GCTA call over all arms. Per-chromosome runs fit the
+  # joint model without the other arms' signals and admit borderline SNPs
+  # (DGRP female lifespan: an extra 3L:18941059 whose genome-wide pJ is 1.12e-5).
+  cojo_scope: genome_wide
+  ld_maf: 0.01                 # no filter beyond the 0.01 genotype QC
+  min_maf: 0.05
+  min_n: 100
+
+finemap:
+  window_kb: 100               # +/-100,000 bp
+  sumstats_scope: all_in_window
+  # Variants whose LD row has NaN are dropped (on 3R:23246255
+  # about a quarter of the region). Zero-filling them, as the human path does,
+  # removes the reference 3R credible set.
+  ld_nonfinite: drop
+
+susie:
+  L: 10
+  coverage: 0.95
+  min_abs_corr: 0.5
+  # The LD comes from the same lines as the GWAS (in-sample), which is when
+  # susieR allows estimating the residual variance. With it on (and median N)
+  # DGRP lifespan reproduces the reference 2L (PIP 0.850) and 3R (PIP 0.952)
+  # credible sets; without it 3R has none.
+  estimate_residual_variance: true
+  sample_size: median          # n for susie_rss from the region's per-SNP N
+
+steps:
+  harmonize: false
+  ldsc_tissue: false
+  opentargets: false
+  gene_mapping: false          # post-v1
+  enhancer_mapping: false      # post-v1
+
+annotations:
+  gtf: ${DATA_DIR}/genes/Drosophila_melanogaster.BDGP6.54.62.chr.gtf.gz
+  enhancer_dir: ${DATA_DIR}/enhancers/dm
+
+genotype:
+  qc:
+    maf: 0.01
+    geno: 0.05
+    indep_pairwise: ["200kb", "1", "0.2"]
+    pca_compute: 10
+    n_pcs_covar: 4
+    allow_extra_chr: true
+  min_lines: 100               # fewer matched lines than this fails the run
+  # Line IDs in the phenotype table and the .fam IID are both normalised with
+  # this regex (group 1, leading zeros dropped) before matching: DGRP_021 == 21.
+  # FID is always taken from the .fam.
+  iid_regex: "^(?:DGRP_|line_)?0*(\\d+)$"
+  default_panel: dgrp2
+  panels:
+    dgrp2:
+      dir: ${GENOTYPE_PANEL_DIR}/dgrp2
+      per_chrom_prefix: "DGRP.{chrom}"

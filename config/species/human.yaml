@@ -1,0 +1,52 @@
+# Species profile: human (GRCh38). Describes today's sumstats pipeline.
+# `null` means "use the flow parameter / today's code path". In sumstats mode
+# the analysis flow never loads this file; it exists so the values are
+# documented and tested (tests/unit/test_species_profile.py).
+species: human
+genome_build: GRCh38
+supported_input_types: [sumstats]
+
+chromosomes: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11",
+              "12", "13", "14", "15", "16", "17", "18", "19", "20", "21", "22"]
+chrom_code_map: {"1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8,
+                 "9": 9, "10": 10, "11": 11, "12": 12, "13": 13, "14": 14, "15": 15,
+                 "16": 16, "17": 17, "18": 18, "19": 19, "20": 20, "21": 21, "22": 22}
+chrom_aliases: {}
+plink_chr_set: null
+
+ld_reference:
+  kind: panel_per_chromosome   # Config.plink_dir_38/{population}/{get_plink_file_pattern}
+
+thresholds:
+  p_threshold: 5.0e-8          # filter_significant_variants default
+  cojo_p: null                 # --cojo-p left out (GCTA default 5e-8)
+  cojo_maf: null               # = maf_threshold flow parameter
+  cojo_scope: per_chromosome   # one GCTA call per chromosome (today)
+  ld_maf: null                 # = maf_threshold flow parameter
+  min_maf: null
+  min_n: null
+
+finemap:
+  window_kb: null              # = window flow parameter (2000)
+  sumstats_scope: significant  # workers get only the significant SNPs (today)
+  ld_nonfinite: zero_fill      # NaN LD values replaced with 0 (today)
+
+susie:
+  L: null                      # = L flow parameter (-1, Optuna)
+  coverage: null               # = 0.95
+  min_abs_corr: null           # = 0.5
+  estimate_residual_variance: null  # susieR default (off); 1000G LD is out-of-sample
+  sample_size: null            # n = first SNP's N (today)
+
+steps:
+  harmonize: true
+  ldsc_tissue: true
+  opentargets: true
+  gene_mapping: false
+  enhancer_mapping: false
+
+annotations:
+  gtf: null
+  enhancer_dir: null
+
+genotype: null

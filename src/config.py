@@ -68,6 +68,10 @@ class Config:
         )
         self.go_llm_prefilter_k = 250
         self.go_semantic_strategy = "llm"
+        # Genotype input mode: species profiles (config/species/*.yaml) and
+        # server-hosted genotype panels (per-chromosome PLINK sets).
+        self.species_profile_dir = str(_repo / "config" / "species")
+        self.genotype_panel_dir = "./data/genotype_panels"
         self.mail_username = ""
         self.mail_password = ""
         self.mail_from = ""
@@ -154,6 +158,10 @@ class Config:
         )
         config.go_llm_prefilter_k = int(os.getenv("GO_LLM_PREFILTER_K", "250"))
         config.go_semantic_strategy = os.getenv("GO_SEMANTIC_STRATEGY", "llm")
+        config.species_profile_dir = os.getenv(
+            "SPECIES_PROFILE_DIR", str(_repo / "config" / "species")
+        )
+        config.genotype_panel_dir = os.getenv("GENOTYPE_PANEL_DIR", "./data/genotype_panels")
         config.mail_username = os.getenv("MAIL_USERNAME", "")
         config.mail_password = os.getenv("MAIL_PASSWORD", "")
         config.mail_from = os.getenv("MAIL_FROM", "")
