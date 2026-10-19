@@ -1,0 +1,236 @@
+{
+  "cleanup_sumstats_file": [
+    {
+      "args": [
+        "<TMP>/analysis/sumstats_worker.tsv"
+      ],
+      "kwargs": {}
+    }
+  ],
+  "create_analysis_result_task": [
+    {
+      "args": [
+        "user-1",
+        "project-1",
+        {
+          "<DataFrame>": [
+            "0"
+          ],
+          "columns": [
+            "PIP",
+            "credible_set"
+          ]
+        },
+        "<TMP>/analysis"
+      ],
+      "kwargs": {}
+    }
+  ],
+  "filter_significant_variants": [
+    {
+      "args": [
+        "<TMP>/analysis/harmonized.tsv.gz",
+        "<TMP>/analysis"
+      ],
+      "kwargs": {}
+    }
+  ],
+  "finemap_batches": [
+    [
+      [
+        {
+          "alleles": [
+            "A",
+            "G"
+          ],
+          "chr": 1,
+          "cojo_data": {
+            "CHR": 1,
+            "bp": 1000000
+          },
+          "position": 1000000,
+          "variant_id": "1:1000000:A:G"
+        },
+        {
+          "alleles": [
+            "A",
+            "G"
+          ],
+          "chr": 22,
+          "cojo_data": {
+            "CHR": 22,
+            "bp": 1000000
+          },
+          "position": 1000000,
+          "variant_id": "22:1000000:A:G"
+        }
+      ],
+      "batch_0",
+      "<TMP>/analysis/sumstats_worker.tsv",
+      {
+        "finemap_params": {
+          "L": -1,
+          "coverage": 0.95,
+          "maf_threshold": 0.01,
+          "min_abs_corr": 0.5,
+          "plink_dir": "/golden/plink_format_b38",
+          "population": "EUR",
+          "ref_genome": "GRCh38",
+          "seed": 42,
+          "window": 2000
+        },
+        "project_id": "project-1",
+        "user_id": "user-1"
+      }
+    ]
+  ],
+  "get_project_analysis_path_task": [
+    {
+      "args": [
+        "user-1",
+        "project-1"
+      ],
+      "kwargs": {}
+    }
+  ],
+  "get_results_from_opentargets_task": [],
+  "harmonize_sumstats_with_nextflow": [
+    {
+      "args": [
+        "<TMP>/uploads/user-1/raw.tsv.gz",
+        "<TMP>/analysis"
+      ],
+      "kwargs": {
+        "opentargets_study_id": null,
+        "project_id": "project-1",
+        "ref_genome": "GRCh38",
+        "sample_size": null,
+        "user_id": "user-1"
+      }
+    }
+  ],
+  "notifications": [
+    [
+      "u@example.org",
+      "Proj",
+      "project-1",
+      {
+        "success": true
+      }
+    ]
+  ],
+  "prepare_gwas_file_task": [],
+  "rmtree": [
+    "<TMP>/uploads/user-1"
+  ],
+  "run_cojo_per_chromosome": [
+    {
+      "args": [
+        {
+          "<DataFrame>": [
+            "1:1000000:A:G",
+            "1:1005000:A:G",
+            "22:1000000:A:G",
+            "22:1005000:A:G",
+            "7:1000000:A:G",
+            "7:1005000:A:G"
+          ],
+          "columns": [
+            "N",
+            "base_pair_location",
+            "beta",
+            "chromosome",
+            "effect_allele",
+            "effect_allele_frequency",
+            "other_allele",
+            "p_value",
+            "standard_error"
+          ]
+        },
+        "/golden/plink_format_b38",
+        "<TMP>/analysis"
+      ],
+      "kwargs": {
+        "maf_threshold": 0.01,
+        "population": "EUR",
+        "ref_genome": "GRCh38"
+      }
+    }
+  ],
+  "run_combined_ldsc_tissue_analysis": [
+    {
+      "args": [
+        "<TMP>/analysis/harmonized.tsv.gz",
+        "<TMP>/analysis",
+        "project-1",
+        "user-1"
+      ],
+      "kwargs": {}
+    }
+  ],
+  "save_sumstats_for_workers": [
+    [
+      {
+        "<DataFrame>": [
+          "1:1000000:A:G",
+          "1:1005000:A:G",
+          "22:1000000:A:G",
+          "22:1005000:A:G",
+          "7:1000000:A:G",
+          "7:1005000:A:G"
+        ],
+        "columns": [
+          "N",
+          "base_pair_location",
+          "beta",
+          "chromosome",
+          "effect_allele",
+          "effect_allele_frequency",
+          "other_allele",
+          "p_value",
+          "standard_error"
+        ]
+      },
+      "<TMP>/analysis"
+    ]
+  ],
+  "states": [
+    {
+      "flow_run_id": "flow-run-1",
+      "message": "Harmonizing summary statistics (skipped automatically for confirmed OpenTargets studies)",
+      "progress": 10,
+      "stage": "Harmonization",
+      "status": "Running"
+    },
+    {
+      "message": "Harmonization completed, filtering significant variants",
+      "progress": 30,
+      "stage": "Filtering",
+      "status": "Running"
+    },
+    {
+      "message": "Filtering completed, running COJO analysis",
+      "progress": 50,
+      "stage": "Cojo",
+      "status": "Running"
+    },
+    {
+      "message": "COJO analysis completed, starting fine-mapping",
+      "progress": 70,
+      "stage": "Fine_mapping",
+      "status": "Running"
+    },
+    {
+      "message": "Fine-mapping completed, waiting for LDSC and tissue analysis",
+      "progress": 85,
+      "stage": "LDSC_Tissue_Analysis",
+      "status": "Running"
+    },
+    {
+      "ldsc_status": "completed",
+      "message": "Analysis completed successfully",
+      "progress": 100,
+      "status": "Completed"
+    }
+  ]
+}

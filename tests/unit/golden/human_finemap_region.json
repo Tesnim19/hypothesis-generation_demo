@@ -1,0 +1,27 @@
+{
+  "ld": {
+    "chr_num": 7,
+    "filtered_ids": [
+      "7:1000000:A:G",
+      "7:1005000:A:G",
+      "7:1010000:A:G"
+    ],
+    "maf": 0.01,
+    "plink_dir": "/golden/plink",
+    "population": "EUR",
+    "ref_genome": "GRCh38"
+  },
+  "susie": {
+    "L": -1,
+    "chr_num": 7,
+    "coverage": 0.95,
+    "lead_variant_position": 1005000,
+    "min_abs_corr": 0.5,
+    "seed": 42
+  },
+  "susie_ids": [
+    "7:1000000:A:G",
+    "7:1005000:A:G",
+    "7:1010000:A:G"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "bim_paths": [
+    "<TMP>/plink/EUR/EUR.chr7.1KG.GRCh38.bim"
+  ],
+  "command": [
+    "plink",
+    "--bfile",
+    "<TMP>/plink/EUR/EUR.chr7.1KG.GRCh38",
+    "--keep-allele-order",
+    "--r",
+    "square",
+    "--extract",
+    "<EXTRACT>",
+    "--maf",
+    "0.01",
+    "--write-snplist",
+    "--out",
+    "<OUT>"
+  ],
+  "extracted_ids": [
+    "7:1000000:A:G",
+    "7:1005000:A:G"
+  ]
+}
