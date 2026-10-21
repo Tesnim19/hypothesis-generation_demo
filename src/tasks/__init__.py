@@ -35,6 +35,7 @@ from src.tasks.analysis import (
     get_results_from_opentargets_task,
     save_sumstats_for_workers,
     cleanup_sumstats_file,
+    subset_sumstats_to_windows,
 )
 
 # gene expression tasks

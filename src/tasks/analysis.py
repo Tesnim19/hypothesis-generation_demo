@@ -509,11 +509,15 @@ NR==1 {
 
 
 @task()
-def filter_significant_variants(harmonized_df, output_dir, p_threshold=5e-8):
+def filter_significant_variants(harmonized_df, output_dir, p_threshold=5e-8,
+                                min_maf=None, min_n=None):
     """Filter significant variants from harmonized sumstats.
 
     *harmonized_df* may be either a pandas DataFrame (legacy callers) or a
     file path string returned by harmonize_sumstats_with_nextflow. 
+
+    *min_maf* / *min_n* (genotype mode) additionally drop variants with
+    minor-allele frequency or sample size below the bound; None skips them.
     """
     logger.info(f"[FILTER] Filtering variants with p_value < {p_threshold}")
 
@@ -526,7 +530,7 @@ def filter_significant_variants(harmonized_df, output_dir, p_threshold=5e-8):
         path = harmonized_df
         header = pd.read_csv(path, sep='\t', compression='gzip', nrows=0, low_memory=False)
         load_cols = [c for c in needed if c in header.columns]
-        for opt in ('rsid', 'RS_ID'):
+        for opt in ('rsid', 'RS_ID', 'chromosome_label'):
             if opt in header.columns and opt not in load_cols:
                 load_cols.append(opt)
         missing_required = [c for c in needed if c not in header.columns]
@@ -545,19 +549,70 @@ def filter_significant_variants(harmonized_df, output_dir, p_threshold=5e-8):
     # Support both old (P) and new (p_value) column names
     p_col = 'p_value' if 'p_value' in harmonized_df.columns else 'P'
 
-    significant_df = harmonized_df[harmonized_df[p_col] < p_threshold].copy()
+    keep = harmonized_df[p_col] < p_threshold
+    if min_maf is not None:
+        frq_col = 'effect_allele_frequency' if 'effect_allele_frequency' in harmonized_df.columns else 'FRQ'
+        frq = harmonized_df[frq_col].astype(float)
+        keep &= np.minimum(frq, 1 - frq) >= min_maf
+    if min_n is not None:
+        keep &= harmonized_df['N'].astype(float) >= min_n
+    if min_maf is not None or min_n is not None:
+        logger.info(f"[FILTER] Applied min_maf={min_maf}, min_n={min_n}: {int(keep.sum()):,} variants kept")
+    significant_df = harmonized_df[keep].copy()
     sig_output_path = os.path.join(output_dir, "significant_variants.tsv")
     significant_df.to_csv(sig_output_path, sep='\t', index=True)
 
     return significant_df, sig_output_path
 
 
+def subset_sumstats_to_windows(sumstats_path, cojo_df, window_kb):
+    """Full sumstats restricted to ±window_kb around each COJO lead.
+
+    Genotype mode hands this to the fine-mapping workers instead of the
+    significant SNPs, so each region carries every tested SNP in its window.
+    Windows come from COJO's numeric ``CHR`` and ``bp`` columns; variant IDs
+    are never parsed. Columns match filter_significant_variants' output.
+    """
+    needed = [
+        'variant_id', 'chromosome', 'base_pair_location', 'p_value',
+        'effect_allele', 'other_allele', 'beta', 'standard_error',
+        'effect_allele_frequency', 'N',
+    ]
+    header = pd.read_csv(sumstats_path, sep='\t', compression='gzip', nrows=0)
+    load_cols = needed + [c for c in ('rsid', 'RS_ID', 'chromosome_label') if c in header.columns]
+    sumstats = pd.read_csv(
+        sumstats_path, sep='\t', compression='gzip', low_memory=False, usecols=load_cols,
+        dtype={'variant_id': str},
+    ).set_index('variant_id')
+
+    window_bp = int(window_kb * 1000)
+    keep = np.zeros(len(sumstats), dtype=bool)
+    chrom_col = sumstats['chromosome'].to_numpy()
+    pos_col = sumstats['base_pair_location'].to_numpy()
+    for _lead_id, row in cojo_df.iterrows():
+        chrom, pos = int(row['CHR']), int(row['bp'])
+        keep |= (chrom_col == chrom) & (pos_col >= pos - window_bp) & (pos_col <= pos + window_bp)
+    subset = sumstats[keep].copy()
+    logger.info(f"[FILTER] Window subset (±{window_kb}kb around {len(cojo_df)} COJO signals): "
+                f"{len(subset):,} of {len(sumstats):,} variants")
+    return subset
+
+
 # ===  COJO ANALYSIS ===
 @task()
-def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold=0.01, population="EUR", ref_genome="GRCh38"):
+def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold=0.01, population="EUR", ref_genome="GRCh38",
+                            chromosomes=None, ld_bfile=None, cojo_p=None, genome_wide=False):
     """
     Run GCTA COJO analysis per chromosome and combine results.
+
+    Genotype mode passes *chromosomes* (numeric codes; default 1..22),
+    *ld_bfile* (one PLINK prefix covering every chromosome, used instead of
+    the per-chromosome 1000G panel) and *cojo_p* (adds --cojo-p).
+    *genome_wide* runs a single GCTA call over all chromosomes of *ld_bfile*
+    (no --chr), so the joint model sees every signal at once.
     """
+    if genome_wide and not ld_bfile:
+        raise ValueError("genome_wide COJO needs ld_bfile (one PLINK set covering every chromosome)")
     logger.info(f"[COJO] Starting per-chromosome COJO analysis for population {population}")
     
     # Get configuration
@@ -607,11 +662,14 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
             try:
                 logger.info(f"[COJO] Processing chromosome {chrom}")
                 
-                # Get file pattern for this build
-                file_pattern = config.get_plink_file_pattern(population=population, chrom=chrom)
-                
-                # Define paths for this chromosome
-                plink_prefix = os.path.join(plink_dir, population, file_pattern)
+                if ld_bfile:
+                    plink_prefix = ld_bfile
+                else:
+                    # Get file pattern for this build
+                    file_pattern = config.get_plink_file_pattern(population=population, chrom=chrom)
+                    
+                    # Define paths for this chromosome
+                    plink_prefix = os.path.join(plink_dir, population, file_pattern)
                 
                 # Check if PLINK files exist
                 if not os.path.exists(f"{plink_prefix}.bed"):
@@ -628,9 +686,11 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
                     "--bfile", plink_prefix,
                     "--cojo-file", cojo_input_path,
                     "--cojo-slct",
-                    "--chr", str(chrom),
+                    *(["--chr", str(chrom)] if chrom is not None else []),
                     "--maf", str(maf_threshold)
                 ]
+                if cojo_p is not None:
+                    cojo_cmd += ["--cojo-p", str(cojo_p)]
                 
                 logger.info(f"[COJO] Running command for chr{chrom}: {' '.join(cojo_cmd)}")
                 result = subprocess.run(cojo_cmd, capture_output=True, text=True, timeout=1800)
@@ -644,7 +704,8 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
                 if os.path.exists(cojo_result_file):
                     chr_results = pd.read_csv(cojo_result_file, sep='\s+')
                     if len(chr_results) > 0:
-                        chr_results['CHR'] = chrom  
+                        # Genome-wide runs (chrom None) take each signal's chromosome from GCTA's Chr column
+                        chr_results['CHR'] = chrom if chrom is not None else chr_results['Chr'].astype(int)
                         logger.info(f"[COJO] Chromosome {chrom}: {len(chr_results)} independent signals")
                         
                         return chr_results
@@ -669,8 +730,8 @@ def run_cojo_per_chromosome(significant_df, plink_dir, output_dir, maf_threshold
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_chrom = {
-                executor.submit(run_cojo_for_chromosome, chrom): chrom 
-                for chrom in range(1, 23)
+                executor.submit(run_cojo_for_chromosome, chrom): chrom
+                for chrom in ([None] if genome_wide else chromosomes if chromosomes is not None else range(1, 23))
             }
             
             # Process completed tasks
@@ -756,7 +817,12 @@ def check_ld_semidefiniteness(R_df):
 
 # === FINE-MAPPING HELPER FUNCTIONS ===
 
-def calculate_ld_matrix(chr_num, filtered_ids, sumstats, plink_dir, population, ref_genome, maf, config):
+def calculate_ld_matrix(chr_num, filtered_ids, sumstats, plink_dir, population, ref_genome, maf, config,
+                        ld_bfile=None, drop_nonfinite_ld=False):
+    """*ld_bfile*, when set, replaces the per-chromosome panel prefix
+    (genotype mode: the per-run LD reference written by the genotype stage).
+    *drop_nonfinite_ld* drops variants whose LD row has NaN/inf instead of
+    zero-filling them (zero-filling also zeroes their diagonal)."""
     try:
         with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt') as tmp_file:
             for snp_id in filtered_ids:
@@ -766,12 +832,16 @@ def calculate_ld_matrix(chr_num, filtered_ids, sumstats, plink_dir, population, 
         with tempfile.NamedTemporaryFile(delete=False, mode='w', suffix='.txt') as tmp_file_ld:
             tmp_file_ld_path = tmp_file_ld.name
             
-        # Get file pattern for this build
-        file_pattern = config.get_plink_file_pattern(population=population, chrom=chr_num)
+        if ld_bfile:
+            bfile_prefix = ld_bfile
+        else:
+            # Get file pattern for this build
+            file_pattern = config.get_plink_file_pattern(population=population, chrom=chr_num)
+            bfile_prefix = f"{plink_dir}/{population}/{file_pattern}"
         
         plink_cmd = [
             "plink",
-            "--bfile", f"{plink_dir}/{population}/{file_pattern}",
+            "--bfile", bfile_prefix,
             "--keep-allele-order",
             "--r", "square",
             "--extract", tmp_file_path,
@@ -821,6 +891,12 @@ def calculate_ld_matrix(chr_num, filtered_ids, sumstats, plink_dir, population, 
 
         ld_df.index = snp_ids
         ld_df.columns = snp_ids
+        if drop_nonfinite_ld:
+            finite = np.isfinite(ld_df.values)
+            keep = finite.all(axis=0) & finite.all(axis=1)
+            if not keep.all():
+                logger.info(f"[LD] Dropping {int((~keep).sum())} variants with non-finite LD values")
+                ld_df = ld_df.loc[keep, keep]
         ld_df.fillna(0, inplace=True)
 
         # Clean up files
@@ -846,8 +922,7 @@ def calculate_ld_matrix(chr_num, filtered_ids, sumstats, plink_dir, population, 
             'BP': sub_region_sumstats_ld[bp_col]
         })
         
-        file_pattern = config.get_plink_file_pattern(population=population, chrom=chr_num)
-        bim_file_path = f"{plink_dir}/{population}/{file_pattern}.bim"
+        bim_file_path = f"{bfile_prefix}.bim"
         
         if os.path.exists(bim_file_path):
             try:
@@ -876,8 +951,12 @@ def calculate_ld_matrix(chr_num, filtered_ids, sumstats, plink_dir, population, 
         return None, None
 
 
-def run_susie_finemapping(seed, ld_df, sub_region_sumstats_ld, chr_num, lead_variant_position, 
-                          L=-1, coverage=0.95, min_abs_corr=0.5):
+def run_susie_finemapping(seed, ld_df, sub_region_sumstats_ld, chr_num, lead_variant_position,
+                          L=-1, coverage=0.95, min_abs_corr=0.5,
+                          estimate_residual_variance=None, sample_size_stat=None):
+    """*estimate_residual_variance* (passed to susie_rss only when set) is only
+    valid with in-sample LD, as in genotype mode. *sample_size_stat* picks n
+    from the region's per-SNP N: None/"first" (today) or "median"."""
     try:
         # Validate inputs
         LD_mat = ld_df.values
@@ -899,8 +978,14 @@ def run_susie_finemapping(seed, ld_df, sub_region_sumstats_ld, chr_num, lead_var
             logger.error(f"[SUSIE] Dimension mismatch: LD={LD_mat.shape}, Z-scores={len(zhat)}")
             return None
         
-        num_samples = int(sub_region_sumstats_ld["N"].iloc[0])
-        
+        if sample_size_stat == "median":
+            num_samples = int(np.rint(sub_region_sumstats_ld["N"].median()))
+        else:
+            num_samples = int(sub_region_sumstats_ld["N"].iloc[0])
+        susie_extra = {}
+        if estimate_residual_variance is not None:
+            susie_extra["estimate_residual_variance"] = bool(estimate_residual_variance)
+
         # Check for invalid data
         if np.isnan(LD_mat).any() or np.isinf(LD_mat).any():
             logger.error(f"[SUSIE] Invalid LD matrix - contains NaN or inf values")
@@ -950,7 +1035,7 @@ def run_susie_finemapping(seed, ld_df, sub_region_sumstats_ld, chr_num, lead_var
                 logger.info(f"[SUSIE] Starting trial with L={L_trial}")                
                 
                 try:
-                    susie_fit = local_susieR.susie_rss(z=zhat_r, R=R_r, L=L_trial, n=num_samples)
+                    susie_fit = local_susieR.susie_rss(z=zhat_r, R=R_r, L=L_trial, n=num_samples, **susie_extra)
                     logger.info(f"[SUSIE] Execution completed for L={L_trial}")
                 except Exception as e:
                     logger.error(f"[SUSIE] Execution failed for L={L_trial}: {str(e)}")
@@ -993,7 +1078,7 @@ def run_susie_finemapping(seed, ld_df, sub_region_sumstats_ld, chr_num, lead_var
         # Run SuSiE with final L
         logger.info(f"[SUSIE] Running SuSiE with L={L}")
         try:
-            susie_fit = local_susieR.susie_rss(z=zhat_r, R=R_r, L=L, n=num_samples)
+            susie_fit = local_susieR.susie_rss(z=zhat_r, R=R_r, L=L, n=num_samples, **susie_extra)
         except Exception as e:
             logger.error(f"[SUSIE] SuSiE execution failed: {str(e)}")
             return None
@@ -1100,8 +1185,10 @@ def run_susie_finemapping(seed, ld_df, sub_region_sumstats_ld, chr_num, lead_var
 # === FINE-MAPPING ORCHESTRATION ===
 def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000, 
                                  population="EUR", L=-1, coverage=0.95, min_abs_corr=0.5, maf=0.01, 
-                                 ref_genome="GRCh38", plink_dir=None):
-    try:     
+                                 ref_genome="GRCh38", plink_dir=None, ld_bfile=None,
+                                 estimate_residual_variance=None, sample_size_stat=None,
+                                 drop_nonfinite_ld=None):
+    try:
         logger.info(f"[FINEMAP] Fine-mapping chr{chr_num}:{lead_variant_position} ±{window}kb")
 
         # Get config
@@ -1126,7 +1213,10 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
             logger.warning(f"[FINEMAP] Insufficient SNPs for chr{chr_num}:{lead_variant_position}")
             return None
         
-        # Step 2: Calculate LD matrix
+        # Step 2: Calculate LD matrix (ld_bfile / drop_nonfinite_ld only passed when set: genotype mode)
+        ld_kwargs = {'ld_bfile': ld_bfile} if ld_bfile else {}
+        if drop_nonfinite_ld:
+            ld_kwargs['drop_nonfinite_ld'] = True
         ld_df, sub_region_sumstats_ld = calculate_ld_matrix(
             chr_num=chr_num,
             filtered_ids=filtered_ids,
@@ -1135,7 +1225,8 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
             population=population,
             ref_genome=ref_genome,
             maf=maf,
-            config=config
+            config=config,
+            **ld_kwargs
         )
         
         if ld_df is None or sub_region_sumstats_ld is None:
@@ -1144,7 +1235,10 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
         
         logger.info(f"[FINEMAP] LD matrix calculated: {ld_df.shape}")
         
-        # Step 3: Run SuSiE fine-mapping
+        # Step 3: Run SuSiE fine-mapping (extra options only passed when set: genotype mode)
+        susie_kwargs = {key: value for key, value in (
+            ('estimate_residual_variance', estimate_residual_variance),
+            ('sample_size_stat', sample_size_stat)) if value is not None}
         result = run_susie_finemapping(
             seed=seed,
             ld_df=ld_df,
@@ -1153,9 +1247,10 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
             lead_variant_position=lead_variant_position,
             L=L,
             coverage=coverage,
-            min_abs_corr=min_abs_corr
+            min_abs_corr=min_abs_corr,
+            **susie_kwargs
         )
-        
+
         if result is not None:
             logger.info(f"[FINEMAP] Successfully fine-mapped chr{chr_num}:{lead_variant_position}")
         else:
@@ -1167,13 +1262,31 @@ def finemap_region(seed, sumstats, chr_num, lead_variant_position, window=2000,
         logger.error(f"[FINEMAP] Error in fine-mapping chr{chr_num}:{lead_variant_position}: {str(e)}")
         return None
 
-def create_region_batches(cojo_results, batch_size=3):
-    """Split COJO results into smaller batches for memory-efficient processing"""
+def create_region_batches(cojo_results, batch_size=3, coords_from_columns=False):
+    """Split COJO results into smaller batches for memory-efficient processing
+
+    With *coords_from_columns* (genotype mode) the region chromosome and
+    position come from COJO's numeric ``CHR`` and ``bp`` columns and the
+    variant ID is never parsed (panel IDs such as ``3R_19071977_SNP`` carry
+    old-build coordinates).
+    """
     batches = []
     
     # Convert COJO results to list of region info
     regions = []
     for variant_id, row in cojo_results.iterrows():
+        if coords_from_columns:
+            try:
+                regions.append({
+                    'variant_id': variant_id,
+                    'chr': int(row['CHR']),
+                    'position': int(row['bp']),
+                    'alleles': (None, row.get('refA')),
+                    'cojo_data': row.to_dict()
+                })
+            except Exception as e:
+                logger.warning(f"[BATCH] Missing CHR/bp for COJO signal {variant_id}: {e}")
+            continue
         # Extract region info (CHR:BP:A2:A1 format)
         try:
             chr_str, bp_str, a2, a1 = variant_id.split(':')
@@ -1298,7 +1411,11 @@ def finemap_region_batch_worker(batch_data):
         ref_genome = finemap_params.get('ref_genome', 'GRCh38')
         maf_threshold = finemap_params.get('maf_threshold', 0.01)
         plink_dir = finemap_params.get('plink_dir', None)
-        
+        ld_bfile = finemap_params.get('ld_bfile', None)
+        susie_options = {key: finemap_params[key]
+                         for key in ('estimate_residual_variance', 'sample_size_stat', 'drop_nonfinite_ld')
+                         if finemap_params.get(key) is not None}
+
         try:
             deps = get_deps()
             analysis_handler = deps["analysis"]
@@ -1377,7 +1494,9 @@ def finemap_region_batch_worker(batch_data):
                     min_abs_corr=min_abs_corr,
                     maf=maf_threshold,
                     ref_genome=ref_genome,
-                    plink_dir=plink_dir
+                    plink_dir=plink_dir,
+                    **({'ld_bfile': ld_bfile} if ld_bfile else {}),
+                    **susie_options
                 )
                 
                 if result is not None and len(result) > 0:
