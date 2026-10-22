@@ -38,6 +38,11 @@ from src.tasks.analysis import (
     subset_sumstats_to_windows,
 )
 
+# genotype input mode (genotypes + phenotype -> GWAS sumstats)
+from src.tasks.genotype import (
+    run_genotype_gwas_task,
+)
+
 # gene expression tasks
 from src.tasks.gene_expression import (
     run_combined_ldsc_tissue_analysis,
