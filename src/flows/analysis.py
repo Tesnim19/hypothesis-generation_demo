@@ -25,8 +25,11 @@ from src.tasks import (
     save_analysis_state_task,
     create_analysis_result_task,
     get_results_from_opentargets_task,
+    run_genotype_gwas_task,
+    subset_sumstats_to_windows,
 )
 from src.db.credible_sets_handler import CredibleSetsHandler
+from src.species import load_species_profile, resolve_effective_params
 
 
 
@@ -43,10 +46,20 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                            file_storage_key=None, file_id_new=None,
                            file_source_minio_path=None, file_source_download_url=None,
                            file_minio_cache_key=None, file_gwas_library_id=None,
-                           opentargets_study_id=None):
+                           opentargets_study_id=None,
+                           input_type="sumstats", species="human",
+                           genotype_panel_id=None, genotype_bfile=None,
+                           phenotype_file_path=None, phenotype_options=None,
+                           param_overrides=None):
     """
     Complete analysis pipeline flow using Prefect for orchestration
     but multiprocessing for fine-mapping batches (R safety)
+
+    input_type="sumstats" (default) is the human summary-statistics path and
+    ignores the species profile entirely. input_type="genotype" starts from
+    genotypes (hosted *genotype_panel_id* or a direct *genotype_bfile*) plus
+    *phenotype_file_path*, runs a GWAS (Stage 0b) and takes thresholds from the
+    *species* profile; harmonization, OpenTargets and LDSC are skipped.
     """
 
     logger.info(f"[PIPELINE] Starting Prefect analysis pipeline with multiprocessing fine-mapping")
@@ -61,79 +74,135 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
         output_dir = get_project_analysis_path_task.submit(user_id, project_id).result()
         logger.info(f"[PIPELINE] Using output directory: {output_dir}")
 
-        if file_needs_processing:
-            logger.info(f"[PIPELINE] Stage 0: preparing GWAS file")
-            gwas_file_path = prepare_gwas_file_task.submit(
-                user_id, project_id, file_metadata_id, gwas_file_path,
-                storage_key=file_storage_key,
-                file_id_new=file_id_new,
-                source_minio_path=file_source_minio_path,
-                source_download_url=file_source_download_url,
-                minio_cache_key=file_minio_cache_key,
-                gwas_library_id=file_gwas_library_id,
-                output_dir=output_dir,
+        genotype_mode = input_type == "genotype"
+        if input_type not in ("sumstats", "genotype"):
+            raise ValueError(f"Unknown input_type {input_type!r}; expected 'sumstats' or 'genotype'")
+        if not genotype_mode and species != "human":
+            raise ValueError(f"Summary-statistics input is only supported for species='human', got {species!r}")
+
+        if genotype_mode:
+            # Thresholds, window and SuSiE settings come from the species profile.
+            profile = load_species_profile(species)
+            effective = resolve_effective_params(
+                profile, "genotype",
+                {"maf_threshold": maf_threshold, "window": window, "L": L,
+                 "coverage": coverage, "min_abs_corr": min_abs_corr},
+                param_overrides,
+            )
+            logger.info(f"[PIPELINE] Genotype input mode, species={profile.name}, parameters: {effective}")
+            if gwas_file_path:
+                # Never route genotype inputs through gwas_file_path: the sumstats
+                # path rmtree()s its parent directory after harmonization.
+                logger.warning(f"[PIPELINE] Ignoring gwas_file_path in genotype mode: {gwas_file_path}")
+            if not phenotype_file_path:
+                raise ValueError("Genotype input mode requires phenotype_file_path")
+            population = genotype_panel_id or "genotype"
+            ref_genome = profile.genome_build
+
+            initial_state = {
+                "status": "Running",
+                "stage": "Genotype_QC_GWAS",
+                "progress": 10,
+                "message": "Running genotype QC, PCA and GWAS",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "flow_run_id": _prefect_flow_run.id,
+            }
+            save_analysis_state_task.submit(user_id, project_id, initial_state).result()
+
+            logger.info(f"[PIPELINE] Stage 0b: genotype QC + GWAS")
+            genotype_result = run_genotype_gwas_task.submit(
+                user_id, project_id, phenotype_file_path, species, output_dir,
+                panel_id=genotype_panel_id, genotype_bfile=genotype_bfile,
+                phenotype_options=phenotype_options,
             ).result()
-            logger.info(f"[PIPELINE] Stage 0 complete: file ready at {gwas_file_path}")
+            harmonized_file = genotype_result["sumstats_path"]
+            ld_bfile = genotype_result["ld_bfile"]
+            logger.info(f"[PIPELINE] Stage 0b complete: {genotype_result['n_variants']:,} variants, "
+                        f"{genotype_result['n_samples']} samples, LD reference {ld_bfile}")
+            save_analysis_state_task.submit(user_id, project_id, {
+                "status": "Running",
+                "stage": "Genotype_QC_GWAS",
+                "progress": 25,
+                "message": f"GWAS completed on {genotype_result['n_samples']} samples",
+                "started_at": initial_state["started_at"],
+            }).result()
 
-        # Save initial analysis state
-        initial_state = {
-            "status": "Running",
-            "stage": "Harmonization",
-            "progress": 10,
-            "message": "Harmonizing summary statistics (skipped automatically for confirmed OpenTargets studies)",
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "flow_run_id": _prefect_flow_run.id,
-        }
-        save_analysis_state_task.submit(user_id, project_id, initial_state).result()
-
-        logger.info(f"[PIPELINE] Stage 1: Harmonization (Nextflow, or pass-through if opentargets_study_id is confirmed in OpenTargets' own tables)")
-        harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
-            gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
-            user_id=user_id, project_id=project_id, opentargets_study_id=opentargets_study_id
-        ).result()
-
-        # harmonize_sumstats_with_nextflow now returns just the file path.
-        # Keep tuple handling for backward compatibility with older task versions.
-        if isinstance(harmonized_file_result, tuple):
-            harmonized_file = harmonized_file_result[1]
+            # No harmonization, raw-file cleanup or LDSC in genotype mode.
+            ldsc_tissue_future = None
         else:
-            harmonized_file = harmonized_file_result
+            if file_needs_processing:
+                logger.info(f"[PIPELINE] Stage 0: preparing GWAS file")
+                gwas_file_path = prepare_gwas_file_task.submit(
+                    user_id, project_id, file_metadata_id, gwas_file_path,
+                    storage_key=file_storage_key,
+                    file_id_new=file_id_new,
+                    source_minio_path=file_source_minio_path,
+                    source_download_url=file_source_download_url,
+                    minio_cache_key=file_minio_cache_key,
+                    gwas_library_id=file_gwas_library_id,
+                    output_dir=output_dir,
+                ).result()
+                logger.info(f"[PIPELINE] Stage 0 complete: file ready at {gwas_file_path}")
 
-        # Clean up the raw GWAS input file. For direct uploads it lives in its own
-        # data/uploads/<user_id>/ dir (safe to rmtree). But cache/library downloads
-        # (source_minio_path / source_download_url — e.g. OT-confirmed FinnGen
-        # studies) land the raw file directly in output_dir alongside the
-        # harmonized/remapped output, so rmtree-ing its parent would delete that
-        # output too. Only rmtree when the raw file's directory isn't output_dir
-        # (or the harmonized output itself); otherwise just remove the raw file.
-        if (
-            gwas_file_path
-            and os.path.exists(gwas_file_path)
-            and os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_file)
-        ):
-            try:
-                parent_dir = os.path.dirname(gwas_file_path)
-                if os.path.abspath(parent_dir) == os.path.abspath(output_dir):
-                    os.remove(gwas_file_path)
-                    logger.info(f"[PIPELINE] Cleaned up raw GWAS input file: {gwas_file_path}")
-                else:
-                    _shutil.rmtree(parent_dir, ignore_errors=True)
-                    logger.info(f"[PIPELINE] Cleaned up raw GWAS temp dir: {parent_dir}")
-            except Exception as _cleanup_e:
-                logger.warning(f"[PIPELINE] Could not clean up {gwas_file_path}: {_cleanup_e}")
+            # Save initial analysis state
+            initial_state = {
+                "status": "Running",
+                "stage": "Harmonization",
+                "progress": 10,
+                "message": "Harmonizing summary statistics (skipped automatically for confirmed OpenTargets studies)",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "flow_run_id": _prefect_flow_run.id,
+            }
+            save_analysis_state_task.submit(user_id, project_id, initial_state).result()
 
-        # Start LDSC + tissue analysis immediately after harmonization (runs in parallel)
-        logger.info(f"[PIPELINE] Starting LDSC + tissue analysis in parallel after harmonization")
-        ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(
-            harmonized_file, output_dir, project_id, user_id
-        )
-        logger.info(f"[PIPELINE] LDSC + tissue analysis started in background")
+            logger.info(f"[PIPELINE] Stage 1: Harmonization (Nextflow, or pass-through if opentargets_study_id is confirmed in OpenTargets' own tables)")
+            harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
+                gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
+                user_id=user_id, project_id=project_id, opentargets_study_id=opentargets_study_id
+            ).result()
+
+            # harmonize_sumstats_with_nextflow now returns just the file path.
+            # Keep tuple handling for backward compatibility with older task versions.
+            if isinstance(harmonized_file_result, tuple):
+                harmonized_file = harmonized_file_result[1]
+            else:
+                harmonized_file = harmonized_file_result
+
+            # Clean up the raw GWAS input file. For direct uploads it lives in its own
+            # data/uploads/<user_id>/ dir (safe to rmtree). But cache/library downloads
+            # (source_minio_path / source_download_url — e.g. OT-confirmed FinnGen
+            # studies) land the raw file directly in output_dir alongside the
+            # harmonized/remapped output, so rmtree-ing its parent would delete that
+            # output too. Only rmtree when the raw file's directory isn't output_dir
+            # (or the harmonized output itself); otherwise just remove the raw file.
+            if (
+                gwas_file_path
+                and os.path.exists(gwas_file_path)
+                and os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_file)
+            ):
+                try:
+                    parent_dir = os.path.dirname(gwas_file_path)
+                    if os.path.abspath(parent_dir) == os.path.abspath(output_dir):
+                        os.remove(gwas_file_path)
+                        logger.info(f"[PIPELINE] Cleaned up raw GWAS input file: {gwas_file_path}")
+                    else:
+                        _shutil.rmtree(parent_dir, ignore_errors=True)
+                        logger.info(f"[PIPELINE] Cleaned up raw GWAS temp dir: {parent_dir}")
+                except Exception as _cleanup_e:
+                    logger.warning(f"[PIPELINE] Could not clean up {gwas_file_path}: {_cleanup_e}")
+
+            # Start LDSC + tissue analysis immediately after harmonization (runs in parallel)
+            logger.info(f"[PIPELINE] Starting LDSC + tissue analysis in parallel after harmonization")
+            ldsc_tissue_future = run_combined_ldsc_tissue_analysis.submit(
+                harmonized_file, output_dir, project_id, user_id
+            )
+            logger.info(f"[PIPELINE] LDSC + tissue analysis started in background")
 
         # Check whether OpenTargets already has full study-level credible sets.
         # If so, skip filtering + COJO + SuSiE fine-mapping entirely and use OT
         # results directly — no need to load/filter the harmonized sumstats at all.
         has_ot_results = False
-        if opentargets_study_id:
+        if opentargets_study_id and not genotype_mode:
             _ot_check = CredibleSetsHandler()
             try:
                 has_ot_results = _ot_check.study_has_credible_sets(opentargets_study_id)
@@ -177,7 +246,9 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             save_analysis_state_task.submit(user_id, project_id, harmonization_state).result()
 
             logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
-            significant_df_result = filter_significant_variants.submit(harmonized_file, output_dir).result()
+            filter_kwargs = ({"p_threshold": effective["p_threshold"], "min_maf": effective["min_maf"],
+                              "min_n": effective["min_n"]} if genotype_mode else {})
+            significant_df_result = filter_significant_variants.submit(harmonized_file, output_dir, **filter_kwargs).result()
 
             # Extract the actual DataFrame
             if isinstance(significant_df_result, tuple):
@@ -199,7 +270,16 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
 
             config = Config.from_env()
             plink_dir = config.plink_dir_38
-            cojo_result = run_cojo_per_chromosome.submit(significant_df, plink_dir, output_dir, maf_threshold=maf_threshold, population=population, ref_genome=ref_genome).result()
+            if genotype_mode:
+                cojo_result = run_cojo_per_chromosome.submit(
+                    significant_df, plink_dir, output_dir, maf_threshold=effective["cojo_maf"],
+                    population=population, ref_genome=ref_genome,
+                    chromosomes=genotype_result["chromosome_codes"], ld_bfile=ld_bfile,
+                    cojo_p=effective["cojo_p"],
+                    genome_wide=effective["cojo_scope"] == "genome_wide",
+                ).result()
+            else:
+                cojo_result = run_cojo_per_chromosome.submit(significant_df, plink_dir, output_dir, maf_threshold=maf_threshold, population=population, ref_genome=ref_genome).result()
 
             # Extract the actual DataFrame
             if isinstance(cojo_result, tuple):
@@ -244,10 +324,19 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             logger.info(f"[PIPELINE] Stage 4: Multiprocessing fine-mapping")
             logger.info(f"[PIPELINE] Processing {len(cojo_results)} regions with {batch_size} regions per batch")
 
-            region_batches = create_region_batches(cojo_results, batch_size=batch_size)
+            # Genotype panel IDs are not chr:pos:a2:a1, so regions come from COJO's CHR/bp
+            region_batches = create_region_batches(
+                cojo_results, batch_size=batch_size,
+                **({"coords_from_columns": True} if genotype_mode else {})
+            )
             logger.info(f"[PIPELINE] Created {len(region_batches)} batches for {max_workers} worker processes")
 
-            sumstats_temp_file = save_sumstats_for_workers(significant_df, output_dir)
+            if genotype_mode and effective["sumstats_scope"] == "all_in_window":
+                # Every tested SNP in each window, not just the significant ones
+                worker_sumstats = subset_sumstats_to_windows(harmonized_file, cojo_results, effective["window_kb"])
+            else:
+                worker_sumstats = significant_df
+            sumstats_temp_file = save_sumstats_for_workers(worker_sumstats, output_dir)
 
             # Prepare batch data for multiprocessing
             batch_data_list = []
@@ -267,6 +356,18 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                         'plink_dir': plink_dir
                     }
                 })
+                if genotype_mode:
+                    batch_data[3]['finemap_params'].update({
+                        'window': effective["window_kb"],
+                        'L': effective["L"],
+                        'coverage': effective["coverage"],
+                        'min_abs_corr': effective["min_abs_corr"],
+                        'maf_threshold': effective["ld_maf"],
+                        'ld_bfile': ld_bfile,
+                        'estimate_residual_variance': effective["estimate_residual_variance"],
+                        'sample_size_stat': effective["sample_size_stat"],
+                        'drop_nonfinite_ld': effective["drop_nonfinite_ld"],
+                    })
                 batch_data_list.append(batch_data)
 
             logger.info(f"[PIPELINE] Submitting {len(batch_data_list)} batches to Dask Cluster...")
@@ -317,34 +418,38 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             # Wait for parallel LDSC + tissue analysis to complete
             logger.info(f"[PIPELINE] Stage 5: Waiting for LDSC + Tissue Analysis to complete")
 
-            # Update analysis state for waiting on LDSC + tissue analysis
-            ldsc_tissue_state = {
-                "status": "Running",
-                "stage": "LDSC_Tissue_Analysis",
-                "progress": 85,
-                "message": "Fine-mapping completed, waiting for LDSC and tissue analysis"
-            }
-            save_analysis_state_task.submit(user_id, project_id, ldsc_tissue_state).result()
-
-            try:
-                # Wait for the parallel LDSC + tissue analysis task to complete
-                ldsc_tissue_result = ldsc_tissue_future.result()
-
-                logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!")
-                logger.info(f"[PIPELINE] - Analysis run ID: {ldsc_tissue_result['analysis_run_id']}")
-                ldsc_status = "completed"
-
-            except Exception as ldsc_e:
-                logger.error(f"[PIPELINE] LDSC + tissue analysis failed: {str(ldsc_e)}")
-                # LDSC results are required for tissue selection and enrichment - fail the pipeline
-                failed_ldsc_state = {
-                    "status": "Failed",
-                    "stage": "LDSC_Analysis",
-                    "progress": 90,
-                    "message": f"LDSC tissue analysis failed: {str(ldsc_e)}. Tissue-specific enrichment will not be available.",
+            if ldsc_tissue_future is None:
+                logger.info(f"[PIPELINE] LDSC + tissue analysis skipped ({input_type} input, species={species})")
+                ldsc_status = "skipped"
+            else:
+                # Update analysis state for waiting on LDSC + tissue analysis
+                ldsc_tissue_state = {
+                    "status": "Running",
+                    "stage": "LDSC_Tissue_Analysis",
+                    "progress": 85,
+                    "message": "Fine-mapping completed, waiting for LDSC and tissue analysis"
                 }
-                save_analysis_state_task.submit(user_id, project_id, failed_ldsc_state).result()
-                raise RuntimeError(f"LDSC tissue analysis failed - required for enrichment: {str(ldsc_e)}")
+                save_analysis_state_task.submit(user_id, project_id, ldsc_tissue_state).result()
+
+                try:
+                    # Wait for the parallel LDSC + tissue analysis task to complete
+                    ldsc_tissue_result = ldsc_tissue_future.result()
+
+                    logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!")
+                    logger.info(f"[PIPELINE] - Analysis run ID: {ldsc_tissue_result['analysis_run_id']}")
+                    ldsc_status = "completed"
+
+                except Exception as ldsc_e:
+                    logger.error(f"[PIPELINE] LDSC + tissue analysis failed: {str(ldsc_e)}")
+                    # LDSC results are required for tissue selection and enrichment - fail the pipeline
+                    failed_ldsc_state = {
+                        "status": "Failed",
+                        "stage": "LDSC_Analysis",
+                        "progress": 90,
+                        "message": f"LDSC tissue analysis failed: {str(ldsc_e)}. Tissue-specific enrichment will not be available.",
+                    }
+                    save_analysis_state_task.submit(user_id, project_id, failed_ldsc_state).result()
+                    raise RuntimeError(f"LDSC tissue analysis failed - required for enrichment: {str(ldsc_e)}")
 
             # Save completed analysis state
             completed_state = {
@@ -353,6 +458,12 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 "message": "Analysis completed successfully",
                 "ldsc_status": ldsc_status
             }
+            if genotype_mode:
+                completed_state.update({
+                    "input_type": input_type,
+                    "species": species,
+                    "n_samples": genotype_result["n_samples"],
+                })
             save_analysis_state_task.submit(user_id, project_id, completed_state).result()
 
             send_pipeline_notification(user_email, project_name, project_id, success=True)
