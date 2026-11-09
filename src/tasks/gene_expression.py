@@ -1060,13 +1060,15 @@ def run_combined_ldsc_tissue_analysis(munged_file, output_dir, project_id, user_
         
         # Step 2: Run LDSC analysis
         logger.info("[PIPELINE] Running LDSC heritability analysis...")
-        output_prefix = f"{output_dir}/ldsc_project_analysis"
+        # Per-run directory so a leftover LDSC from an earlier run never shares files with this one
+        results_dir = f"{output_dir}/ldsc_runs/{analysis_run_id}"
+        output_prefix = f"{results_dir}/ldsc_project_analysis"
         run_ldsc_analysis(user_id, project_id, ldsc_dir, munged_file, output_prefix)
         
         # Step 3: Process LDSC results
         logger.info("[PIPELINE] Processing LDSC results...")
         top_tissues, ldsc_results_data = process_ldsc_results(
-            user_id, project_id, output_dir, "ldsc_project_analysis", 10
+            user_id, project_id, results_dir, "ldsc_project_analysis", 10
         )
 
         storage = deps.get("storage")

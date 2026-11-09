@@ -8,7 +8,7 @@ import numpy as np
 import hashlib
 import uuid
 from dask.distributed import get_worker
-from prefect.runtime import task_run
+from prefect.runtime import flow_run, task_run
 
 
 POPULATION_LABELS: dict[str, str] = {
@@ -255,7 +255,8 @@ def record_analysis_event(user_id, project_id, stage, message, details=None, **f
             message = f"{message} (retry {attempt - 1})"
             details = {**(details or {}), "attempt": attempt}
         get_deps()["projects"].add_analysis_event(
-            user_id, project_id, stage, message, details=details, **fields
+            user_id, project_id, stage, message, details=details,
+            flow_run_id=flow_run.id, **fields
         )
     except Exception as exc:
         logger.warning(f"Could not record analysis event for project {project_id}: {exc}")

@@ -1,9 +1,11 @@
 import os
 import pandas as pd
 from prefect import task
+from prefect.runtime import flow_run
 from loguru import logger
 import gzip
 import re
+from src.pipeline_stages import harmonized_object_key
 from src.utils import (
     analysis_state_for_public_api,
     emit_analysis_update,
@@ -46,6 +48,7 @@ def prepare_gwas_file_task(
         "stage": "File_upload",
         "progress": 3,
         "message": "Uploading or preparing GWAS file...",
+        "flow_run_id": flow_run.id,
     }
     projects_handler.save_analysis_state(user_id, project_id, uploading_state)
     emit_analysis_update(user_id, project_id, uploading_state)
@@ -148,6 +151,40 @@ def create_analysis_result_task(user_id, project_id, combined_results, output_di
         logger.error(f"Error saving analysis results: {str(e)}")
         raise
 
+
+
+class HarmonizedFileMissingError(FileNotFoundError):
+    """The harmonized file is gone both locally and from object storage."""
+
+
+@task()
+def ensure_harmonized_file_task(user_id, project_id, output_dir, file_name):
+    """Local path of a recorded harmonized file, downloading it from storage if needed."""
+    deps = get_deps()
+    if not deps["projects"].get_projects(user_id, project_id):
+        raise RuntimeError(f"Project {project_id} no longer exists")
+    path = os.path.join(output_dir, file_name)
+    if os.path.exists(path):
+        return path
+    storage = deps.get("storage")
+    object_key = harmonized_object_key(user_id, project_id, file_name)
+    if not storage or not storage.exists(object_key):
+        raise HarmonizedFileMissingError(f"Harmonized file {file_name} is no longer available")
+    if not storage.download_file(object_key, path):
+        raise RuntimeError(f"Could not download {object_key}")
+    return path
+
+
+@task()
+def reset_analysis_outputs_task(user_id, project_id, targets):
+    """Delete stored outputs that a resumed run will produce again."""
+    analysis_handler = get_deps()["analysis"]
+    deletes = {
+        "credible_sets": analysis_handler.delete_credible_sets,
+        "analysis_results": analysis_handler.delete_analysis_results,
+    }
+    for target in targets:
+        deletes[target](user_id, project_id)
 
 
 @task()

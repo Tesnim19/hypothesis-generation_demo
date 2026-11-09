@@ -37,11 +37,21 @@ from src.db import (
     HypothesisHandler,
     ProjectHandler,
 )
+from src.db.project_handler import cancel_flow_run
+from src.pipeline_stages import (
+    STAGE_INDEX,
+    STAGE_LABELS,
+    cleanup_targets,
+    harmonized_object_key,
+    rerun_params,
+)
 from src.tasks.project import count_gwas_records, get_project_with_full_data
 from src.api.auth import get_current_user_id, get_current_user_email
 from src.api.dependencies import get_demo_template_handler, parse_thread_id
 from src.api.schemas import (
     AnalysisPipelineStartResponse,
+    AnalysisResumeRequest,
+    AnalysisResumeResponse,
     BulkDeleteProjectsOkResponse,
     BulkDeleteProjectsPartialResponse,
     BulkDeleteProjectsRequest,
@@ -59,6 +69,7 @@ from src.run_deployment import invoke_analysis_pipeline_deployment
 from src.utils import (
     allowed_file,
     compute_file_md5,
+    emit_analysis_update,
     get_population_label,
     get_shared_temp_dir,
     normalize_status_responses,
@@ -67,6 +78,11 @@ from src.utils import (
 )
 
 router = APIRouter(tags=["projects"])
+
+RESUME_FLOW_PARAMETERS = (
+    "maf_threshold", "p_value_threshold", "seed", "window", "L", "coverage",
+    "min_abs_corr", "batch_size", "max_workers", "sample_size", "opentargets_study_id",
+)
 
 SAMPLE_SIZE_SOURCE_LABELS = {
     "user_provided": "provided by you",
@@ -313,6 +329,146 @@ async def get_analysis_events(
         raise HTTPException(status_code=404, detail="Project not found or access denied")
     events = projects.get_analysis_events(current_user_id, project_id)
     return JSONResponse(content=serialize_datetime_fields(events))
+
+
+def _resume_overrides(body: AnalysisResumeRequest, state: dict, previous_parameters: dict) -> dict:
+    """Validated parameter overrides for a resume request."""
+    overrides = body.model_dump(exclude={"from_stage"}, exclude_none=True)
+    not_rerun = set(overrides) - rerun_params(body.from_stage)
+    if not_rerun:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{', '.join(sorted(not_rerun))} cannot be changed when restarting "
+                f"from {STAGE_LABELS[body.from_stage]}"
+            ),
+        )
+    if "p_value_threshold" in overrides:
+        overrides["p_value_threshold"] = _parse_p_value_threshold(overrides["p_value_threshold"])
+    # A study that failed for lack of significant variants would fail again at the same threshold
+    min_p_value = (state.get("error_detail") or {}).get("min_p_value")
+    threshold = overrides.get("p_value_threshold", previous_parameters.get("p_value_threshold"))
+    if min_p_value is not None and threshold <= min_p_value:
+        raise HTTPException(
+            status_code=400,
+            detail=f"p_value_threshold must be above the most significant p-value ({min_p_value:.2g})",
+        )
+    return overrides
+
+
+def _harmonized_file_available(projects, storage, user_id, project_id, file_name) -> bool:
+    analysis_path = projects.get_project_analysis_path(user_id, project_id)
+    if os.path.exists(os.path.join(analysis_path, file_name)):
+        return True
+    return bool(storage and storage.exists(harmonized_object_key(user_id, project_id, file_name)))
+
+
+@router.post(
+    "/projects/{project_id}/analysis/resume",
+    status_code=202,
+    response_model=AnalysisResumeResponse,
+    summary="Restart a failed analysis from a pipeline stage",
+)
+async def resume_analysis(
+    project_id: str,
+    body: AnalysisResumeRequest,
+    current_user_id: str = Depends(get_current_user_id),
+    projects: ProjectHandler = Depends(get_project_handler),
+    demo_templates: DemoTemplateHandler = Depends(get_demo_template_handler),
+    storage=Depends(get_storage),
+):
+    project = ObjectId.is_valid(project_id) and projects.get_projects(current_user_id, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found or access denied")
+    if demo_templates.is_registered_template_project(project_id):
+        raise HTTPException(status_code=403, detail="Demo template projects cannot be restarted")
+    if body.from_stage not in STAGE_INDEX:
+        raise HTTPException(status_code=400, detail=f"Unknown stage: {body.from_stage}")
+
+    state = projects.load_analysis_state(current_user_id, project_id) or {}
+    if state.get("status") != "Failed":
+        raise HTTPException(status_code=409, detail="Only a failed analysis can be restarted")
+    stage_label = STAGE_LABELS[body.from_stage]
+    if body.from_stage not in state.get("resumable_from", []):
+        raise HTTPException(
+            status_code=409, detail=f"This analysis cannot be restarted from {stage_label}"
+        )
+
+    previous_parameters = project.get("analysis_parameters") or {}
+    overrides = _resume_overrides(body, state, previous_parameters)
+    parameters = {**previous_parameters, **overrides}
+    if "credible_sets" in cleanup_targets(body.from_stage) and projects.has_hypotheses(
+        current_user_id, project_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Hypotheses already use this project's results; start a new analysis instead",
+        )
+    if not _harmonized_file_available(
+        projects, storage, current_user_id, project_id, state["artifacts"]["harmonized_file"]
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Intermediate files are no longer available, start a new analysis",
+        )
+
+    if state.get("flow_run_id"):
+        cancel_flow_run(state["flow_run_id"])
+    queued = projects.claim_analysis_resume(current_user_id, project_id, state, body.from_stage)
+    if not queued:
+        raise HTTPException(status_code=409, detail="A restart is already in progress")
+    emit_analysis_update(current_user_id, project_id, queued)
+    if overrides:
+        projects.update_analysis_parameters(current_user_id, project_id, overrides)
+
+    try:
+        loop = asyncio.get_running_loop()
+        flow_run = await loop.run_in_executor(
+            None,
+            lambda: invoke_analysis_pipeline_deployment(
+                user_id=current_user_id,
+                project_id=project_id,
+                ref_genome=project.get("ref_genome"),
+                population=project.get("population"),
+                user_email=project.get("user_email"),
+                project_name=project.get("name"),
+                resume_from=body.from_stage,
+                artifacts=queued["artifacts"],
+                **{name: parameters[name] for name in RESUME_FLOW_PARAMETERS if name in parameters},
+            ),
+        )
+    except Exception as exc:
+        logger.error(f"[API] Could not restart analysis for project {project_id}: {exc}")
+        failed = {
+            "status": "Failed",
+            "message": "The analysis could not be started",
+            "resumable_from": [body.from_stage],
+        }
+        projects.save_analysis_state(current_user_id, project_id, failed)
+        emit_analysis_update(current_user_id, project_id, failed)
+        raise HTTPException(status_code=500, detail="The analysis could not be started") from exc
+
+    flow_run_id = str(flow_run.id)
+    projects.save_analysis_state(current_user_id, project_id, {"flow_run_id": flow_run_id})
+    message = f"Restarted from {stage_label}"
+    if "p_value_threshold" in overrides:
+        message += (
+            f" with p < {overrides['p_value_threshold']:g}"
+            f" (was p < {previous_parameters['p_value_threshold']:g})"
+        )
+    projects.add_analysis_event(
+        current_user_id, project_id, "Setup", message,
+        details={"from_stage": body.from_stage, **overrides},
+        skip_if_finished=False, flow_run_id=flow_run_id,
+    )
+
+    return AnalysisResumeResponse(
+        status="started",
+        project_id=project_id,
+        from_stage=body.from_stage,
+        flow_run_id=flow_run_id,
+        p_value_threshold=parameters.get("p_value_threshold"),
+    )
 
 
 @router.post(
@@ -693,6 +849,7 @@ async def post_analysis_pipeline(
             "sample_size_source": sample_size_resolution.source,
             "sample_size_message": sample_size_resolution.message,
             "sample_size_is_user_provided": sample_size_resolution.is_user_provided,
+            "opentargets_study_id": opentargets_study_id,
         }
 
         project_id = projects.create_project(
@@ -732,7 +889,9 @@ async def post_analysis_pipeline(
             f"library_entry={not is_uploaded and gwas_entry is not None})"
         )
 
-        projects.save_analysis_state(current_user_id, project_id, {"status": "Queued"})
+        projects.save_analysis_state(
+            current_user_id, project_id, {"status": "Queued", "flow_run_id": None}
+        )
         sample_size_label = SAMPLE_SIZE_SOURCE_LABELS.get(
             sample_size_resolution.source, sample_size_resolution.source
         )

@@ -7,12 +7,15 @@ from loguru import logger
 from prefect import flow
 from prefect.runtime import flow_run as _prefect_flow_run
 from prefect_dask import DaskTaskRunner
+from src.pipeline_stages import STAGE_LABELS, cleanup_targets, resumable_from, runs_stage
 from src.utils import analysis_stage_label, get_deps
 from src.services.mail import send_pipeline_notification
 
 from src.config import Config
 from src.tasks import (
     get_project_analysis_path_task,
+    ensure_harmonized_file_task,
+    reset_analysis_outputs_task,
     prepare_gwas_file_task,
     harmonize_sumstats_with_nextflow,
     run_combined_ldsc_tissue_analysis,
@@ -29,6 +32,7 @@ from src.tasks import (
 )
 from src.tasks.analysis import NoSignificantVariantsError, count_credible_sets
 from src.tasks.gene_expression import LdscExitError
+from src.tasks.project import HarmonizedFileMissingError
 from src.db.credible_sets_handler import CredibleSetsHandler
 
 
@@ -39,6 +43,12 @@ def _ldsc_failure_cause(error):
     if isinstance(error, LdscExitError):
         return "LDSC exited with an error"
     return "Unexpected error during LDSC"
+
+
+RESUME_STATES = {
+    "filtering": {"stage": "Filtering", "progress": 30},
+    "ldsc": {"stage": "LDSC_Tissue_Analysis", "progress": 85},
+}
 
 
 @flow(log_prints=True,
@@ -55,10 +65,12 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                            file_storage_key=None, file_id_new=None,
                            file_source_minio_path=None, file_source_download_url=None,
                            file_minio_cache_key=None, file_gwas_library_id=None,
-                           opentargets_study_id=None):
+                           opentargets_study_id=None, resume_from=None, artifacts=None):
     """
     Complete analysis pipeline flow using Prefect for orchestration
-    but multiprocessing for fine-mapping batches (R safety)
+    but multiprocessing for fine-mapping batches (R safety).
+
+    With resume_from, earlier stages are skipped and their recorded artifacts reused.
     """
 
     logger.info(f"[PIPELINE] Starting Prefect analysis pipeline with multiprocessing fine-mapping")
@@ -68,78 +80,117 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
     logger.info(f"[PIPELINE] Max workers: {max_workers}")
     logger.info(f"[PIPELINE] Parameters: maf={maf_threshold}, p={p_value_threshold}, seed={seed}, window={window}kb, L={L}, coverage={coverage}, min_abs_corr={min_abs_corr}, N={sample_size}")
 
+    flow_run_id = _prefect_flow_run.id
+    started_at = datetime.now(timezone.utc).isoformat()
+    artifacts = dict(artifacts or {})
     last_state = {}
 
     def save_state(state):
         nonlocal last_state
+        state = {**state, "flow_run_id": flow_run_id}
+        if state.get("status") == "Failed":
+            state["resumable_from"] = resumable_from(
+                {**state, "artifacts": artifacts, "resumed_from": resume_from}
+            )
         save_analysis_state_task.submit(user_id, project_id, state).result()
         last_state = state
+
+    def record_artifacts(**recorded):
+        artifacts.update(recorded)
+        save_analysis_state_task.submit(
+            user_id, project_id, {"artifacts": dict(artifacts), "flow_run_id": flow_run_id}
+        ).result()
 
     try:
         # Get project-specific output directory (using Prefect task)
         output_dir = get_project_analysis_path_task.submit(user_id, project_id).result()
         logger.info(f"[PIPELINE] Using output directory: {output_dir}")
 
-        if file_needs_processing:
-            logger.info(f"[PIPELINE] Stage 0: preparing GWAS file")
-            gwas_file_path = prepare_gwas_file_task.submit(
-                user_id, project_id, file_metadata_id, gwas_file_path,
-                storage_key=file_storage_key,
-                file_id_new=file_id_new,
-                source_minio_path=file_source_minio_path,
-                source_download_url=file_source_download_url,
-                minio_cache_key=file_minio_cache_key,
-                gwas_library_id=file_gwas_library_id,
-                output_dir=output_dir,
-            ).result()
-            logger.info(f"[PIPELINE] Stage 0 complete: file ready at {gwas_file_path}")
-
-        # Save initial analysis state
-        initial_state = {
-            "status": "Running",
-            "stage": "Harmonization",
-            "progress": 10,
-            "message": "Harmonizing summary statistics",
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "flow_run_id": _prefect_flow_run.id,
-        }
-        save_state(initial_state)
-
-        logger.info(f"[PIPELINE] Stage 1: Harmonization (Nextflow, or pass-through if opentargets_study_id is confirmed in OpenTargets' own tables)")
-        harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
-            gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
-            user_id=user_id, project_id=project_id, opentargets_study_id=opentargets_study_id
-        ).result()
-
-        # harmonize_sumstats_with_nextflow now returns just the file path.
-        # Keep tuple handling for backward compatibility with older task versions.
-        if isinstance(harmonized_file_result, tuple):
-            harmonized_file = harmonized_file_result[1]
-        else:
-            harmonized_file = harmonized_file_result
-
-        # Clean up the raw GWAS input file. For direct uploads it lives in its own
-        # data/uploads/<user_id>/ dir (safe to rmtree). But cache/library downloads
-        # (source_minio_path / source_download_url — e.g. OT-confirmed FinnGen
-        # studies) land the raw file directly in output_dir alongside the
-        # harmonized/remapped output, so rmtree-ing its parent would delete that
-        # output too. Only rmtree when the raw file's directory isn't output_dir
-        # (or the harmonized output itself); otherwise just remove the raw file.
-        if (
-            gwas_file_path
-            and os.path.exists(gwas_file_path)
-            and os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_file)
-        ):
+        if resume_from:
+            logger.info(f"[PIPELINE] Resuming from {resume_from}")
+            save_state({
+                "status": "Running",
+                **RESUME_STATES[resume_from],
+                "message": f"Restarting from {STAGE_LABELS[resume_from]}",
+                "started_at": started_at,
+            })
             try:
-                parent_dir = os.path.dirname(gwas_file_path)
-                if os.path.abspath(parent_dir) == os.path.abspath(output_dir):
-                    os.remove(gwas_file_path)
-                    logger.info(f"[PIPELINE] Cleaned up raw GWAS input file: {gwas_file_path}")
-                else:
-                    _shutil.rmtree(parent_dir, ignore_errors=True)
-                    logger.info(f"[PIPELINE] Cleaned up raw GWAS temp dir: {parent_dir}")
-            except Exception as _cleanup_e:
-                logger.warning(f"[PIPELINE] Could not clean up {gwas_file_path}: {_cleanup_e}")
+                harmonized_file = ensure_harmonized_file_task.submit(
+                    user_id, project_id, output_dir, artifacts["harmonized_file"]
+                ).result()
+            except HarmonizedFileMissingError:
+                artifacts.pop("harmonized_file")
+                save_state({
+                    **last_state,
+                    "status": "Failed",
+                    "message": "Intermediate files are no longer available, start a new analysis",
+                    "artifacts": artifacts,
+                })
+                raise
+            targets = cleanup_targets(resume_from)
+            reset_analysis_outputs_task.submit(user_id, project_id, targets).result()
+            for target in targets:
+                artifacts.pop(target, None)
+        else:
+            if file_needs_processing:
+                logger.info(f"[PIPELINE] Stage 0: preparing GWAS file")
+                gwas_file_path = prepare_gwas_file_task.submit(
+                    user_id, project_id, file_metadata_id, gwas_file_path,
+                    storage_key=file_storage_key,
+                    file_id_new=file_id_new,
+                    source_minio_path=file_source_minio_path,
+                    source_download_url=file_source_download_url,
+                    minio_cache_key=file_minio_cache_key,
+                    gwas_library_id=file_gwas_library_id,
+                    output_dir=output_dir,
+                ).result()
+                logger.info(f"[PIPELINE] Stage 0 complete: file ready at {gwas_file_path}")
+
+            # Save initial analysis state
+            save_state({
+                "status": "Running",
+                "stage": "Harmonization",
+                "progress": 10,
+                "message": "Harmonizing summary statistics",
+                "started_at": started_at,
+            })
+
+            logger.info(f"[PIPELINE] Stage 1: Harmonization (Nextflow, or pass-through if opentargets_study_id is confirmed in OpenTargets' own tables)")
+            harmonized_file_result = harmonize_sumstats_with_nextflow.submit(
+                gwas_file_path, output_dir, ref_genome=ref_genome, sample_size=sample_size,
+                user_id=user_id, project_id=project_id, opentargets_study_id=opentargets_study_id
+            ).result()
+
+            # harmonize_sumstats_with_nextflow now returns just the file path.
+            # Keep tuple handling for backward compatibility with older task versions.
+            if isinstance(harmonized_file_result, tuple):
+                harmonized_file = harmonized_file_result[1]
+            else:
+                harmonized_file = harmonized_file_result
+            record_artifacts(harmonized_file=os.path.basename(harmonized_file))
+
+            # Clean up the raw GWAS input file. For direct uploads it lives in its own
+            # data/uploads/<user_id>/ dir (safe to rmtree). But cache/library downloads
+            # (source_minio_path / source_download_url — e.g. OT-confirmed FinnGen
+            # studies) land the raw file directly in output_dir alongside the
+            # harmonized/remapped output, so rmtree-ing its parent would delete that
+            # output too. Only rmtree when the raw file's directory isn't output_dir
+            # (or the harmonized output itself); otherwise just remove the raw file.
+            if (
+                gwas_file_path
+                and os.path.exists(gwas_file_path)
+                and os.path.abspath(gwas_file_path) != os.path.abspath(harmonized_file)
+            ):
+                try:
+                    parent_dir = os.path.dirname(gwas_file_path)
+                    if os.path.abspath(parent_dir) == os.path.abspath(output_dir):
+                        os.remove(gwas_file_path)
+                        logger.info(f"[PIPELINE] Cleaned up raw GWAS input file: {gwas_file_path}")
+                    else:
+                        _shutil.rmtree(parent_dir, ignore_errors=True)
+                        logger.info(f"[PIPELINE] Cleaned up raw GWAS temp dir: {parent_dir}")
+                except Exception as _cleanup_e:
+                    logger.warning(f"[PIPELINE] Could not clean up {gwas_file_path}: {_cleanup_e}")
 
         def start_ldsc_tissue_analysis():
             logger.info("[PIPELINE] Starting LDSC + tissue analysis in background")
@@ -147,11 +198,50 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 harmonized_file, output_dir, project_id, user_id
             )
 
+        def finish(ldsc_tissue_future):
+            logger.info(f"[PIPELINE] Stage 5: Waiting for LDSC + Tissue Analysis to complete")
+            save_state({
+                "status": "Running",
+                "stage": "LDSC_Tissue_Analysis",
+                "progress": 85,
+                "message": "Waiting for LDSC tissue analysis to finish"
+            })
+
+            try:
+                ldsc_tissue_result = ldsc_tissue_future.result()
+                logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!")
+                logger.info(f"[PIPELINE] - Analysis run ID: {ldsc_tissue_result['analysis_run_id']}")
+            except Exception as ldsc_e:
+                logger.error(f"[PIPELINE] LDSC + tissue analysis failed: {str(ldsc_e)}")
+                # LDSC results are required for tissue selection and enrichment - fail the pipeline
+                save_state({
+                    "status": "Failed",
+                    "stage": "LDSC_Analysis",
+                    "progress": 90,
+                    "message": "LDSC tissue analysis failed, so tissue-specific enrichment is not available",
+                    "error_detail": {"error": _ldsc_failure_cause(ldsc_e)},
+                })
+                raise RuntimeError(f"LDSC tissue analysis failed - required for enrichment: {str(ldsc_e)}")
+
+            save_state({
+                "status": "Completed",
+                "progress": 100,
+                "message": "Analysis completed successfully",
+                "ldsc_status": "completed"
+            })
+            send_pipeline_notification(
+                user_email, project_name, project_id, success=True, restarted=bool(resume_from)
+            )
+
+        if not runs_stage("fine_mapping", resume_from):
+            finish(start_ldsc_tissue_analysis())
+            return {}
+
         # Check whether OpenTargets already has full study-level credible sets.
         # If so, skip filtering + COJO + SuSiE fine-mapping entirely and use OT
         # results directly — no need to load/filter the harmonized sumstats at all.
         has_ot_results = False
-        if opentargets_study_id:
+        if opentargets_study_id and not resume_from:
             _ot_check = CredibleSetsHandler()
             try:
                 has_ot_results = _ot_check.study_has_credible_sets(opentargets_study_id)
@@ -177,9 +267,10 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                     f"Using OpenTargets fine-mapped credible sets for {opentargets_study_id}; "
                     "COJO and fine-mapping skipped"
                 ),
-                "started_at": initial_state["started_at"],
+                "started_at": started_at,
             }
             save_state(ot_state)
+            record_artifacts(credible_sets_source="opentargets")
 
             combined_results = get_results_from_opentargets_task.submit(
                 user_id, project_id, opentargets_study_id, coverage=coverage,
@@ -189,15 +280,15 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 successful_batches = 1
                 ldsc_tissue_future = start_ldsc_tissue_analysis()
         else:
-            # Update analysis state after harmonization
-            harmonization_state = {
-                "status": "Running",
-                "stage": "Filtering",
-                "progress": 30,
-                "message": "Harmonization completed, filtering significant variants",
-                "started_at": initial_state["started_at"]
-            }
-            save_state(harmonization_state)
+            if not resume_from:
+                save_state({
+                    "status": "Running",
+                    "stage": "Filtering",
+                    "progress": 30,
+                    "message": "Harmonization completed, filtering significant variants",
+                    "started_at": started_at,
+                })
+            record_artifacts(credible_sets_source="finemapping")
 
             logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
             try:
@@ -355,55 +446,14 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
 
             # Save results using Prefect tasks
             results_file = create_analysis_result_task.submit(user_id, project_id, combined_results, output_dir).result()
+            record_artifacts(credible_sets=True)
 
             # Summary statistics
             total_variants = len(combined_results)
             high_pip_variants = len(combined_results[combined_results['PIP'] > 0.5])
             total_credible_sets = combined_results.get('credible_set', pd.Series([0])).max()
 
-            # Wait for parallel LDSC + tissue analysis to complete
-            logger.info(f"[PIPELINE] Stage 5: Waiting for LDSC + Tissue Analysis to complete")
-
-            # Update analysis state for waiting on LDSC + tissue analysis
-            ldsc_tissue_state = {
-                "status": "Running",
-                "stage": "LDSC_Tissue_Analysis",
-                "progress": 85,
-                "message": "Waiting for LDSC tissue analysis to finish"
-            }
-            save_state(ldsc_tissue_state)
-
-            try:
-                # Wait for the parallel LDSC + tissue analysis task to complete
-                ldsc_tissue_result = ldsc_tissue_future.result()
-
-                logger.info(f"[PIPELINE] LDSC + tissue analysis completed successfully!")
-                logger.info(f"[PIPELINE] - Analysis run ID: {ldsc_tissue_result['analysis_run_id']}")
-                ldsc_status = "completed"
-
-            except Exception as ldsc_e:
-                logger.error(f"[PIPELINE] LDSC + tissue analysis failed: {str(ldsc_e)}")
-                # LDSC results are required for tissue selection and enrichment - fail the pipeline
-                failed_ldsc_state = {
-                    "status": "Failed",
-                    "stage": "LDSC_Analysis",
-                    "progress": 90,
-                    "message": "LDSC tissue analysis failed, so tissue-specific enrichment is not available",
-                    "error_detail": {"error": _ldsc_failure_cause(ldsc_e)},
-                }
-                save_state(failed_ldsc_state)
-                raise RuntimeError(f"LDSC tissue analysis failed - required for enrichment: {str(ldsc_e)}")
-
-            # Save completed analysis state
-            completed_state = {
-                "status": "Completed",
-                "progress": 100,
-                "message": "Analysis completed successfully",
-                "ldsc_status": ldsc_status
-            }
-            save_state(completed_state)
-
-            send_pipeline_notification(user_email, project_name, project_id, success=True)
+            finish(ldsc_tissue_future)
 
             logger.info(f"[PIPELINE] Analysis completed successfully!")
             logger.info(f"[PIPELINE] - Total variants: {total_variants}")
@@ -461,6 +511,6 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 logger.error(f"[PIPELINE] Failed to save error state: {str(state_e)}")
         send_pipeline_notification(
             user_email, project_name, project_id,
-            success=False, detail=failure_message,
+            success=False, detail=failure_message, restarted=bool(resume_from),
         )
         raise

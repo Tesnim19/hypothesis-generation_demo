@@ -17,6 +17,7 @@ import optuna
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.config import Config
 from src.utils import transform_credible_sets_to_locuszoom, get_deps, get_shared_temp_dir, record_analysis_event
+from src.pipeline_stages import harmonized_object_key
 
 
 logging.basicConfig(level=logging.INFO)
@@ -473,7 +474,7 @@ NR==1 {
         # Upload to MinIO
         if storage and user_id and project_id:
             harmonized_filename = os.path.basename(harmonized_file_path)
-            object_key = f"harmonized/{user_id}/{project_id}/{harmonized_filename}"
+            object_key = harmonized_object_key(user_id, project_id, harmonized_filename)
 
             upload_success = storage.upload_file(harmonized_file_path, object_key)
             if upload_success:

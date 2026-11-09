@@ -1,6 +1,8 @@
 import asyncio
 import json
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +10,7 @@ from bson import ObjectId
 from fastapi import HTTPException
 
 from src.api.routes import projects as projects_routes
+from src.api.schemas import AnalysisResumeRequest
 from src import utils
 from src.db.project_handler import ProjectHandler
 from src.utils import analysis_state_for_public_api
@@ -205,7 +208,7 @@ def test_save_analysis_state_records_an_event(state, stage, level):
 
     handler.add_analysis_event.assert_called_once_with(
         "viewer", PROJECT_ID, stage=stage, message=state["message"], level=level,
-        details=state.get("error_detail"), skip_if_finished=False,
+        details=state.get("error_detail"), skip_if_finished=False, flow_run_id=None,
     )
 
 
@@ -253,10 +256,162 @@ def test_record_analysis_event_marks_task_retries(monkeypatch):
     projects = MagicMock()
     monkeypatch.setattr(utils, "get_deps", lambda: {"projects": projects})
     monkeypatch.setattr(utils, "task_run", MagicMock(run_count=2))
+    monkeypatch.setattr(utils, "flow_run", MagicMock(id="run-1"))
 
     utils.record_analysis_event("viewer", PROJECT_ID, "Fine_mapping", "Batch 1/2 done", details={"regions": 3})
 
     projects.add_analysis_event.assert_called_once_with(
         "viewer", PROJECT_ID, "Fine_mapping", "Batch 1/2 done (retry 1)",
-        details={"regions": 3, "attempt": 2},
+        details={"regions": 3, "attempt": 2}, flow_run_id="run-1",
     )
+
+
+def test_reconcile_to_failed_records_where_the_run_can_resume():
+    handler = _handler()
+    handler.projects_collection.find_one.return_value = {"analysis_state": {
+        "status": "Running", "stage": "Cojo", "artifacts": {"harmonized_file": "harmonized.tsv.gz"},
+        "updated_at": datetime.now(timezone.utc) - timedelta(days=1),
+    }}
+    handler.projects_collection.update_one.return_value.modified_count = 1
+
+    handler.load_analysis_state("viewer", PROJECT_ID)
+
+    update = handler.projects_collection.update_one.call_args.args[1]
+    assert update["$set"]["analysis_state.resumable_from"] == ["filtering"]
+
+
+@pytest.mark.parametrize("modified, claimed", [(1, True), (0, False)])
+def test_claim_analysis_resume_replaces_the_failed_state_once(modified, claimed):
+    handler = _handler()
+    handler.projects_collection.update_one.return_value.modified_count = modified
+    failed = {"status": "Failed", "stage": "LDSC_Analysis", "flow_run_id": "run-1",
+              "error_detail": {"error": "LDSC exited with an error"}, "resume_count": 1,
+              "artifacts": {"harmonized_file": "harmonized.tsv.gz"}}
+
+    queued = handler.claim_analysis_resume("viewer", PROJECT_ID, failed, "ldsc")
+
+    query, update = handler.projects_collection.update_one.call_args.args
+    assert query["analysis_state.status"] == "Failed"
+    assert query["analysis_state.flow_run_id"] == "run-1"
+    state = update["$set"]["analysis_state"]
+    assert set(state) == {"status", "message", "resumed_from", "resume_count", "artifacts", "updated_at"}
+    assert state["resume_count"] == 2
+    assert (queued is not None) == claimed
+
+
+@pytest.mark.parametrize("event_run, current_run, stored", [
+    ("run-1", "run-1", True),
+    (None, "run-1", True),
+    ("run-old", "run-1", False),
+    ("run-old", None, False),
+])
+def test_add_analysis_event_drops_events_from_other_runs(monkeypatch, event_run, current_run, stored):
+    handler = _handler()
+    handler.projects_collection.find_one.return_value = {"analysis_state": {"flow_run_id": current_run}}
+    monkeypatch.setattr("src.db.project_handler.emit_analysis_event", MagicMock())
+
+    handler.add_analysis_event("viewer", PROJECT_ID, "LDSC_Analysis", "Top tissues", flow_run_id=event_run)
+
+    assert handler.analysis_events_collection.insert_one.called == stored
+
+
+FAILED_AT_FILTERING = {
+    "status": "Failed", "stage": "Filtering", "flow_run_id": "run-1",
+    "artifacts": {"harmonized_file": "harmonized.tsv.gz"}, "resumable_from": ["filtering"],
+    "error_detail": {"error_type": "no_significant_variants", "min_p_value": 2e-7, "variants_below_1e5": 3},
+}
+
+
+def _resume_mocks(monkeypatch):
+    projects = MagicMock()
+    projects.get_projects.return_value = {
+        "name": "Wrist", "user_email": "user@example.com", "population": "EUR", "ref_genome": "GRCh38",
+        "analysis_parameters": {"p_value_threshold": 5e-8, "maf_threshold": 0.01, "sample_size": 1000,
+                                "sample_size_source": "user_provided"},
+    }
+    projects.load_analysis_state.return_value = deepcopy(FAILED_AT_FILTERING)
+    projects.has_hypotheses.return_value = False
+    projects.claim_analysis_resume.return_value = {"status": "Queued", "artifacts": FAILED_AT_FILTERING["artifacts"]}
+    mocks = SimpleNamespace(
+        projects=projects,
+        templates=MagicMock(**{"is_registered_template_project.return_value": False}),
+        storage=MagicMock(**{"exists.return_value": False}),
+        invoke=MagicMock(return_value=MagicMock(id="run-2")),
+        cancel=MagicMock(),
+        file_exists=True,
+    )
+    monkeypatch.setattr(projects_routes, "invoke_analysis_pipeline_deployment", mocks.invoke)
+    monkeypatch.setattr(projects_routes, "cancel_flow_run", mocks.cancel)
+    monkeypatch.setattr(projects_routes, "emit_analysis_update", MagicMock())
+    monkeypatch.setattr(projects_routes.os.path, "exists", lambda _path: mocks.file_exists)
+    return mocks
+
+
+def _resume(mocks, **body):
+    return asyncio.run(projects_routes.resume_analysis(
+        PROJECT_ID, AnalysisResumeRequest(**body), "viewer",
+        mocks.projects, mocks.templates, mocks.storage,
+    ))
+
+
+@pytest.mark.parametrize("setup, body, status_code", [
+    (lambda m: m.projects.get_projects.configure_mock(return_value=None), {"from_stage": "filtering"}, 404),
+    (lambda m: m.templates.is_registered_template_project.configure_mock(return_value=True),
+     {"from_stage": "filtering"}, 403),
+    (lambda m: None, {"from_stage": "unknown"}, 400),
+    (lambda m: m.projects.load_analysis_state.return_value.update(status="Running"),
+     {"from_stage": "filtering", "p_value_threshold": 1e-6}, 409),
+    (lambda m: None, {"from_stage": "ldsc"}, 409),
+    (lambda m: m.projects.load_analysis_state.return_value.update(resumable_from=["ldsc"], error_detail=None),
+     {"from_stage": "ldsc", "p_value_threshold": 1e-6}, 400),
+    (lambda m: None, {"from_stage": "filtering"}, 400),
+    (lambda m: None, {"from_stage": "filtering", "p_value_threshold": 1e-7}, 400),
+    (lambda m: None, {"from_stage": "filtering", "p_value_threshold": 1e-3}, 400),
+    (lambda m: m.projects.has_hypotheses.configure_mock(return_value=True),
+     {"from_stage": "filtering", "p_value_threshold": 1e-6}, 409),
+    (lambda m: setattr(m, "file_exists", False), {"from_stage": "filtering", "p_value_threshold": 1e-6}, 409),
+    (lambda m: m.projects.claim_analysis_resume.configure_mock(return_value=None),
+     {"from_stage": "filtering", "p_value_threshold": 1e-6}, 409),
+])
+def test_resume_route_rejects_invalid_requests(monkeypatch, setup, body, status_code):
+    mocks = _resume_mocks(monkeypatch)
+    setup(mocks)
+
+    with pytest.raises(HTTPException) as exc:
+        _resume(mocks, **body)
+
+    assert exc.value.status_code == status_code
+    mocks.invoke.assert_not_called()
+
+
+def test_resume_route_restarts_the_run_with_stored_parameters(monkeypatch):
+    mocks = _resume_mocks(monkeypatch)
+
+    response = _resume(mocks, from_stage="filtering", p_value_threshold=1e-6)
+
+    assert response.flow_run_id == "run-2"
+    mocks.cancel.assert_called_once_with("run-1")
+    mocks.projects.update_analysis_parameters.assert_called_once_with(
+        "viewer", PROJECT_ID, {"p_value_threshold": 1e-6}
+    )
+    kwargs = mocks.invoke.call_args.kwargs
+    assert kwargs["resume_from"] == "filtering"
+    assert kwargs["artifacts"] == {"harmonized_file": "harmonized.tsv.gz"}
+    assert (kwargs["p_value_threshold"], kwargs["maf_threshold"], kwargs["sample_size"]) == (1e-6, 0.01, 1000)
+    assert "sample_size_source" not in kwargs
+    event = mocks.projects.add_analysis_event.call_args
+    assert event.args[3] == "Restarted from filtering with p < 1e-06 (was p < 5e-08)"
+    assert event.kwargs["flow_run_id"] == "run-2"
+
+
+def test_resume_route_keeps_the_run_resumable_when_it_cannot_start(monkeypatch):
+    mocks = _resume_mocks(monkeypatch)
+    mocks.invoke.side_effect = RuntimeError("prefect down")
+
+    with pytest.raises(HTTPException) as exc:
+        _resume(mocks, from_stage="filtering", p_value_threshold=1e-6)
+
+    assert exc.value.status_code == 500
+    failed = mocks.projects.save_analysis_state.call_args.args[2]
+    assert failed["status"] == "Failed"
+    assert failed["resumable_from"] == ["filtering"]
