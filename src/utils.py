@@ -57,11 +57,14 @@ def normalize_status_responses(raw: str | None) -> str:
     return "Running"
 
 
+INTERNAL_STATE_FIELDS = frozenset({"artifacts", "superseded_flow_run_ids"})
+
+
 def analysis_state_for_public_api(state: dict | None) -> dict:
     if not state:
         return {"status": "Running", "message": "Waiting to start analysis."}
 
-    out = {**state}
+    out = {key: value for key, value in state.items() if key not in INTERNAL_STATE_FIELDS}
     raw = state.get("status")
     raw_key = str(raw or "").strip().lower().replace(" ", "_")
     out["status"] = normalize_status_responses(raw)

@@ -37,15 +37,13 @@ from src.db import (
     HypothesisHandler,
     ProjectHandler,
 )
-from src.db.project_handler import cancel_flow_run
-from src.pipeline_stages import (
-    STAGE_INDEX,
-    STAGE_LABELS,
-    cleanup_targets,
-    harmonized_object_key,
-    rerun_params,
+from src.pipeline_stages import STAGE_INDEX, cleanup_targets, get_stage, rerun_params
+from src.services.prefect_runs import cancel_flow_run
+from src.tasks.project import (
+    count_gwas_records,
+    get_project_with_full_data,
+    harmonized_file_available,
 )
-from src.tasks.project import count_gwas_records, get_project_with_full_data
 from src.api.auth import get_current_user_id, get_current_user_email
 from src.api.dependencies import get_demo_template_handler, parse_thread_id
 from src.api.schemas import (
@@ -340,7 +338,7 @@ def _resume_overrides(body: AnalysisResumeRequest, state: dict, previous_paramet
             status_code=400,
             detail=(
                 f"{', '.join(sorted(not_rerun))} cannot be changed when restarting "
-                f"from {STAGE_LABELS[body.from_stage]}"
+                f"from {get_stage(body.from_stage)['label']}"
             ),
         )
     if "p_value_threshold" in overrides:
@@ -348,19 +346,12 @@ def _resume_overrides(body: AnalysisResumeRequest, state: dict, previous_paramet
     # A study that failed for lack of significant variants would fail again at the same threshold
     min_p_value = (state.get("error_detail") or {}).get("min_p_value")
     threshold = overrides.get("p_value_threshold", previous_parameters.get("p_value_threshold"))
-    if min_p_value is not None and threshold <= min_p_value:
+    if min_p_value is not None and threshold is not None and threshold <= min_p_value:
         raise HTTPException(
             status_code=400,
             detail=f"p_value_threshold must be above the most significant p-value ({min_p_value:.2g})",
         )
     return overrides
-
-
-def _harmonized_file_available(projects, storage, user_id, project_id, file_name) -> bool:
-    analysis_path = projects.get_project_analysis_path(user_id, project_id)
-    if os.path.exists(os.path.join(analysis_path, file_name)):
-        return True
-    return bool(storage and storage.exists(harmonized_object_key(user_id, project_id, file_name)))
 
 
 @router.post(
@@ -388,10 +379,10 @@ async def resume_analysis(
     state = projects.load_analysis_state(current_user_id, project_id) or {}
     if state.get("status") != "Failed":
         raise HTTPException(status_code=409, detail="Only a failed analysis can be restarted")
-    stage_label = STAGE_LABELS[body.from_stage]
     if body.from_stage not in state.get("resumable_from", []):
         raise HTTPException(
-            status_code=409, detail=f"This analysis cannot be restarted from {stage_label}"
+            status_code=409,
+            detail=f"This analysis cannot be restarted from {get_stage(body.from_stage)['label']}",
         )
 
     previous_parameters = project.get("analysis_parameters") or {}
@@ -404,8 +395,9 @@ async def resume_analysis(
             status_code=409,
             detail="Hypotheses already use this project's results; start a new analysis instead",
         )
-    if not _harmonized_file_available(
-        projects, storage, current_user_id, project_id, state["artifacts"]["harmonized_file"]
+    if not harmonized_file_available(
+        storage, projects.get_project_analysis_path(current_user_id, project_id),
+        current_user_id, project_id, state["artifacts"]["harmonized_file"],
     ):
         raise HTTPException(
             status_code=409,
@@ -418,8 +410,6 @@ async def resume_analysis(
     if not queued:
         raise HTTPException(status_code=409, detail="A restart is already in progress")
     emit_analysis_update(current_user_id, project_id, queued)
-    if overrides:
-        projects.update_analysis_parameters(current_user_id, project_id, overrides)
 
     try:
         loop = asyncio.get_running_loop()
@@ -443,6 +433,7 @@ async def resume_analysis(
             "status": "Failed",
             "message": "The analysis could not be started",
             "resumable_from": [body.from_stage],
+            "error_detail": state.get("error_detail"),
         }
         projects.save_analysis_state(current_user_id, project_id, failed)
         emit_analysis_update(current_user_id, project_id, failed)
@@ -450,17 +441,8 @@ async def resume_analysis(
 
     flow_run_id = str(flow_run.id)
     projects.save_analysis_state(current_user_id, project_id, {"flow_run_id": flow_run_id})
-    message = f"Restarted from {stage_label}"
-    if "p_value_threshold" in overrides:
-        message += (
-            f" with p < {overrides['p_value_threshold']:g}"
-            f" (was p < {previous_parameters['p_value_threshold']:g})"
-        )
-    projects.add_analysis_event(
-        current_user_id, project_id, "Setup", message,
-        details={"from_stage": body.from_stage, **overrides},
-        skip_if_finished=False, flow_run_id=flow_run_id,
-    )
+    if overrides:
+        projects.update_analysis_parameters(current_user_id, project_id, overrides)
 
     return AnalysisResumeResponse(
         status="started",

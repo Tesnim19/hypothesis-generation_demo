@@ -7,30 +7,14 @@ from uuid import uuid4
 
 import pymongo
 from loguru import logger
-from src.pipeline_stages import STAGE_LABELS, resumable_from
+from src.pipeline_stages import get_stage, resumable_from
+from src.services.prefect_runs import cancel_flow_run
 from src.utils import analysis_stage_label, analysis_state_for_public_api, emit_analysis_event
 from .base_handler import BaseHandler
 
 ACTIVE_ANALYSIS_STATUSES = frozenset({"Queued", "Running"})
 FINISHED_ANALYSIS_STATUSES = frozenset({"Completed", "Failed"})
 ANALYSIS_EVENT_TIMEOUT_SECONDS = 3
-
-
-def cancel_flow_run(flow_run_id):
-    """Ask Prefect to cancel a flow run; best effort, never raises."""
-    prefect_url = os.getenv("PREFECT_API_URL", "http://prefect-service:4200/api")
-    try:
-        resp = _req.post(
-            f"{prefect_url}/flow_runs/{flow_run_id}/set_state",
-            json={"state": {"type": "CANCELLED"}, "force": True},
-            timeout=3,
-        )
-        if resp.status_code in (200, 201):
-            logger.info(f"Cancelled Prefect flow run {flow_run_id}")
-        else:
-            logger.warning(f"Could not cancel flow run {flow_run_id}: {resp.status_code}")
-    except Exception as cancel_e:
-        logger.warning(f"Failed to cancel Prefect flow run {flow_run_id}: {cancel_e}")
 
 
 class ProjectHandler(BaseHandler):
@@ -309,9 +293,13 @@ class ProjectHandler(BaseHandler):
         """Merge state_data into the project's analysis_state.
 
         With expected_updated_at, only write if the stored state is still
-        active and unchanged since it was read.
+        active and unchanged since it was read. A write carrying a flow_run_id
+        is ignored once another run owns the state or the run was superseded by a restart.
         """
         query = {"_id": ObjectId(project_id), "user_id": user_id}
+        if state_data.get("flow_run_id"):
+            query["analysis_state.flow_run_id"] = {"$in": [state_data["flow_run_id"], None]}
+            query["analysis_state.superseded_flow_run_ids"] = {"$ne": state_data["flow_run_id"]}
         if expected_updated_at is not None:
             query["analysis_state.status"] = {"$in": list(ACTIVE_ANALYSIS_STATUSES)}
             query["analysis_state.updated_at"] = expected_updated_at
@@ -335,12 +323,16 @@ class ProjectHandler(BaseHandler):
 
     def claim_analysis_resume(self, user_id, project_id, previous_state, from_stage):
         """Atomically replace a Failed state with a fresh Queued one; None if another request won."""
+        superseded = list(previous_state.get("superseded_flow_run_ids", []))
+        if previous_state.get("flow_run_id"):
+            superseded.append(previous_state["flow_run_id"])
         state = {
             "status": "Queued",
-            "message": f"Restarting from {STAGE_LABELS[from_stage]}",
+            "message": f"Restarting from {get_stage(from_stage)['label']}",
             "resumed_from": from_stage,
             "resume_count": previous_state.get("resume_count", 0) + 1,
             "artifacts": previous_state.get("artifacts") or {},
+            "superseded_flow_run_ids": superseded,
         }
         result = self.projects_collection.update_one(
             {

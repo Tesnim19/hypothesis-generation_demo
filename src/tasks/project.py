@@ -5,7 +5,7 @@ from prefect.runtime import flow_run
 from loguru import logger
 import gzip
 import re
-from src.pipeline_stages import harmonized_object_key
+from src.services.storage import harmonized_object_key
 from src.utils import (
     analysis_state_for_public_api,
     emit_analysis_update,
@@ -114,9 +114,12 @@ def save_analysis_state_task(user_id, project_id, state_data):
     try:
         deps = get_deps()
         projects_handler = deps["projects"]
-        projects_handler.save_analysis_state(user_id, project_id, state_data)
+        if not projects_handler.save_analysis_state(user_id, project_id, state_data):
+            logger.info(f"Analysis state for project {project_id} not saved: owned by another run")
+            return False
         logger.info(f"Saved analysis state for project {project_id}")
-        emit_analysis_update(user_id, project_id, state_data)
+        if "status" in state_data:
+            emit_analysis_update(user_id, project_id, state_data)
         return True
     except Exception as e:
         logger.info(f"Error saving analysis state: {str(e)}")
@@ -157,20 +160,22 @@ class HarmonizedFileMissingError(FileNotFoundError):
     """The harmonized file is gone both locally and from object storage."""
 
 
+def harmonized_file_available(storage, output_dir, user_id, project_id, file_name):
+    """Whether the harmonized file is in the project's output dir or in object storage."""
+    if os.path.exists(os.path.join(output_dir, file_name)):
+        return True
+    return bool(storage and storage.exists(harmonized_object_key(user_id, project_id, file_name)))
+
+
 @task()
 def ensure_harmonized_file_task(user_id, project_id, output_dir, file_name):
     """Local path of a recorded harmonized file, downloading it from storage if needed."""
-    deps = get_deps()
-    if not deps["projects"].get_projects(user_id, project_id):
-        raise RuntimeError(f"Project {project_id} no longer exists")
-    path = os.path.join(output_dir, file_name)
-    if os.path.exists(path):
-        return path
-    storage = deps.get("storage")
-    object_key = harmonized_object_key(user_id, project_id, file_name)
-    if not storage or not storage.exists(object_key):
+    storage = get_deps().get("storage")
+    if not harmonized_file_available(storage, output_dir, user_id, project_id, file_name):
         raise HarmonizedFileMissingError(f"Harmonized file {file_name} is no longer available")
-    if not storage.download_file(object_key, path):
+    path = os.path.join(output_dir, file_name)
+    object_key = harmonized_object_key(user_id, project_id, file_name)
+    if not os.path.exists(path) and not storage.download_file(object_key, path):
         raise RuntimeError(f"Could not download {object_key}")
     return path
 

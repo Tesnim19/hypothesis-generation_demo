@@ -13,6 +13,7 @@ from src.tasks.analysis import NoSignificantVariantsError, filter_significant_va
 from src.tasks import project as project_tasks
 from src.tasks.gene_expression import LdscExitError
 from src.tasks.project import HarmonizedFileMissingError
+from src.pipeline_stages import runs_stage
 
 
 def _sumstats(p_values):
@@ -246,6 +247,7 @@ def test_specific_failed_state_is_not_overwritten(monkeypatch, immediate_task_fa
 
     assert saved_states[-1]["stage"] == "Fine_mapping"
     assert saved_states[-1]["message"] == "Fine-mapping failed - no results generated"
+    assert saved_states[-1]["resumable_from"] == ["filtering"]
     notify.assert_called_once()
 
 
@@ -317,32 +319,56 @@ def _resume(resume_from, artifacts, **kwargs):
     )
 
 
-@pytest.mark.parametrize("ldsc_error, status, resumable", [
-    (None, "Completed", None),
-    (LdscExitError("ldsc failed"), "Failed", ["ldsc"]),
-])
-def test_ldsc_resume_reruns_only_ldsc(monkeypatch, immediate_task_factory, ldsc_error, status, resumable):
-    saved_states, ldsc_task, notify, harmonize, reset = _configure_resume(monkeypatch, immediate_task_factory)
-    ldsc_task.submit.return_value.result.side_effect = ldsc_error
+def _configure_successful_pipeline(monkeypatch, immediate_task_factory):
+    saved_states, ldsc_task, notify, harmonize, _ = _configure_resume(monkeypatch, immediate_task_factory)
+    harmonize.submit.return_value.result.return_value = "/out/harmonized.tsv.gz"
     ldsc_task.submit.return_value.result.return_value = {"analysis_run_id": "run-2"}
-    filter_task = MagicMock()
-    monkeypatch.setattr(flow_module, "filter_significant_variants", filter_task)
+    fine_mapped = pd.DataFrame({"PIP": [0.9], "cs": [1], "credible_set": [1]})
+    tasks = {
+        "harmonization": harmonize,
+        "filtering": MagicMock(**{"submit.return_value.result.return_value": (_sumstats([1e-9]), None)}),
+        "cojo": MagicMock(**{"submit.return_value.result.return_value": (_sumstats([1e-9]), None)}),
+        "fine_mapping": MagicMock(**{"map.return_value": [MagicMock(**{"result.return_value": [fine_mapped]})]}),
+        "ldsc": ldsc_task,
+    }
+    monkeypatch.setattr(flow_module, "filter_significant_variants", tasks["filtering"])
+    monkeypatch.setattr(flow_module, "run_cojo_per_chromosome", tasks["cojo"])
+    monkeypatch.setattr(flow_module, "finemap_region_batch_worker", tasks["fine_mapping"])
+    monkeypatch.setattr(flow_module, "create_region_batches", lambda *_, **__: [["region"]])
+    monkeypatch.setattr(flow_module, "save_sumstats_for_workers", lambda *_: "/out/sumstats.pkl")
+    monkeypatch.setattr(flow_module, "cleanup_sumstats_file", MagicMock())
+    monkeypatch.setattr(flow_module, "record_analysis_event_task", MagicMock())
+    monkeypatch.setattr(flow_module, "create_analysis_result_task", immediate_task_factory(lambda *_: "/out/analysis_results.csv"))
+    return saved_states, tasks, notify
+
+
+@pytest.mark.parametrize("resume_from", [None, "filtering", "ldsc"])
+def test_flow_runs_exactly_the_stages_from_the_resume_point(monkeypatch, immediate_task_factory, resume_from):
+    saved_states, tasks, notify = _configure_successful_pipeline(monkeypatch, immediate_task_factory)
     artifacts = {"harmonized_file": "harmonized.tsv.gz", "credible_sets": True}
 
-    if ldsc_error:
-        with pytest.raises(RuntimeError):
-            _resume("ldsc", artifacts)
-    else:
-        _resume("ldsc", artifacts)
+    result = flow_module.analysis_pipeline_flow.fn(
+        "user-1", "project-1", resume_from=resume_from, artifacts=artifacts,
+        user_email="user@example.com", project_name="Wrist",
+    )
 
-    assert saved_states[0]["message"] == "Restarting from LDSC tissue analysis"
-    assert saved_states[-1]["status"] == status
-    assert saved_states[-1].get("resumable_from") == resumable
-    assert reset.calls[0][0] == ("user-1", "project-1", [])
-    ldsc_task.submit.assert_called_once_with("/out/harmonized.tsv.gz", "/out", "project-1", "user-1")
-    harmonize.submit.assert_not_called()
-    filter_task.submit.assert_not_called()
-    assert notify.call_args.kwargs["restarted"] is True
+    for key, task in tasks.items():
+        assert (task.submit.called or task.map.called) == runs_stage(key, resume_from), key
+    assert set(result) == set(flow_module.RESULT_KEYS)
+    assert saved_states[-1]["status"] == "Completed"
+    assert notify.call_args.kwargs["restarted"] == bool(resume_from)
+
+
+def test_ldsc_resume_that_fails_again_stays_resumable(monkeypatch, immediate_task_factory):
+    saved_states, ldsc_task, _, _, _ = _configure_resume(monkeypatch, immediate_task_factory)
+    ldsc_task.submit.return_value.result.side_effect = LdscExitError("ldsc failed")
+
+    with pytest.raises(RuntimeError):
+        _resume("ldsc", {"harmonized_file": "harmonized.tsv.gz", "credible_sets": True})
+
+    assert [state.get("stage") for state in saved_states] == ["LDSC_Tissue_Analysis", "LDSC_Analysis"]
+    assert saved_states[0]["message"] == "Restarted from LDSC tissue analysis"
+    assert saved_states[-1]["resumable_from"] == ["ldsc"]
 
 
 def test_filtering_resume_clears_results_and_uses_the_new_threshold(monkeypatch, immediate_task_factory):

@@ -39,8 +39,7 @@ def test_enabling_a_stage_makes_it_resumable(monkeypatch):
         for stage in pipeline_stages.PIPELINE_STAGES
     ]
     monkeypatch.setattr(pipeline_stages, "PIPELINE_STAGES", stages)
-    state = {"status": "Failed", "stage": "Cojo",
-             "artifacts": {**HARMONIZED, "significant_variants": "significant_variants.tsv"}}
+    state = {"status": "Failed", "stage": "Cojo", "artifacts": HARMONIZED}
 
     assert resumable_from(state) == ["cojo"]
 

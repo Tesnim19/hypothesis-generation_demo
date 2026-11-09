@@ -1076,7 +1076,7 @@ def run_combined_ldsc_tissue_analysis(munged_file, output_dir, project_id, user_
             for suffix in (".cell_type_results.txt", "_ranked.csv"):
                 path = f"{output_prefix}{suffix}"
                 if os.path.isfile(path):
-                    key = f"ldsc/{user_id}/{project_id}/{os.path.basename(path)}"
+                    key = f"ldsc/{user_id}/{project_id}/{analysis_run_id}/{os.path.basename(path)}"
                     if storage.upload_file(path, key):
                         logger.info(f"[LDSC] Uploaded to MinIO: {key}")
         

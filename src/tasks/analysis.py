@@ -17,7 +17,7 @@ import optuna
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from src.config import Config
 from src.utils import transform_credible_sets_to_locuszoom, get_deps, get_shared_temp_dir, record_analysis_event
-from src.pipeline_stages import harmonized_object_key
+from src.services.storage import harmonized_object_key
 
 
 logging.basicConfig(level=logging.INFO)

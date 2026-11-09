@@ -3,34 +3,40 @@
 needs: artifacts recorded in analysis_state.artifacts that a run starting here requires.
 cleanup: stored outputs deleted before rerunning this stage (or an earlier one).
 params: request overrides consumed by this stage.
+resume_state: the Running state a run resumed here starts in.
+can_retry: whether the stored failure could succeed on a rerun from here.
 """
 
+
+def _some_variants_can_pass(state):
+    detail = state.get("error_detail") or {}
+    return detail.get("error_type") != "no_significant_variants" or bool(detail.get("variants_below_1e5"))
+
+
 PIPELINE_STAGES = [
-    {"key": "harmonization", "state_stages": {"File_upload", "Harmonization"},
-     "needs": [], "resumable": False},
-    {"key": "filtering", "state_stages": {"Filtering"},
+    {"key": "harmonization", "label": "harmonization",
+     "state_stages": {"File_upload", "Harmonization"}, "needs": [], "resumable": False},
+    {"key": "filtering", "label": "filtering", "state_stages": {"Filtering"},
      "needs": ["harmonized_file"], "params": ["p_value_threshold"],
-     "skipped_on_opentargets": True, "resumable": True},
-    {"key": "cojo", "state_stages": {"Cojo"},
-     "needs": ["harmonized_file", "significant_variants"],
+     "skipped_on_opentargets": True, "can_retry": _some_variants_can_pass,
+     "resume_state": {"stage": "Filtering", "progress": 30}, "resumable": True},
+    {"key": "cojo", "label": "COJO", "state_stages": {"Cojo"},
+     "needs": ["harmonized_file"], "skipped_on_opentargets": True, "resumable": False},
+    {"key": "fine_mapping", "label": "fine-mapping",
+     "state_stages": {"Fine_mapping", "OpenTargets_credible_sets"},
+     "needs": ["harmonized_file"], "cleanup": ["credible_sets", "analysis_results"],
      "skipped_on_opentargets": True, "resumable": False},
-    {"key": "fine_mapping", "state_stages": {"Fine_mapping", "OpenTargets_credible_sets"},
-     "needs": ["harmonized_file", "significant_variants", "cojo_results"],
-     "cleanup": ["credible_sets", "analysis_results"],
-     "skipped_on_opentargets": True, "resumable": False},
-    {"key": "ldsc", "state_stages": {"LDSC_Analysis", "LDSC_Tissue_Analysis"},
-     "needs": ["harmonized_file", "credible_sets"], "resumable": True},
+    {"key": "ldsc", "label": "LDSC tissue analysis",
+     "state_stages": {"LDSC_Analysis", "LDSC_Tissue_Analysis"},
+     "needs": ["harmonized_file", "credible_sets"],
+     "resume_state": {"stage": "LDSC_Tissue_Analysis", "progress": 85}, "resumable": True},
 ]
 
 STAGE_INDEX = {stage["key"]: index for index, stage in enumerate(PIPELINE_STAGES)}
 
-STAGE_LABELS = {
-    "harmonization": "harmonization",
-    "filtering": "filtering",
-    "cojo": "COJO",
-    "fine_mapping": "fine-mapping",
-    "ldsc": "LDSC tissue analysis",
-}
+
+def get_stage(key):
+    return PIPELINE_STAGES[STAGE_INDEX[key]]
 
 
 def stage_key(state_stage):
@@ -60,21 +66,13 @@ def rerun_params(key):
     return {param for stage in stages_from(key) for param in stage.get("params", [])}
 
 
-def _filtering_cannot_pass(state):
-    detail = state.get("error_detail") or {}
-    return (
-        detail.get("error_type") == "no_significant_variants"
-        and not detail.get("variants_below_1e5")
-    )
-
-
 def _can_start_at(stage, state):
     artifacts = state.get("artifacts") or {}
     if not stage["resumable"] or not all(artifacts.get(need) for need in stage["needs"]):
         return False
     if stage.get("skipped_on_opentargets") and artifacts.get("credible_sets_source") == "opentargets":
         return False
-    return not (stage["key"] == "filtering" and _filtering_cannot_pass(state))
+    return stage.get("can_retry", lambda _state: True)(state)
 
 
 def resumable_from(state):
@@ -88,7 +86,3 @@ def resumable_from(state):
         if _can_start_at(stage, state):
             return [stage["key"]]
     return []
-
-
-def harmonized_object_key(user_id, project_id, file_name):
-    return f"harmonized/{user_id}/{project_id}/{file_name}"
