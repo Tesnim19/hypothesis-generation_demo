@@ -4,6 +4,7 @@ from prefect import task
 from loguru import logger
 import gzip
 import re
+from src.services import files_api
 from src.utils import (
     analysis_state_for_public_api,
     emit_analysis_update,
@@ -61,6 +62,7 @@ def prepare_gwas_file_task(
     source_download_url: str | None = None,
     minio_cache_key: str | None = None,
     gwas_library_id: str | None = None,
+    external_file_id: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """
@@ -86,7 +88,15 @@ def prepare_gwas_file_task(
     final_path = gwas_file_path
     dest_dir = output_dir or os.path.join("data", "temp", str(user_id))
 
-    if (source_minio_path and storage) or source_download_url:
+    if external_file_id:
+        url = files_api.download_url(external_file_id, user_id)
+        downloaded = download_gwas_source(dest_dir, None, source_download_url=url)
+        # The link's path need not carry the file's name or extension.
+        name = files_handler.get_file_metadata(user_id, file_metadata_id)["filename"]
+        final_path = os.path.join(dest_dir, os.path.basename(name))
+        os.replace(downloaded, final_path)
+
+    elif (source_minio_path and storage) or source_download_url:
         final_path = download_gwas_source(
             dest_dir, storage, gwas_library,
             source_minio_path=source_minio_path,

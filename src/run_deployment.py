@@ -31,6 +31,7 @@ def invoke_analysis_pipeline_deployment(
     file_storage_key=None, file_id_new=None,
     file_source_minio_path=None, file_source_download_url=None,
     file_minio_cache_key=None, file_gwas_library_id=None,
+    file_external_id=None,
     opentargets_study_id=None,
 ):
     run_deployment(
@@ -58,6 +59,7 @@ def invoke_analysis_pipeline_deployment(
             "file_source_download_url": file_source_download_url,
             "file_minio_cache_key": file_minio_cache_key,
             "file_gwas_library_id": file_gwas_library_id,
+            "file_external_id": file_external_id,
             "user_email": user_email,
             "project_name": project_name,
             "opentargets_study_id": opentargets_study_id,
