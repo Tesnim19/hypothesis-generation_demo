@@ -13,6 +13,7 @@ from src.api import dependencies as deps
 from src.api.auth import get_current_user_email, get_current_user_id
 from src.api.routes import gwas as gwas_routes
 from src.api.routes import projects as project_routes
+from src import run_deployment
 from src.services import files_api
 from src.tasks import project as project_tasks
 
@@ -43,7 +44,9 @@ def test_disabled_returns_503(monkeypatch):
     assert exc.value.status_code == 503
 
 
-@pytest.mark.parametrize(("status", "expected"), [(404, 404), (403, 502), (500, 502)])
+@pytest.mark.parametrize(
+    ("status", "expected"), [(401, 401), (403, 404), (404, 404), (409, 502), (500, 502)]
+)
 def test_service_errors_map_to_status(enabled, monkeypatch, status, expected):
     _respond(monkeypatch, status=status)
     with pytest.raises(files_api.FilesApiError) as exc:
@@ -191,3 +194,13 @@ def test_preview_reads_file_head(enabled, monkeypatch, file_id, local_doc, reque
     ))
     assert read.call_args.args == (requested, "Bearer u")
     assert resp.sample_size_source == "file_has_n"
+
+
+@pytest.mark.parametrize("external_id", [None, FILE_ID])
+def test_external_id_sent_only_when_set(monkeypatch, external_id):
+    run = MagicMock()
+    monkeypatch.setattr(run_deployment, "run_deployment", run)
+    run_deployment.invoke_analysis_pipeline_deployment("user-1", "project-1", file_external_id=external_id)
+    params = run.call_args.kwargs["parameters"]
+    assert params.get("file_external_id") == external_id
+    assert ("file_external_id" in params) == bool(external_id)

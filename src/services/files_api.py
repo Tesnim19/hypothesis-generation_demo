@@ -5,6 +5,8 @@ import os
 
 import requests
 
+from src.utils import allowed_file
+
 TIMEOUT = 30
 HEAD_BYTES = 1024 * 1024
 
@@ -41,7 +43,9 @@ def _call(method: str, path: str, headers: dict, **kwargs) -> requests.Response:
         )
     except requests.RequestException as exc:
         raise FilesApiError(502, f"File service unreachable: {exc}")
-    if resp.status_code == 404:
+    if resp.status_code == 401:
+        raise FilesApiError(401, "Sign in again to use this file")
+    if resp.status_code in (403, 404):
         raise FilesApiError(404, "File not found")
     if resp.status_code >= 400:
         raise FilesApiError(502, f"File service error {resp.status_code}")
@@ -64,8 +68,6 @@ def download_url(file_id: str, user_id: str) -> str:
 
 def register_file(file_id: str, authorization: str, user_id: str, files) -> dict:
     """Check a file-service file is usable and return its local file_metadata doc."""
-    from src.utils import allowed_file
-
     meta = get_file(file_id, authorization)
     if meta.get("state") != "ready":
         raise FilesApiError(409, f"File is not ready (state: {meta.get('state')})")
