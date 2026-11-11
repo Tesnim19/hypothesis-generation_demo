@@ -24,103 +24,25 @@ from src.db import (
     HypothesisHandler,
     ShareLinkHandler,
 )
-from src.tasks import extract_probability
-from src.utils import normalize_status_responses
+from src.services.share_snapshot import build_share_snapshot, is_completed
 
 router = APIRouter(prefix="/share-links", tags=["share"])
 
 MAX_ACTIVE_LINKS = 20
-MAX_RELATED = 20
 
 
-def _is_completed(hypothesis: dict) -> bool:
-    return (
-        normalize_status_responses(hypothesis.get("status")) == "Completed"
-        and bool(hypothesis.get("summary"))
-        and bool(hypothesis.get("graph"))
-    )
-
-
-def _shared_entry(hypothesis: dict, enrichment: EnrichmentHandler, user_id: str) -> dict:
-    entry = {
-        "causal_gene": hypothesis.get("causal_gene"),
-        "probability": extract_probability(hypothesis, enrichment, user_id),
-        "status": normalize_status_responses(hypothesis.get("status")),
-    }
-    if _is_completed(hypothesis):
-        enrich_id = hypothesis.get("enrich_id")
-        enrich = enrichment.get_enrich(user_id, enrich_id) if enrich_id else None
-        go_terms = (enrich or {}).get("GO_terms") or []
-        entry.update(
-            summary=hypothesis["summary"],
-            graph=hypothesis["graph"],
-            go_terms=go_terms,
-            selected_go_term=next(
-                (term for term in go_terms if term.get("id") == hypothesis.get("go_id")),
-                None,
-            ),
-        )
-    return entry
-
-
-def build_share_snapshot(
-    hypothesis: dict,
-    hypotheses: HypothesisHandler,
-    enrichment: EnrichmentHandler,
-    gene_expression: GeneExpressionHandler,
-) -> dict:
-    """Freeze a completed hypothesis and its same-variant siblings into a public payload."""
-    user_id = hypothesis["user_id"]
-    project_id = hypothesis.get("project_id")
-    variant = hypothesis.get("variant") or hypothesis.get("variant_id")
-    variant_rsid = hypothesis.get("variant_rsid") or variant
-
-    siblings = []
-    tissue = None
-    if project_id and variant:
-        siblings = [
-            h
-            for h in hypotheses.get_variant_hypotheses(user_id, project_id, variant)
-            if h.get("id") != hypothesis["id"]
-        ]
-        selection = gene_expression.get_tissue_selection(user_id, project_id, variant_rsid)
-        tissue = selection.get("tissue_name") if selection else None
-
-    related = sorted(
-        (_shared_entry(h, enrichment, user_id) for h in siblings),
-        key=lambda entry: entry["probability"] or 0,
-        reverse=True,
-    )
-    for index, entry in enumerate(related, start=1):
-        entry["key"] = f"h{index}"
-
-    main = {
-        **_shared_entry(hypothesis, enrichment, user_id),
-        "key": "h0",
-        "variant": variant,
-        "variant_rsid": variant_rsid,
-        "phenotype": hypothesis.get("phenotype"),
-        "tissue": tissue,
-        "warnings": [
-            *hypothesis.get("enrichment_warnings", []),
-            *hypothesis.get("warnings", []),
-        ],
-        "generated_at": hypothesis.get("created_at"),
-    }
-    return SharedSnapshot.model_validate(
-        {
-            "hypothesis": main,
-            "related": related[:MAX_RELATED],
-            "related_truncated": len(related) > MAX_RELATED,
-        }
-    ).model_dump()
+def _conflict(code: str, message: str) -> HTTPException:
+    return HTTPException(status_code=409, detail={"code": code, "message": message})
 
 
 @router.post(
     "",
     status_code=201,
     response_model=ShareLinkResponse,
-    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"description": "`hypothesis_not_completed` or `too_many_links` in `detail.code`."},
+    },
     summary="Create a public share link for a completed hypothesis",
 )
 async def create_share_link(
@@ -134,12 +56,12 @@ async def create_share_link(
     hypothesis = hypotheses.get_hypotheses(current_user_id, body.hypothesis_id)
     if not hypothesis:
         raise HTTPException(status_code=404, detail="Hypothesis not found or access denied.")
-    if not _is_completed(hypothesis):
-        raise HTTPException(status_code=409, detail="Only completed hypotheses can be shared.")
+    if not is_completed(hypothesis):
+        raise _conflict("hypothesis_not_completed", "Only completed hypotheses can be shared.")
     if share_links.count_active_links(current_user_id, body.hypothesis_id) >= MAX_ACTIVE_LINKS:
-        raise HTTPException(
-            status_code=409,
-            detail=f"A hypothesis can have at most {MAX_ACTIVE_LINKS} active share links.",
+        raise _conflict(
+            "too_many_links",
+            f"A hypothesis can have at most {MAX_ACTIVE_LINKS} active share links.",
         )
 
     expires_at = (
@@ -153,7 +75,9 @@ async def create_share_link(
         project_id=hypothesis.get("project_id"),
         label=body.label or None,
         expires_at=expires_at,
-        snapshot=build_share_snapshot(hypothesis, hypotheses, enrichment, gene_expression),
+        snapshot=SharedSnapshot.model_validate(
+            build_share_snapshot(hypothesis, hypotheses, enrichment, gene_expression)
+        ).model_dump(),
     )
     return ShareLinkResponse.model_validate(link)
 

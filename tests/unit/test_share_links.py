@@ -5,16 +5,19 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from src.api import router
-from src.api.routes.share import build_share_snapshot, create_share_link
-from src.api.routes.share_public import get_shared_hypothesis
-from src.api.schemas.share import ShareLinkCreateRequest
+from src.api.routes.share import create_share_link
+from src.api.routes.share_public import router as public_router
+from src.api.schemas.share import ShareLinkCreateRequest, SharedSnapshot
+from src.db.demo_template_handler import _DELETABLE_PROJECT_COLLECTIONS, DemoTemplateHandler
 from src.db.hypothesis_handler import HypothesisHandler
 from src.db.project_handler import ProjectHandler
 from src.db.share_link_handler import ShareLinkHandler
 from src.logging_config import ShareTokenRedactingFilter
+from src.services.share_snapshot import build_share_snapshot
 
 TOKEN = "A" * 43
 PROJECT_ID = "64b000000000000000000001"
@@ -59,7 +62,12 @@ def _hypothesis(**overrides):
             "probability": 0.5,
         },
         "warnings": [{"code": "variant_id_fallback", "message": "kept rsID", "variants": ["SENTINEL_ERROR"]}],
-        "created_at": "2026-11-01T10:00:00.000Z",
+        "enrichment_warnings": [{
+            "code": "causal_graphs_skipped",
+            "message": "1 of 2 causal graphs were skipped and have no hypothesis. See 'skipped' for why.",
+            "skipped": [{"reason": "SENTINEL_ERROR"}],
+        }],
+        "created_at": "2026-11-01T10:00:00.000+00:00Z",
     }
     return {**hypothesis, **overrides}
 
@@ -71,22 +79,24 @@ def _enrich():
         "user_id": "SENTINEL_USER",
         "project_id": "SENTINEL_PROJECT",
         "GO_terms": [
-            {"id": "GO:1", "name": "inflammation", "p": 0.001, "rank": 1, "genes": ["STAT1"], "similarity": 0.9},
-            {"id": "GO:2", "name": "immunity", "p": 0.01, "rank": 2, "genes": ["IRF1"], "score": 0.8},
+            {"id": f"GO:{rank}", "name": "inflammation", "p": 0.001, "rank": rank, "genes": ["STAT1"], "similarity": 0.9}
+            for rank in range(1, 13)
         ],
     }
 
 
-def _snapshot(siblings=()):
+def _snapshot(main=None, siblings=(), enrich=None):
+    main = main or _hypothesis()
     hypotheses = MagicMock()
-    hypotheses.get_variant_hypotheses.return_value = [_hypothesis(), *siblings]
+    hypotheses.get_variant_hypotheses.return_value = [main, *siblings]
     enrichment = MagicMock()
-    enrichment.get_enrich.return_value = _enrich()
+    enrichment.get_enrich.return_value = enrich or _enrich()
     gene_expression = MagicMock()
     gene_expression.get_tissue_selection.return_value = {
         "tissue_name": "Colon", "user_id": "SENTINEL_USER",
     }
-    return build_share_snapshot(_hypothesis(), hypotheses, enrichment, gene_expression)
+    snapshot = build_share_snapshot(main, hypotheses, enrichment, gene_expression)
+    return SharedSnapshot.model_validate(snapshot).model_dump(mode="json")
 
 
 def _keys(value):
@@ -104,7 +114,7 @@ def test_snapshot_contains_no_internal_data():
         id="SENTINEL_HYPOTHESIS_2", status="failed", summary=None, graph=None,
         causal_gene="FOXF1", error="SENTINEL_ERROR",
     )
-    payload = json.dumps(_snapshot([pending_sibling]), default=str)
+    payload = json.dumps(_snapshot(siblings=[pending_sibling]))
 
     assert not [s for s in SENTINELS if s in payload]
     assert not FORBIDDEN_KEYS & set(_keys(json.loads(payload)))
@@ -114,17 +124,38 @@ def test_snapshot_shape():
     completed = _hypothesis(id="h-2", causal_gene="FOXF1", graph={"nodes": [], "edges": [], "probability": 0.9})
     pending = _hypothesis(id="h-3", causal_gene="COTL1", status="pending", summary=None, graph=None)
 
-    snapshot = _snapshot([pending, completed])
+    snapshot = _snapshot(siblings=[pending, completed])
 
     main = snapshot["hypothesis"]
     assert (main["key"], main["tissue"], main["selected_go_term"]["id"]) == ("h0", "Colon", "GO:1")
+    assert main["generated_at"].startswith("2026-11-01T10:00:00")
+    assert len(main["go_terms"]) == 10
     assert main["go_terms"][0] == {"id": "GO:1", "name": "inflammation", "p": 0.001, "rank": 1, "genes": ["STAT1"]}
-    assert main["warnings"] == [{"code": "variant_id_fallback", "message": "kept rsID"}]
+    assert main["warnings"] == [
+        {"code": "causal_graphs_skipped", "message": "1 of 2 causal graphs were skipped and have no hypothesis."},
+        {"code": "variant_id_fallback", "message": "kept rsID"},
+    ]
     assert [(r["key"], r["causal_gene"], r["status"]) for r in snapshot["related"]] == [
         ("h1", "FOXF1", "Completed"),
         ("h2", "COTL1", "Running"),
     ]
-    assert snapshot["related"][1]["graph"] is None and not snapshot["related"][1]["go_terms"]
+    assert snapshot["related"][1] == {"key": "h2", "causal_gene": "COTL1", "probability": None, "status": "Running"}
+
+
+def test_snapshot_drops_malformed_legacy_items():
+    graph = {
+        "nodes": [{"id": "IRF8", "type": "gene"}, {"id": 7}, "junk"],
+        "edges": [{"source": "rs1", "target": "IRF8"}, {"source": None, "target": "IRF8"}],
+        "probability": float("nan"),
+    }
+    enrich = {"GO_terms": [{"id": "GO:1", "p": float("nan"), "rank": "1"}, {"name": "no id"}]}
+
+    main = _snapshot(main=_hypothesis(graph=graph), enrich=enrich)["hypothesis"]
+
+    assert [node["id"] for node in main["graph"]["nodes"]] == ["IRF8"]
+    assert len(main["graph"]["edges"]) == 1
+    assert main["probability"] is None
+    assert main["go_terms"] == [{"id": "GO:1", "name": None, "p": None, "rank": None, "genes": []}]
 
 
 @pytest.fixture
@@ -154,19 +185,21 @@ def _create(share_links, hypothesis, **body):
 
 
 @pytest.mark.parametrize(
-    "hypothesis, active_links, status_code",
+    "hypothesis, active_links, status_code, code",
     [
-        (None, 0, 404),
-        (_hypothesis(status="pending"), 0, 409),
-        (_hypothesis(summary=None), 0, 409),
-        (_hypothesis(), 20, 409),
+        (None, 0, 404, None),
+        (_hypothesis(status="pending"), 0, 409, "hypothesis_not_completed"),
+        (_hypothesis(summary=None), 0, 409, "hypothesis_not_completed"),
+        (_hypothesis(), 20, 409, "too_many_links"),
     ],
 )
-def test_create_rejects(share_links, hypothesis, active_links, status_code):
+def test_create_rejects(share_links, hypothesis, active_links, status_code, code):
     share_links.count_active_links.return_value = active_links
     with pytest.raises(HTTPException) as exc:
         _create(share_links, hypothesis)
     assert exc.value.status_code == status_code
+    if code:
+        assert exc.value.detail["code"] == code
     share_links.create_link.assert_not_called()
 
 
@@ -194,35 +227,55 @@ def test_open_link_only_matches_active_links_and_counts_the_view():
     assert update["$inc"] == {"view_count": 1}
 
 
+@pytest.fixture
+def container(monkeypatch):
+    container = MagicMock()
+    monkeypatch.setattr("src.api.dependencies._container", container)
+    return container
+
+
+@pytest.fixture
+def public_client(container):
+    app = FastAPI()
+    app.include_router(public_router)
+    return TestClient(app)
+
+
+def _assert_public_headers(response):
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-robots-tag"] == "noindex, nofollow"
+    assert response.headers["referrer-policy"] == "no-referrer"
+
+
 @pytest.mark.parametrize("token", [TOKEN, "short", "A" * 42 + "!"])
-def test_public_read_unavailable_link_is_one_uniform_404(token):
-    share_links = MagicMock(open_link=MagicMock(return_value=None))
+def test_public_read_unavailable_link_is_one_uniform_404(public_client, container, token):
+    share_links = container.share_link_handler.return_value
+    share_links.open_link.return_value = None
 
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(get_shared_hypothesis(token, Response(), share_links=share_links))
+    response = public_client.get(f"/public/share/{token}")
 
-    assert (exc.value.status_code, exc.value.detail) == (404, "This link is no longer available.")
-    assert exc.value.headers["Cache-Control"] == "no-store"
+    assert response.status_code == 404
+    assert response.json() == {"detail": "This link is no longer available."}
+    _assert_public_headers(response)
     assert share_links.open_link.called == (token == TOKEN)
 
 
-def test_public_read_returns_snapshot_with_no_store_headers():
-    link = {
+def test_public_read_serves_only_the_snapshot(public_client, container):
+    container.share_link_handler.return_value.open_link.return_value = {
         "snapshot": _snapshot(),
         "schema_version": 1,
         "created_at": datetime(2026, 11, 1),
         "expires_at": None,
     }
-    response = Response()
 
-    result = asyncio.run(
-        get_shared_hypothesis(TOKEN, response, share_links=MagicMock(open_link=MagicMock(return_value=link)))
-    )
+    response = public_client.get(f"/public/share/{TOKEN}")
 
-    assert result.hypothesis.causal_gene == "IRF8"
-    assert result.shared_at.tzinfo == timezone.utc
-    assert response.headers["Referrer-Policy"] == "no-referrer"
-    assert response.headers["X-Robots-Tag"] == "noindex, nofollow"
+    assert response.status_code == 200
+    assert response.json()["hypothesis"]["causal_gene"] == "IRF8"
+    assert response.json()["shared_at"] == "2026-11-01T00:00:00Z"
+    _assert_public_headers(response)
+    container.hypothesis_handler.assert_not_called()
+    container.enrichment_handler.assert_not_called()
 
 
 def test_public_routes_are_read_only_and_unauthenticated():
@@ -236,11 +289,18 @@ def test_public_routes_are_read_only_and_unauthenticated():
     assert "security" not in paths["/public/share/{token}"]["get"]
 
 
+def _bare(cls, *attributes):
+    handler = object.__new__(cls)
+    for name in ("db", *attributes):
+        setattr(handler, name, MagicMock())
+    handler.get_analysis_state_path = MagicMock(return_value="/nonexistent/state")
+    handler.get_project_analysis_path = MagicMock(return_value="/nonexistent/analysis")
+    handler.load_analysis_state = MagicMock(return_value=None)
+    return handler
+
+
 def _hypothesis_handler():
-    handler = object.__new__(HypothesisHandler)
-    handler.hypothesis_collection = MagicMock()
-    handler.enrich_collection = MagicMock()
-    handler.db = MagicMock()
+    handler = _bare(HypothesisHandler, "hypothesis_collection", "enrich_collection")
     handler.hypothesis_collection.find_one.return_value = {"id": "h-1"}
     handler.hypothesis_collection.find.return_value = [{"id": "h-1"}]
     handler.hypothesis_collection.delete_one.return_value.deleted_count = 1
@@ -248,16 +308,19 @@ def _hypothesis_handler():
 
 
 def _project_handler():
-    handler = object.__new__(ProjectHandler)
-    for name in (
-        "projects_collection", "credible_sets_collection", "hypothesis_collection",
+    handler = _bare(
+        ProjectHandler, "projects_collection", "credible_sets_collection", "hypothesis_collection",
         "task_updates_collection", "summary_collection", "enrich_collection",
-        "analysis_results_collection", "file_metadata_collection", "db",
-    ):
-        setattr(handler, name, MagicMock())
-    handler.load_analysis_state = MagicMock(return_value=None)
+        "analysis_results_collection", "file_metadata_collection",
+    )
     handler.hypothesis_collection.find.return_value = []
     handler.projects_collection.find_one.return_value = None
+    return handler
+
+
+def _demo_template_handler():
+    handler = _bare(DemoTemplateHandler, *_DELETABLE_PROJECT_COLLECTIONS)
+    handler.gene_expression_runs_collection.find.return_value = []
     return handler
 
 
@@ -270,13 +333,13 @@ def _project_handler():
          {"owner_user_id": "u-1", "hypothesis_id": {"$in": ["h-1"]}}),
         (_project_handler, lambda h: h._delete_project_data("u-1", PROJECT_ID),
          {"owner_user_id": "u-1", "project_id": PROJECT_ID}),
+        (_demo_template_handler, lambda h: h._delete_legacy_owner_data("u-1", PROJECT_ID),
+         {"owner_user_id": "u-1", "project_id": PROJECT_ID}),
     ],
 )
 def test_deletes_cascade_to_share_links(monkeypatch, make_handler, delete, expected_filter):
-    monkeypatch.setattr("src.db.project_handler.os.path.exists", lambda _path: False)
+    monkeypatch.setattr("os.path.exists", lambda _path: False)
     handler = make_handler()
-    handler.get_analysis_state_path = MagicMock(return_value="/nonexistent")
-    handler.get_project_analysis_path = MagicMock(return_value="/nonexistent")
 
     delete(handler)
 

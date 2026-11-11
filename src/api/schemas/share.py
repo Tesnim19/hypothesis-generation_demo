@@ -1,22 +1,37 @@
-"""Share link schemas.
-
-Shared-snapshot models double as the whitelist: undeclared fields are dropped
-when a snapshot is built, so internal ids never reach the public payload.
-"""
-
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, Field, StringConstraints, computed_field
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    computed_field,
+)
+
+
+_OFFSET_THEN_Z = re.compile(r"[+-]\d{2}:\d{2}Z$")
+
+
+def _strip_redundant_z(value):
+    # Stored stamps are often isoformat() + "Z", i.e. "...+00:00Z".
+    if isinstance(value, str) and _OFFSET_THEN_Z.search(value):
+        return value[:-1]
+    return value
 
 
 def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
-UtcDatetime = Annotated[datetime, AfterValidator(_as_utc)]
+UtcDatetime = Annotated[
+    datetime, BeforeValidator(_strip_redundant_z), AfterValidator(_as_utc)
+]
 
 
 class ShareLinkCreateRequest(BaseModel):
@@ -57,25 +72,29 @@ class ShareLinkListResponse(BaseModel):
     links: list[ShareLinkResponse]
 
 
-class SharedGraphNode(BaseModel):
+class _Shared(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SharedGraphNode(_Shared):
     id: str
     type: str | None = None
     name: str | None = None
 
 
-class SharedGraphEdge(BaseModel):
+class SharedGraphEdge(_Shared):
     source: str
     target: str
     label: str | None = None
 
 
-class SharedGraph(BaseModel):
+class SharedGraph(_Shared):
     nodes: list[SharedGraphNode] = Field(default_factory=list)
     edges: list[SharedGraphEdge] = Field(default_factory=list)
     probability: float | None = None
 
 
-class SharedGoTerm(BaseModel):
+class SharedGoTerm(_Shared):
     id: str
     name: str | None = None
     p: float | None = None
@@ -83,18 +102,23 @@ class SharedGoTerm(BaseModel):
     genes: list[str] = Field(default_factory=list)
 
 
-class SharedWarning(BaseModel):
+class SharedWarning(_Shared):
     code: str | None = None
     message: str | None = None
 
 
-class SharedHypothesis(BaseModel):
+class SharedHypothesisStub(_Shared):
+    """A related hypothesis that has not completed."""
+
     key: str
     causal_gene: str | None = None
     probability: float | None = None
     status: str
-    summary: str | None = None
-    graph: SharedGraph | None = None
+
+
+class SharedHypothesis(SharedHypothesisStub):
+    summary: str
+    graph: SharedGraph
     selected_go_term: SharedGoTerm | None = None
     go_terms: list[SharedGoTerm] = Field(default_factory=list)
 
@@ -108,9 +132,9 @@ class SharedMainHypothesis(SharedHypothesis):
     generated_at: UtcDatetime | None = None
 
 
-class SharedSnapshot(BaseModel):
+class SharedSnapshot(_Shared):
     hypothesis: SharedMainHypothesis
-    related: list[SharedHypothesis] = Field(default_factory=list)
+    related: list[SharedHypothesis | SharedHypothesisStub] = Field(default_factory=list)
     related_truncated: bool = False
 
 
