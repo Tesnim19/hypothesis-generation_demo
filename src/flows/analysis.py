@@ -48,6 +48,10 @@ def _ldsc_failure_cause(error):
 RESULT_KEYS = ("results_file", "total_variants", "high_pip_variants", "total_credible_sets")
 
 
+class RunSupersededError(RuntimeError):
+    """The project's analysis state now belongs to another run, so this one stops."""
+
+
 @flow(log_prints=True,
     persist_result=False,
     task_runner=DaskTaskRunner(address=os.getenv("DASK_ADDRESS"))
@@ -89,14 +93,21 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             state["resumable_from"] = resumable_from(
                 {**state, "artifacts": artifacts, "resumed_from": resume_from}
             )
-        save_analysis_state_task.submit(user_id, project_id, state).result()
+        save_or_stop(state)
         last_state = state
 
     def record_artifacts(**recorded):
         artifacts.update(recorded)
-        save_analysis_state_task.submit(
-            user_id, project_id, {"artifacts": dict(artifacts), "flow_run_id": flow_run_id}
-        ).result()
+        save_or_stop({"artifacts": dict(artifacts), "flow_run_id": flow_run_id})
+
+    def save_or_stop(state):
+        if not save_analysis_state_task.submit(user_id, project_id, state).result():
+            raise RunSupersededError(f"Flow run {flow_run_id} no longer owns project {project_id}")
+
+    def enter_stage(key, state):
+        """Save a stage's Running state; a resumed run already saved it for its first stage."""
+        if key != resume_from:
+            save_state({"status": "Running", **state})
 
     def start_ldsc_tissue_analysis(harmonized_file, output_dir):
         logger.info("[PIPELINE] Starting LDSC + tissue analysis in background")
@@ -170,12 +181,7 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
     def prepare_resume(output_dir):
         stage = get_stage(resume_from)
         logger.info(f"[PIPELINE] Resuming from {resume_from}")
-        save_state({
-            "status": "Running",
-            **stage["resume_state"],
-            "message": f"Restarted from {stage['label']}",
-            "started_at": started_at,
-        })
+        save_state({"status": "Running", **stage["resume_state"], "started_at": started_at})
         try:
             harmonized_file = ensure_harmonized_file_task.submit(
                 user_id, project_id, output_dir, artifacts["harmonized_file"]
@@ -246,14 +252,12 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
             record_artifacts(credible_sets_source="finemapping")
 
             if runs_stage("filtering", resume_from):
-                if not resume_from:
-                    save_state({
-                        "status": "Running",
-                        "stage": "Filtering",
-                        "progress": 30,
-                        "message": "Harmonization completed, filtering significant variants",
-                        "started_at": started_at,
-                    })
+                enter_stage("filtering", {
+                    "stage": "Filtering",
+                    "progress": 30,
+                    "message": "Harmonization completed, filtering significant variants",
+                    "started_at": started_at,
+                })
 
                 logger.info(f"[PIPELINE] Stage 2: Loading and filtering variants")
                 try:
@@ -281,14 +285,11 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                     sig_output_path = None
 
             if runs_stage("cojo", resume_from):
-                # Update analysis state after filtering
-                filtering_state = {
-                    "status": "Running",
+                enter_stage("cojo", {
                     "stage": "Cojo",
                     "progress": 50,
                     "message": "Filtering completed, running COJO analysis"
-                }
-                save_state(filtering_state)
+                })
 
                 logger.info(f"[PIPELINE] Stage 3: COJO analysis")
 
@@ -311,14 +312,11 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                     except Exception as cleanup_e:
                         logger.warning(f"[PIPELINE] Could not cleanup {sig_output_path}: {cleanup_e}")
 
-            # Update analysis state after COJO
-            cojo_state = {
-                "status": "Running",
+            enter_stage("fine_mapping", {
                 "stage": "Fine_mapping",
                 "progress": 70,
                 "message": "COJO analysis completed, starting fine-mapping"
-            }
-            save_state(cojo_state)
+            })
 
             logger.info(f"[PIPELINE] Stage 4: Multiprocessing fine-mapping")
             logger.info(f"[PIPELINE] Processing {len(cojo_results)} regions with {batch_size} regions per batch")
@@ -444,13 +442,11 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
 
     def finish(ldsc_tissue_future):
         logger.info(f"[PIPELINE] Stage 5: Waiting for LDSC + Tissue Analysis to complete")
-        if last_state.get("stage") != "LDSC_Tissue_Analysis":
-            save_state({
-                "status": "Running",
-                "stage": "LDSC_Tissue_Analysis",
-                "progress": 85,
-                "message": "Waiting for LDSC tissue analysis to finish"
-            })
+        enter_stage("ldsc", {
+            "stage": "LDSC_Tissue_Analysis",
+            "progress": 85,
+            "message": "Waiting for LDSC tissue analysis to finish"
+        })
 
         try:
             # Wait for the parallel LDSC + tissue analysis task to complete
@@ -500,6 +496,9 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
         logger.info(f"[PIPELINE] Analysis completed successfully: {summary}")
         return summary
 
+    except RunSupersededError as e:
+        logger.warning(f"[PIPELINE] Stopping: {e}")
+        raise
     except Exception as e:
         logger.error(f"[PIPELINE]  Analysis pipeline failed: {str(e)}")
         # Keep a specific failed state already saved by the failing stage

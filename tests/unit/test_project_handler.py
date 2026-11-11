@@ -13,6 +13,7 @@ from src.api.routes import projects as projects_routes
 from src.api.schemas import AnalysisResumeRequest
 from src import run_deployment as run_deployment_module
 from src import utils
+from src.services import prefect_runs
 from src.tasks import project as project_tasks
 from src.db.project_handler import ProjectHandler
 from src.utils import analysis_state_for_public_api
@@ -401,7 +402,9 @@ def test_resume_route_restarts_the_run_with_stored_parameters(monkeypatch):
     mocks.projects.update_analysis_parameters.assert_called_once_with(
         "viewer", PROJECT_ID, {"p_value_threshold": 1e-6}
     )
-    mocks.projects.add_analysis_event.assert_not_called()
+    assert mocks.projects.add_analysis_event.call_args.args[3] == (
+        "Restarted from filtering with p_value_threshold 1e-06 (was 5e-08)"
+    )
     kwargs = mocks.invoke.call_args.kwargs
     assert kwargs["resume_from"] == "filtering"
     assert kwargs["artifacts"] == {"harmonized_file": "harmonized.tsv.gz"}
@@ -476,3 +479,11 @@ def test_only_resumed_runs_send_resume_parameters(monkeypatch, resume_from, send
 
     parameters = run.call_args.kwargs["parameters"]
     assert ("resume_from" in parameters and "artifacts" in parameters) == sends_resume_params
+
+
+@pytest.mark.parametrize("status, accepted", [("ACCEPT", True), ("REJECT", False), ("ABORT", False)])
+def test_cancel_flow_run_reports_whether_prefect_accepted(monkeypatch, status, accepted):
+    response = MagicMock(**{"json.return_value": {"status": status, "details": {"reason": "terminal"}}})
+    monkeypatch.setattr(prefect_runs.requests, "post", MagicMock(return_value=response))
+
+    assert prefect_runs.cancel_flow_run("run-1") is accepted

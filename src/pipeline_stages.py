@@ -1,10 +1,16 @@
 """Analysis pipeline stages, in order, and the rules for resuming a failed run from one.
 
+Each entry has:
+key: name used by the API (from_stage) and the flow (resume_from).
+label: user-facing name.
+state_stages: analysis_state stage names written while the stage runs.
 needs: artifacts recorded in analysis_state.artifacts that a run starting here requires.
-cleanup: stored outputs deleted before rerunning this stage (or an earlier one).
-params: request overrides consumed by this stage.
-resume_state: the Running state a run resumed here starts in.
-can_retry: whether the stored failure could succeed on a rerun from here.
+resumable: whether a failed run may restart here.
+cleanup (optional): stored outputs deleted before rerunning this stage or an earlier one.
+params (optional): request overrides consumed by this stage.
+skipped_on_opentargets (optional): the stage does not run when OpenTargets supplied the credible sets.
+can_retry (optional): whether the stored failure could succeed on a rerun from here.
+resume_state (resumable stages): the Running state a run resumed here starts in.
 """
 
 
@@ -19,7 +25,8 @@ PIPELINE_STAGES = [
     {"key": "filtering", "label": "filtering", "state_stages": {"Filtering"},
      "needs": ["harmonized_file"], "params": ["p_value_threshold"],
      "skipped_on_opentargets": True, "can_retry": _some_variants_can_pass,
-     "resume_state": {"stage": "Filtering", "progress": 30}, "resumable": True},
+     "resume_state": {"stage": "Filtering", "progress": 30, "message": "Filtering significant variants"},
+     "resumable": True},
     {"key": "cojo", "label": "COJO", "state_stages": {"Cojo"},
      "needs": ["harmonized_file"], "skipped_on_opentargets": True, "resumable": False},
     {"key": "fine_mapping", "label": "fine-mapping",
@@ -29,7 +36,9 @@ PIPELINE_STAGES = [
     {"key": "ldsc", "label": "LDSC tissue analysis",
      "state_stages": {"LDSC_Analysis", "LDSC_Tissue_Analysis"},
      "needs": ["harmonized_file", "credible_sets"],
-     "resume_state": {"stage": "LDSC_Tissue_Analysis", "progress": 85}, "resumable": True},
+     "resume_state": {"stage": "LDSC_Tissue_Analysis", "progress": 85,
+                      "message": "Waiting for LDSC tissue analysis to finish"},
+     "resumable": True},
 ]
 
 STAGE_INDEX = {stage["key"]: index for index, stage in enumerate(PIPELINE_STAGES)}

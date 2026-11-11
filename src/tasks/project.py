@@ -50,8 +50,8 @@ def prepare_gwas_file_task(
         "message": "Uploading or preparing GWAS file...",
         "flow_run_id": flow_run.id,
     }
-    projects_handler.save_analysis_state(user_id, project_id, uploading_state)
-    emit_analysis_update(user_id, project_id, uploading_state)
+    if projects_handler.save_analysis_state(user_id, project_id, uploading_state):
+        emit_analysis_update(user_id, project_id, uploading_state)
 
     final_path = gwas_file_path
     dest_dir = output_dir or os.path.join("data", "temp", str(user_id))
@@ -170,14 +170,13 @@ def harmonized_file_available(storage, output_dir, user_id, project_id, file_nam
 @task()
 def ensure_harmonized_file_task(user_id, project_id, output_dir, file_name):
     """Local path of a recorded harmonized file, downloading it from storage if needed."""
-    storage = get_deps().get("storage")
-    if not harmonized_file_available(storage, output_dir, user_id, project_id, file_name):
-        raise HarmonizedFileMissingError(f"Harmonized file {file_name} is no longer available")
     path = os.path.join(output_dir, file_name)
-    object_key = harmonized_object_key(user_id, project_id, file_name)
-    if not os.path.exists(path) and not storage.download_file(object_key, path):
-        raise RuntimeError(f"Could not download {object_key}")
-    return path
+    if os.path.exists(path):
+        return path
+    storage = get_deps().get("storage")
+    if storage and storage.download_file(harmonized_object_key(user_id, project_id, file_name), path):
+        return path
+    raise HarmonizedFileMissingError(f"Harmonized file {file_name} is no longer available")
 
 
 @task()

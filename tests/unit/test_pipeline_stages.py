@@ -51,3 +51,7 @@ def test_enabling_a_stage_makes_it_resumable(monkeypatch):
 def test_rerunning_from_a_stage_cleans_and_accepts_what_later_stages_need(stage, cleanup, params):
     assert cleanup_targets(stage) == cleanup
     assert rerun_params(stage) == params
+
+
+def test_every_resumable_stage_defines_its_resume_state():
+    assert all("resume_state" in stage for stage in pipeline_stages.PIPELINE_STAGES if stage["resumable"])

@@ -161,7 +161,7 @@ def _configure_flow(monkeypatch, immediate_task_factory):
     monkeypatch.setattr(flow_module, "get_project_analysis_path_task", immediate_task_factory(lambda *_: "/out"))
     monkeypatch.setattr(flow_module, "harmonize_sumstats_with_nextflow", immediate_task_factory(lambda *_, **__: "/out/harmonized.tsv.gz"))
     monkeypatch.setattr(flow_module, "run_combined_ldsc_tissue_analysis", ldsc_task)
-    monkeypatch.setattr(flow_module, "save_analysis_state_task", immediate_task_factory(lambda _u, _p, state: saved_states.append(state)))
+    monkeypatch.setattr(flow_module, "save_analysis_state_task", immediate_task_factory(lambda _u, _p, state: saved_states.append(state) or True))
     monkeypatch.setattr(flow_module, "send_pipeline_notification", notify)
     monkeypatch.setattr(flow_module.Config, "from_env", MagicMock(return_value=MagicMock()))
     return saved_states, ldsc_task, notify
@@ -367,7 +367,6 @@ def test_ldsc_resume_that_fails_again_stays_resumable(monkeypatch, immediate_tas
         _resume("ldsc", {"harmonized_file": "harmonized.tsv.gz", "credible_sets": True})
 
     assert [state.get("stage") for state in saved_states] == ["LDSC_Tissue_Analysis", "LDSC_Analysis"]
-    assert saved_states[0]["message"] == "Restarted from LDSC tissue analysis"
     assert saved_states[-1]["resumable_from"] == ["ldsc"]
 
 
@@ -405,22 +404,36 @@ def test_resume_without_the_harmonized_file_is_no_longer_resumable(monkeypatch, 
     ldsc_task.submit.assert_not_called()
 
 
-def _ensure_harmonized_file(monkeypatch, local, in_storage):
-    storage = MagicMock(**{"exists.return_value": in_storage, "download_file.return_value": True})
-    monkeypatch.setattr(project_tasks, "get_deps", lambda: {"projects": MagicMock(), "storage": storage})
+def _ensure_harmonized_file(monkeypatch, local, downloaded):
+    storage = MagicMock(**{"download_file.return_value": downloaded})
+    monkeypatch.setattr(project_tasks, "get_deps", lambda: {"storage": storage})
     monkeypatch.setattr(project_tasks.os.path, "exists", lambda _path: local)
     path = project_tasks.ensure_harmonized_file_task.fn("user-1", "project-1", "/out", "harmonized.tsv.gz")
     return path, storage
 
 
-@pytest.mark.parametrize("local, downloaded", [(True, False), (False, True)])
-def test_ensure_harmonized_file_uses_the_local_copy_or_downloads_it(monkeypatch, local, downloaded):
-    path, storage = _ensure_harmonized_file(monkeypatch, local=local, in_storage=True)
+@pytest.mark.parametrize("local", [True, False])
+def test_ensure_harmonized_file_uses_the_local_copy_or_downloads_it(monkeypatch, local):
+    path, storage = _ensure_harmonized_file(monkeypatch, local=local, downloaded=True)
 
     assert path == "/out/harmonized.tsv.gz"
-    assert storage.download_file.called == downloaded
+    assert storage.download_file.called == (not local)
 
 
 def test_ensure_harmonized_file_fails_when_both_copies_are_gone(monkeypatch):
     with pytest.raises(HarmonizedFileMissingError):
-        _ensure_harmonized_file(monkeypatch, local=False, in_storage=False)
+        _ensure_harmonized_file(monkeypatch, local=False, downloaded=False)
+
+
+def test_superseded_run_stops_without_writing_a_failed_state(monkeypatch, immediate_task_factory):
+    saved_states, _, notify = _configure_flow(monkeypatch, immediate_task_factory)
+    monkeypatch.setattr(
+        flow_module, "save_analysis_state_task",
+        immediate_task_factory(lambda _u, _p, state: saved_states.append(state) or state.get("stage") != "Filtering"),
+    )
+
+    with pytest.raises(flow_module.RunSupersededError):
+        _run_flow()
+
+    assert saved_states[-1]["stage"] == "Filtering"
+    notify.assert_not_called()

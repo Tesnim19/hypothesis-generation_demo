@@ -410,6 +410,19 @@ async def resume_analysis(
     if not queued:
         raise HTTPException(status_code=409, detail="A restart is already in progress")
     emit_analysis_update(current_user_id, project_id, queued)
+    changes = {
+        name: {"previous": previous_parameters.get(name), "new": value}
+        for name, value in overrides.items()
+    }
+    message = f"Restarted from {get_stage(body.from_stage)['label']}"
+    if changes:
+        message += " with " + ", ".join(
+            f"{name} {change['new']} (was {change['previous']})" for name, change in changes.items()
+        )
+    projects.add_analysis_event(
+        current_user_id, project_id, "Setup", message,
+        details={"from_stage": body.from_stage, "changes": changes},
+    )
 
     try:
         loop = asyncio.get_running_loop()
