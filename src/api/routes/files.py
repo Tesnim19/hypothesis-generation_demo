@@ -12,7 +12,13 @@ from src.utils import serialize_datetime_fields
 router = APIRouter(tags=["user_files"])
 
 
-@router.get("/user-files", response_model=UserFilesResponse, summary="List user-uploaded files")
+@router.get(
+    "/user-files",
+    response_model=UserFilesResponse,
+    summary="List user-uploaded files",
+    description="Deprecated: list files from the platform file service (`/v1/files`) instead.",
+    deprecated=True,
+)
 async def get_user_files(
     current_user_id: str = Depends(get_current_user_id),
     files: FileHandler = Depends(get_file_handler),
@@ -43,6 +49,7 @@ async def get_user_files(
                     "record_count": file_meta.get("record_count"),
                     "upload_date": file_meta.get("upload_date"),
                     "source": "user_upload",
+                    "external_file_id": file_meta.get("external_file_id"),
                 }
             )
 

@@ -14,6 +14,7 @@ class UserFileItem(BaseModel):
     record_count: int | None = None
     upload_date: Any | None = None
     source: str = "user_upload"
+    external_file_id: str | None = None
 
 
 class UserFilesResponse(BaseModel):
