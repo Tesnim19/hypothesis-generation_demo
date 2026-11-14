@@ -1,7 +1,7 @@
 """Client for the platform file service (``/v1/files``).
 
-When an analysis starts, the user's token asks the file service for a grant on
-the chosen file. The worker later trades the grant id and our consumer key
+When an analysis starts, the user's token and our consumer key ask the file service
+for a grant on the chosen file. The worker later trades the grant id and the key
 (FILES_API_SERVICE_TOKEN) for a short link, so no user token is kept.
 """
 from __future__ import annotations
@@ -82,9 +82,9 @@ def register_file(file_id: str, authorization: str, user_id: str, files) -> tupl
     """
     if not FILE_ID.match(file_id):
         raise FilesApiError(400, "file_id must be a file service id (f_...)")
+    headers = {"Authorization": authorization, **_service_headers()}
     meta = _call(
-        "POST", f"/v1/files/{file_id}/grants", {"Authorization": authorization},
-        json={"for": "hypothesis"},
+        "POST", f"/v1/files/{file_id}/grants", headers, json={"for": "hypothesis"}
     ).json()
     grant_id = meta["grant_id"]
 

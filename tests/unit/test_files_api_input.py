@@ -89,7 +89,7 @@ def test_register_gets_grant_and_creates_metadata_once(enabled, monkeypatch):
     assert (doc["_id"], grant_id) == ("doc-1", "g-1")
     method, url, headers, kwargs = calls[0]
     assert (method, url) == ("POST", f"http://files.test/v1/files/{FILE_ID}/grants")
-    assert headers == {"Authorization": "Bearer u"}
+    assert headers == {"Authorization": "Bearer u", files_api.SERVICE_HEADER: "svc"}
     assert kwargs["json"] == {"for": "hypothesis"}
     assert files.create_file_metadata.call_args.kwargs["source"] == "files_api"
 
