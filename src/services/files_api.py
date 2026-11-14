@@ -1,8 +1,8 @@
 """Client for the platform file service (``/v1/files``).
 
-When an analysis starts, the user's token and our service token ask the file
-service for a grant on the chosen file. The worker later trades the grant id
-and the service token for a short download link, so no user token is kept.
+When an analysis starts, the user's token asks the file service for a grant on
+the chosen file. The worker later trades the grant id and our consumer key
+(FILES_API_SERVICE_TOKEN) for a short link, so no user token is kept.
 """
 from __future__ import annotations
 
@@ -17,10 +17,7 @@ DOWNLOAD_TIMEOUT = 600
 HEAD_BYTES = 1024 * 1024
 FILE_ID = re.compile(r"^f_[0-9a-f]{32}$")
 
-# Header and grant routes are assumed until the file service publishes them.
-SERVICE_HEADER = "X-Service-Token"
-GRANT_PATH = "/v1/files/{file_id}/grants"
-GRANT_LINK_PATH = "/v1/grants/{grant_id}/download-url"
+SERVICE_HEADER = "X-Consumer-Key"
 
 FILE_GONE = "This file is no longer available. Pick it again to rerun."
 
@@ -66,15 +63,11 @@ def _call(method: str, path: str, headers: dict, **kwargs) -> requests.Response:
         raise FilesApiError(401, "Sign in again to use this file")
     if status in (403, 404):
         raise FilesApiError(404, "File not found")
-    if status in (409, 429):  # not ready / not usable, or too many requests
+    if status in (409, 429):  # not ready / not usable by Hypothesis, or too many links
         raise FilesApiError(status, _message(resp) or f"File service refused ({status})")
     if status >= 400:
         raise FilesApiError(502, f"File service error {status}")
     return resp
-
-
-def get_file(file_id: str, authorization: str) -> dict:
-    return _call("GET", f"/v1/files/{file_id}", {"Authorization": authorization}).json()
 
 
 def read_head(file_id: str, authorization: str) -> bytes:
@@ -83,17 +76,17 @@ def read_head(file_id: str, authorization: str) -> bytes:
 
 
 def register_file(file_id: str, authorization: str, user_id: str, files) -> tuple[dict, str]:
-    """Check the file is usable, then return its local file_metadata doc and a new grant id."""
+    """Get a grant on the file and return its local file_metadata doc and the grant id.
+
+    The file service refuses with 409 when the file is not ready or not usable by Hypothesis.
+    """
     if not FILE_ID.match(file_id):
         raise FilesApiError(400, "file_id must be a file service id (f_...)")
-    meta = get_file(file_id, authorization)
-    if meta.get("state") != "ready":
-        raise FilesApiError(409, f"File is not ready (state: {meta.get('state')})")
-    if "hypothesis" not in (meta.get("compatible_with") or []):
-        raise FilesApiError(400, "This file cannot be used for a Hypothesis analysis")
-
-    headers = {"Authorization": authorization, **_service_headers()}
-    grant_id = _call("POST", GRANT_PATH.format(file_id=file_id), headers).json()["grant_id"]
+    meta = _call(
+        "POST", f"/v1/files/{file_id}/grants", {"Authorization": authorization},
+        json={"for": "hypothesis"},
+    ).json()
+    grant_id = meta["grant_id"]
 
     doc = files.find_by_external_id(user_id, file_id)
     if not doc:
@@ -117,19 +110,23 @@ def download_granted(grant_id: str | None, dest_path: str) -> None:
     if not grant_id:
         raise RuntimeError(FILE_GONE)
     try:
-        link = _call("POST", GRANT_LINK_PATH.format(grant_id=grant_id), _service_headers()).json()
+        link = _call("POST", f"/v1/grants/{grant_id}/link", _service_headers()).json()
     except FilesApiError as exc:
         if exc.status_code in (404, 409):  # grant revoked or expired, or file deleted
             raise RuntimeError(FILE_GONE) from exc
         if exc.status_code == 401:
-            raise RuntimeError("File service rejected the service token") from exc
+            raise RuntimeError("File service rejected FILES_API_SERVICE_TOKEN") from exc
         raise
 
     size, expected = link["size"], link.get("sha256")
     digest, written = hashlib.sha256(), 0
     partial = f"{dest_path}.part"
-    # The link points straight at storage; a redirect would mean something is wrong.
-    with requests.get(link["url"], stream=True, allow_redirects=False,
+    # The link redirects exactly once, to a short storage URL.
+    first = requests.get(link["url"], allow_redirects=False, timeout=TIMEOUT)
+    location = first.headers.get("Location")
+    if first.status_code not in (302, 303, 307) or not location:
+        raise RuntimeError(f"File download failed: HTTP {first.status_code}")
+    with requests.get(location, stream=True, allow_redirects=False,
                       timeout=DOWNLOAD_TIMEOUT) as resp:
         if resp.status_code != 200:
             raise RuntimeError(f"File download failed: HTTP {resp.status_code}")

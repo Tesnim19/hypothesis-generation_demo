@@ -40,7 +40,7 @@ def _respond(monkeypatch, status=200, json=None, content=b""):
 def test_disabled_returns_503(monkeypatch):
     monkeypatch.delenv("FILES_API_URL", raising=False)
     with pytest.raises(files_api.FilesApiError) as exc:
-        files_api.get_file(FILE_ID, "Bearer u")
+        files_api.read_head(FILE_ID, "Bearer u")
     assert exc.value.status_code == 503
 
 
@@ -51,7 +51,7 @@ def test_disabled_returns_503(monkeypatch):
 def test_service_errors_map_to_status(enabled, monkeypatch, status, expected):
     _respond(monkeypatch, status=status, json={"code": "x", "message": "refused"})
     with pytest.raises(files_api.FilesApiError) as exc:
-        files_api.get_file(FILE_ID, "Bearer u")
+        files_api.read_head(FILE_ID, "Bearer u")
     assert exc.value.status_code == expected
 
 
@@ -61,33 +61,24 @@ def test_unreachable_service_returns_502(enabled, monkeypatch):
 
     monkeypatch.setattr(files_api.requests, "request", boom)
     with pytest.raises(files_api.FilesApiError) as exc:
-        files_api.get_file(FILE_ID, "Bearer u")
+        files_api.read_head(FILE_ID, "Bearer u")
     assert exc.value.status_code == 502
 
 
-@pytest.mark.parametrize(
-    ("file_id", "meta", "status"),
-    [
-        ("gx_abc", {}, 400),
-        (FILE_ID, {"name": "a.tsv", "state": "importing"}, 409),
-        (FILE_ID, {"name": "a.tsv", "state": "ready", "compatible_with": ["galaxy"]}, 400),
-    ],
-)
-def test_register_rejects_unusable_files(enabled, monkeypatch, file_id, meta, status):
-    _respond(monkeypatch, json=meta)
+def test_register_rejects_non_file_service_ids(enabled, monkeypatch):
+    calls = _respond(monkeypatch)
     with pytest.raises(files_api.FilesApiError) as exc:
-        files_api.register_file(file_id, "Bearer u", "user-1", MagicMock())
-    assert exc.value.status_code == status
+        files_api.register_file("gx_abc", "Bearer u", "user-1", MagicMock())
+    assert exc.value.status_code == 400 and not calls
 
 
 def test_register_gets_grant_and_creates_metadata_once(enabled, monkeypatch):
-    meta = {"name": "a.tsv.gz", "state": "ready", "size": 10, "compatible_with": ["hypothesis"]}
+    grant = {"grant_id": "g-1", "name": "a.tsv.gz", "size": 10, "sha256": "ab"}
     calls = []
 
     def fake_request(method, url, headers=None, **kwargs):
-        calls.append((method, url, headers))
-        body = {"grant_id": "g-1"} if method == "POST" else meta
-        return SimpleNamespace(status_code=200, json=lambda: body)
+        calls.append((method, url, headers, kwargs))
+        return SimpleNamespace(status_code=201, json=lambda: grant)
 
     monkeypatch.setattr(files_api.requests, "request", fake_request)
     files = MagicMock()
@@ -96,10 +87,10 @@ def test_register_gets_grant_and_creates_metadata_once(enabled, monkeypatch):
 
     doc, grant_id = files_api.register_file(FILE_ID, "Bearer u", "user-1", files)
     assert (doc["_id"], grant_id) == ("doc-1", "g-1")
-    method, url, headers = calls[-1]
-    assert url == f"http://files.test/v1/files/{FILE_ID}/grants"
-    assert headers["Authorization"] == "Bearer u"
-    assert headers[files_api.SERVICE_HEADER] == "svc"
+    method, url, headers, kwargs = calls[0]
+    assert (method, url) == ("POST", f"http://files.test/v1/files/{FILE_ID}/grants")
+    assert headers == {"Authorization": "Bearer u"}
+    assert kwargs["json"] == {"for": "hypothesis"}
     assert files.create_file_metadata.call_args.kwargs["source"] == "files_api"
 
     files.find_by_external_id.return_value = {"_id": "doc-1"}
@@ -111,24 +102,28 @@ def test_register_gets_grant_and_creates_metadata_once(enabled, monkeypatch):
 DATA = b"SNP\tP\nrs1\t0.1\n"
 
 
-def _grant_link(monkeypatch, status=200, sha256=None, data=DATA):
-    link = {"url": "http://file-storage.test/obj?sig", "size": len(DATA),
+def _grant_link(monkeypatch, status=200, sha256=None, data=DATA, redirect=302):
+    link = {"url": "http://file-service.test/v1/links/tok/a.tsv", "size": len(DATA),
             "sha256": sha256 or hashlib.sha256(DATA).hexdigest()}
-    _respond(monkeypatch, status=status, json=link)
+    calls = _respond(monkeypatch, status=status, json=link)
+    first = SimpleNamespace(status_code=redirect, headers={"Location": "http://storage.test/o?s"})
     stream = MagicMock(status_code=200)
     stream.iter_content.return_value = [data]
     stream.__enter__.return_value = stream
-    get = MagicMock(return_value=stream)
+    get = MagicMock(side_effect=[first, stream])
     monkeypatch.setattr(files_api.requests, "get", get)
-    return get
+    return calls, get
 
 
 def test_download_granted_checks_and_writes(enabled, monkeypatch, tmp_path):
-    get = _grant_link(monkeypatch)
+    calls, get = _grant_link(monkeypatch)
     dest = tmp_path / "a.tsv"
     files_api.download_granted("g-1", str(dest))
     assert dest.read_bytes() == DATA
-    assert get.call_args.kwargs["allow_redirects"] is False
+    assert calls[0][1] == "http://files.test/v1/grants/g-1/link"
+    assert calls[0][2] == {files_api.SERVICE_HEADER: "svc"}
+    assert get.call_args_list[1].args[0] == "http://storage.test/o?s"
+    assert all(c.kwargs["allow_redirects"] is False for c in get.call_args_list)
 
 
 @pytest.mark.parametrize(
@@ -137,6 +132,7 @@ def test_download_granted_checks_and_writes(enabled, monkeypatch, tmp_path):
         ({"sha256": "0" * 64}, "checksum"),
         ({"data": DATA + b"extra"}, "checksum"),
         ({"status": 404}, "no longer available"),
+        ({"redirect": 200}, "download failed"),
     ],
 )
 def test_download_granted_refuses_bad_or_dead(enabled, monkeypatch, tmp_path, kwargs, error):
