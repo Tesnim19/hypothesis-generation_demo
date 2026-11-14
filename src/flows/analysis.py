@@ -43,7 +43,6 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                            file_storage_key=None, file_id_new=None,
                            file_source_minio_path=None, file_source_download_url=None,
                            file_minio_cache_key=None, file_gwas_library_id=None,
-                           file_external_id=None,
                            opentargets_study_id=None):
     """
     Complete analysis pipeline flow using Prefect for orchestration
@@ -72,7 +71,6 @@ def analysis_pipeline_flow(user_id, project_id, gwas_file_path=None, ref_genome=
                 source_download_url=file_source_download_url,
                 minio_cache_key=file_minio_cache_key,
                 gwas_library_id=file_gwas_library_id,
-                external_file_id=file_external_id,
                 output_dir=output_dir,
             ).result()
             logger.info(f"[PIPELINE] Stage 0 complete: file ready at {gwas_file_path}")

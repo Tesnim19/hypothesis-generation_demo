@@ -62,7 +62,6 @@ def prepare_gwas_file_task(
     source_download_url: str | None = None,
     minio_cache_key: str | None = None,
     gwas_library_id: str | None = None,
-    external_file_id: str | None = None,
     output_dir: str | None = None,
 ) -> str:
     """
@@ -88,13 +87,12 @@ def prepare_gwas_file_task(
     final_path = gwas_file_path
     dest_dir = output_dir or os.path.join("data", "temp", str(user_id))
 
-    if external_file_id:
-        url = files_api.download_url(external_file_id, user_id)
-        downloaded = download_gwas_source(dest_dir, None, source_download_url=url)
-        # The link's path need not carry the file's name or extension.
-        name = files_handler.get_file_metadata(user_id, file_metadata_id)["filename"]
-        final_path = os.path.join(dest_dir, os.path.basename(name))
-        os.replace(downloaded, final_path)
+    file_meta = files_handler.get_file_metadata(user_id, file_metadata_id) if file_metadata_id else None
+    if file_meta and file_meta.get("source") == "files_api":
+        project = projects_handler.get_projects(user_id, project_id) or {}
+        os.makedirs(dest_dir, exist_ok=True)
+        final_path = os.path.join(dest_dir, os.path.basename(file_meta["filename"]))
+        files_api.download_granted(project.get("file_grant_id"), final_path)
 
     elif (source_minio_path and storage) or source_download_url:
         final_path = download_gwas_source(

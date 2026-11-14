@@ -453,11 +453,11 @@ async def post_analysis_pipeline(
         _source_download_url: str | None = None
         _minio_cache_key: str | None = None
         _gwas_library_id: str | None = None
-        _external_file_id: str | None = None
+        _file_grant_id: str | None = None
 
         if file_id:
             try:
-                file_meta = await asyncio.get_running_loop().run_in_executor(
+                file_meta, _file_grant_id = await asyncio.get_running_loop().run_in_executor(
                     None,
                     files_api.register_file,
                     file_id,
@@ -472,7 +472,6 @@ async def post_analysis_pipeline(
             file_size = file_meta.get("file_size", 0)
             file_path = ""
             _file_needs_processing = True
-            _external_file_id = file_id
 
         elif not is_uploaded:
             file_id_param = gwas_file_input
@@ -682,6 +681,7 @@ async def post_analysis_pipeline(
             analysis_parameters=analysis_parameters,
             user_email=current_user_email,
             thread_id=thread_id,
+            file_grant_id=_file_grant_id,
         )
 
         metadata_dir = os.path.join("data", "metadata", str(current_user_id))
@@ -735,7 +735,6 @@ async def post_analysis_pipeline(
                 file_source_download_url=_source_download_url,
                 file_minio_cache_key=_minio_cache_key,
                 file_gwas_library_id=_gwas_library_id,
-                file_external_id=_external_file_id,
                 user_email=current_user_email,
                 project_name=project_name,
                 opentargets_study_id=opentargets_study_id,

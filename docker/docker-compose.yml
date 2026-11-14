@@ -132,6 +132,7 @@ services:
           memory: 180G
     networks:
       - app_network
+      - file_service_net
     restart: unless-stopped
 
   api-service:
@@ -195,6 +196,7 @@ services:
       --error-logfile -
     networks:
       - app_network
+      - file_service_net
     restart: unless-stopped
 
   prefect-postgres:
@@ -418,3 +420,8 @@ volumes:
 networks:
   app_network:
     driver: bridge
+  # The platform file service's network (FILES_API_URL=http://file-service:8000).
+  # Created by the file service's own deployment; must exist before `up`.
+  file_service_net:
+    name: file-service-net
+    external: true
