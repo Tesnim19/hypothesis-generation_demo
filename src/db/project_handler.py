@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pymongo
 from loguru import logger
+from src.pipeline_stages import get_stage, resumable_from
+from src.services.prefect_runs import cancel_flow_run
 from src.utils import analysis_stage_label, analysis_state_for_public_api, emit_analysis_event
 from .base_handler import BaseHandler
 
@@ -172,19 +174,7 @@ class ProjectHandler(BaseHandler):
             # 0. Cancel any running Prefect flow before wiping data 
             state = self.load_analysis_state(user_id, project_id)
             if state and state.get("flow_run_id") and state.get("status") in ACTIVE_ANALYSIS_STATUSES:
-                prefect_url = os.getenv("PREFECT_API_URL", "http://prefect-service:4200/api")
-                try:
-                    resp = _req.post(
-                        f"{prefect_url}/flow_runs/{state['flow_run_id']}/set_state",
-                        json={"state": {"type": "CANCELLED"}, "force": True},
-                        timeout=3,
-                    )
-                    if resp.status_code in (200, 201):
-                        logger.info(f"Cancelled Prefect flow run {state['flow_run_id']} for project {project_id}")
-                    else:
-                        logger.warning(f"Could not cancel flow run {state['flow_run_id']}: {resp.status_code}")
-                except Exception as cancel_e:
-                    logger.warning(f"Failed to cancel Prefect flow run for {project_id}: {cancel_e}")
+                cancel_flow_run(state["flow_run_id"])
 
             # 1. Delete credible sets
             credible_sets_result = self.credible_sets_collection.delete_many({
@@ -303,9 +293,13 @@ class ProjectHandler(BaseHandler):
         """Merge state_data into the project's analysis_state.
 
         With expected_updated_at, only write if the stored state is still
-        active and unchanged since it was read.
+        active and unchanged since it was read. A write carrying a flow_run_id
+        is ignored once another run owns the state or the run was superseded by a restart.
         """
         query = {"_id": ObjectId(project_id), "user_id": user_id}
+        if state_data.get("flow_run_id"):
+            query["analysis_state.flow_run_id"] = {"$in": [state_data["flow_run_id"], None]}
+            query["analysis_state.superseded_flow_run_ids"] = {"$ne": state_data["flow_run_id"]}
         if expected_updated_at is not None:
             query["analysis_state.status"] = {"$in": list(ACTIVE_ANALYSIS_STATUSES)}
             query["analysis_state.updated_at"] = expected_updated_at
@@ -323,14 +317,52 @@ class ProjectHandler(BaseHandler):
                 level="error" if state_data["status"] == "Failed" else "info",
                 details=state_data.get("error_detail"),
                 skip_if_finished=False,
+                flow_run_id=state_data.get("flow_run_id"),
             )
         return saved
 
+    def claim_analysis_resume(self, user_id, project_id, previous_state, from_stage):
+        """Atomically replace a Failed state with a fresh Queued one; None if another request won."""
+        superseded = list(previous_state.get("superseded_flow_run_ids", []))
+        if previous_state.get("flow_run_id"):
+            superseded.append(previous_state["flow_run_id"])
+        state = {
+            "status": "Queued",
+            "message": f"Restarting from {get_stage(from_stage)['label']}",
+            "resumed_from": from_stage,
+            "resume_count": previous_state.get("resume_count", 0) + 1,
+            "artifacts": previous_state.get("artifacts") or {},
+            "superseded_flow_run_ids": superseded,
+        }
+        result = self.projects_collection.update_one(
+            {
+                "_id": ObjectId(project_id),
+                "user_id": user_id,
+                "analysis_state.status": "Failed",
+                "analysis_state.flow_run_id": previous_state.get("flow_run_id"),
+            },
+            {"$set": {"analysis_state": {**state, "updated_at": datetime.now(timezone.utc)}}},
+        )
+        return state if result.modified_count else None
+
+    def update_analysis_parameters(self, user_id, project_id, changes):
+        self.projects_collection.update_one(
+            {"_id": ObjectId(project_id), "user_id": user_id},
+            {"$set": {f"analysis_parameters.{key}": value for key, value in changes.items()}},
+        )
+
+    def has_hypotheses(self, user_id, project_id):
+        return self.hypothesis_collection.count_documents(
+            {"user_id": user_id, "project_id": project_id}, limit=1
+        ) > 0
+
     def add_analysis_event(self, user_id, project_id, stage, message, level="info",
-                           details=None, duration_seconds=None, skip_if_finished=True):
+                           details=None, duration_seconds=None, skip_if_finished=True,
+                           flow_run_id=None):
         """Store a timeline event and push it to the project's analysis room; never raises.
 
         Events arriving after the run has finished are skipped unless skip_if_finished is False.
+        Events from a flow run other than the project's current one are dropped.
         """
         try:
             with pymongo.timeout(ANALYSIS_EVENT_TIMEOUT_SECONDS):
@@ -339,6 +371,8 @@ class ProjectHandler(BaseHandler):
                     {"analysis_state.status": 1, "analysis_state.flow_run_id": 1},
                 )
                 state = (project or {}).get("analysis_state") or {}
+                if flow_run_id and flow_run_id != state.get("flow_run_id"):
+                    return
                 if skip_if_finished and state.get("status") in FINISHED_ANALYSIS_STATUSES:
                     return
                 event = {
@@ -387,6 +421,8 @@ class ProjectHandler(BaseHandler):
             f"{project_id} → {reconciled['status']}"
         )
         changes = {"status": reconciled["status"], "message": reconciled["message"]}
+        if reconciled["status"] == "Failed":
+            changes["resumable_from"] = resumable_from(reconciled)
         if self.save_analysis_state(
             user_id, project_id, changes, expected_updated_at=state.get("updated_at")
         ):

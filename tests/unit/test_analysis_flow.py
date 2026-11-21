@@ -10,6 +10,10 @@ from src.api.routes import projects as projects_routes
 from src.flows import analysis as flow_module
 from src.tasks import analysis as analysis_tasks
 from src.tasks.analysis import NoSignificantVariantsError, filter_significant_variants
+from src.tasks import project as project_tasks
+from src.tasks.gene_expression import LdscExitError
+from src.tasks.project import HarmonizedFileMissingError
+from src.pipeline_stages import runs_stage
 
 
 def _sumstats(p_values):
@@ -157,7 +161,7 @@ def _configure_flow(monkeypatch, immediate_task_factory):
     monkeypatch.setattr(flow_module, "get_project_analysis_path_task", immediate_task_factory(lambda *_: "/out"))
     monkeypatch.setattr(flow_module, "harmonize_sumstats_with_nextflow", immediate_task_factory(lambda *_, **__: "/out/harmonized.tsv.gz"))
     monkeypatch.setattr(flow_module, "run_combined_ldsc_tissue_analysis", ldsc_task)
-    monkeypatch.setattr(flow_module, "save_analysis_state_task", immediate_task_factory(lambda _u, _p, state: saved_states.append(state)))
+    monkeypatch.setattr(flow_module, "save_analysis_state_task", immediate_task_factory(lambda _u, _p, state: saved_states.append(state) or True))
     monkeypatch.setattr(flow_module, "send_pipeline_notification", notify)
     monkeypatch.setattr(flow_module.Config, "from_env", MagicMock(return_value=MagicMock()))
     return saved_states, ldsc_task, notify
@@ -195,10 +199,12 @@ def test_no_significant_variants_fails_at_filtering_without_starting_ldsc(
         "progress": 30,
         "message": "No variants reach p < 1e-06.",
         "error_detail": error.as_detail(),
+        "flow_run_id": None,
+        "resumable_from": [],
     }
     notify.assert_called_once_with(
         "user@example.com", "Wrist", "project-1",
-        success=False, detail="No variants reach p < 1e-06.",
+        success=False, detail="No variants reach p < 1e-06.", restarted=False,
     )
     ldsc_task.submit.assert_not_called()
 
@@ -220,6 +226,8 @@ def test_unexpected_failure_keeps_the_stage_it_happened_in(monkeypatch, immediat
         "stage": "Cojo",
         "progress": 50,
         "message": "Analysis failed in the COJO step",
+        "flow_run_id": None,
+        "resumable_from": ["filtering"],
     }
     assert notify.call_args.kwargs["detail"] == "Analysis failed in the COJO step"
     ldsc_task.submit.assert_called_once_with("/out/harmonized.tsv.gz", "/out", "project-1", "user-1")
@@ -239,6 +247,7 @@ def test_specific_failed_state_is_not_overwritten(monkeypatch, immediate_task_fa
 
     assert saved_states[-1]["stage"] == "Fine_mapping"
     assert saved_states[-1]["message"] == "Fine-mapping failed - no results generated"
+    assert saved_states[-1]["resumable_from"] == ["filtering"]
     notify.assert_called_once()
 
 
@@ -273,4 +282,158 @@ def test_opentargets_study_starts_ldsc_and_skips_filtering(monkeypatch, immediat
     assert saved_states[-1]["status"] == "Completed"
     ldsc_task.submit.assert_called_once()
     filter_task.submit.assert_not_called()
-    notify.assert_called_once_with("user@example.com", "Wrist", "project-1", success=True)
+    notify.assert_called_once_with("user@example.com", "Wrist", "project-1", success=True, restarted=False)
+
+
+def _raise_no_significant_variants(*_args, **_kwargs):
+    raise NoSignificantVariantsError(
+        "No variants reach p < 1e-06.", p_value_threshold=1e-6, min_p_value=1e-6,
+        min_p_variant="1:1:A:G", variants_below_1e6=0, variants_below_1e5=2,
+    )
+
+
+def test_full_run_records_the_harmonized_file_name(monkeypatch, immediate_task_factory):
+    saved_states, _, _ = _configure_flow(monkeypatch, immediate_task_factory)
+    monkeypatch.setattr(flow_module, "filter_significant_variants", immediate_task_factory(_raise_no_significant_variants))
+
+    with pytest.raises(NoSignificantVariantsError):
+        _run_flow()
+
+    assert {"artifacts": {"harmonized_file": "harmonized.tsv.gz"}, "flow_run_id": None} in saved_states
+
+
+def _configure_resume(monkeypatch, immediate_task_factory, ensure=lambda *_: "/out/harmonized.tsv.gz"):
+    saved_states, ldsc_task, notify = _configure_flow(monkeypatch, immediate_task_factory)
+    harmonize = MagicMock()
+    reset = immediate_task_factory(lambda *_: None)
+    monkeypatch.setattr(flow_module, "harmonize_sumstats_with_nextflow", harmonize)
+    monkeypatch.setattr(flow_module, "ensure_harmonized_file_task", immediate_task_factory(ensure))
+    monkeypatch.setattr(flow_module, "reset_analysis_outputs_task", reset)
+    return saved_states, ldsc_task, notify, harmonize, reset
+
+
+def _resume(resume_from, artifacts, **kwargs):
+    return flow_module.analysis_pipeline_flow.fn(
+        "user-1", "project-1", resume_from=resume_from, artifacts=artifacts,
+        user_email="user@example.com", project_name="Wrist", **kwargs,
+    )
+
+
+def _configure_successful_pipeline(monkeypatch, immediate_task_factory):
+    saved_states, ldsc_task, notify, harmonize, _ = _configure_resume(monkeypatch, immediate_task_factory)
+    harmonize.submit.return_value.result.return_value = "/out/harmonized.tsv.gz"
+    ldsc_task.submit.return_value.result.return_value = {"analysis_run_id": "run-2"}
+    fine_mapped = pd.DataFrame({"PIP": [0.9], "cs": [1], "credible_set": [1]})
+    tasks = {
+        "harmonization": harmonize,
+        "filtering": MagicMock(**{"submit.return_value.result.return_value": (_sumstats([1e-9]), None)}),
+        "cojo": MagicMock(**{"submit.return_value.result.return_value": (_sumstats([1e-9]), None)}),
+        "fine_mapping": MagicMock(**{"map.return_value": [MagicMock(**{"result.return_value": [fine_mapped]})]}),
+        "ldsc": ldsc_task,
+    }
+    monkeypatch.setattr(flow_module, "filter_significant_variants", tasks["filtering"])
+    monkeypatch.setattr(flow_module, "run_cojo_per_chromosome", tasks["cojo"])
+    monkeypatch.setattr(flow_module, "finemap_region_batch_worker", tasks["fine_mapping"])
+    monkeypatch.setattr(flow_module, "create_region_batches", lambda *_, **__: [["region"]])
+    monkeypatch.setattr(flow_module, "save_sumstats_for_workers", lambda *_: "/out/sumstats.pkl")
+    monkeypatch.setattr(flow_module, "cleanup_sumstats_file", MagicMock())
+    monkeypatch.setattr(flow_module, "record_analysis_event_task", MagicMock())
+    monkeypatch.setattr(flow_module, "create_analysis_result_task", immediate_task_factory(lambda *_: "/out/analysis_results.csv"))
+    return saved_states, tasks, notify
+
+
+@pytest.mark.parametrize("resume_from", [None, "filtering", "ldsc"])
+def test_flow_runs_exactly_the_stages_from_the_resume_point(monkeypatch, immediate_task_factory, resume_from):
+    saved_states, tasks, notify = _configure_successful_pipeline(monkeypatch, immediate_task_factory)
+    artifacts = {"harmonized_file": "harmonized.tsv.gz", "credible_sets": True}
+
+    result = flow_module.analysis_pipeline_flow.fn(
+        "user-1", "project-1", resume_from=resume_from, artifacts=artifacts,
+        user_email="user@example.com", project_name="Wrist",
+    )
+
+    for key, task in tasks.items():
+        assert (task.submit.called or task.map.called) == runs_stage(key, resume_from), key
+    assert set(result) == set(flow_module.RESULT_KEYS)
+    assert saved_states[-1]["status"] == "Completed"
+    assert notify.call_args.kwargs["restarted"] == bool(resume_from)
+
+
+def test_ldsc_resume_that_fails_again_stays_resumable(monkeypatch, immediate_task_factory):
+    saved_states, ldsc_task, _, _, _ = _configure_resume(monkeypatch, immediate_task_factory)
+    ldsc_task.submit.return_value.result.side_effect = LdscExitError("ldsc failed")
+
+    with pytest.raises(RuntimeError):
+        _resume("ldsc", {"harmonized_file": "harmonized.tsv.gz", "credible_sets": True})
+
+    assert [state.get("stage") for state in saved_states] == ["LDSC_Tissue_Analysis", "LDSC_Analysis"]
+    assert saved_states[-1]["resumable_from"] == ["ldsc"]
+
+
+def test_filtering_resume_clears_results_and_uses_the_new_threshold(monkeypatch, immediate_task_factory):
+    saved_states, _, _, harmonize, reset = _configure_resume(monkeypatch, immediate_task_factory)
+    filter_task = immediate_task_factory(_raise_no_significant_variants)
+    ot_handler = MagicMock()
+    monkeypatch.setattr(flow_module, "filter_significant_variants", filter_task)
+    monkeypatch.setattr(flow_module, "CredibleSetsHandler", ot_handler)
+
+    with pytest.raises(NoSignificantVariantsError):
+        _resume("filtering", {"harmonized_file": "harmonized.tsv.gz"},
+                p_value_threshold=1e-6, opentargets_study_id="GCST1")
+
+    assert reset.calls[0][0] == ("user-1", "project-1", ["credible_sets", "analysis_results"])
+    assert filter_task.calls[0][1] == {"p_threshold": 1e-6}
+    assert saved_states[-1]["resumable_from"] == ["filtering"]
+    harmonize.submit.assert_not_called()
+    ot_handler.assert_not_called()
+
+
+def test_resume_without_the_harmonized_file_is_no_longer_resumable(monkeypatch, immediate_task_factory):
+    def missing(*_args):
+        raise HarmonizedFileMissingError("gone")
+
+    saved_states, ldsc_task, _, _, reset = _configure_resume(monkeypatch, immediate_task_factory, ensure=missing)
+
+    with pytest.raises(HarmonizedFileMissingError):
+        _resume("ldsc", {"harmonized_file": "harmonized.tsv.gz", "credible_sets": True})
+
+    assert saved_states[-1]["status"] == "Failed"
+    assert saved_states[-1]["resumable_from"] == []
+    assert saved_states[-1]["artifacts"] == {"credible_sets": True}
+    assert reset.calls == []
+    ldsc_task.submit.assert_not_called()
+
+
+def _ensure_harmonized_file(monkeypatch, local, downloaded):
+    storage = MagicMock(**{"download_file.return_value": downloaded})
+    monkeypatch.setattr(project_tasks, "get_deps", lambda: {"storage": storage})
+    monkeypatch.setattr(project_tasks.os.path, "exists", lambda _path: local)
+    path = project_tasks.ensure_harmonized_file_task.fn("user-1", "project-1", "/out", "harmonized.tsv.gz")
+    return path, storage
+
+
+@pytest.mark.parametrize("local", [True, False])
+def test_ensure_harmonized_file_uses_the_local_copy_or_downloads_it(monkeypatch, local):
+    path, storage = _ensure_harmonized_file(monkeypatch, local=local, downloaded=True)
+
+    assert path == "/out/harmonized.tsv.gz"
+    assert storage.download_file.called == (not local)
+
+
+def test_ensure_harmonized_file_fails_when_both_copies_are_gone(monkeypatch):
+    with pytest.raises(HarmonizedFileMissingError):
+        _ensure_harmonized_file(monkeypatch, local=False, downloaded=False)
+
+
+def test_superseded_run_stops_without_writing_a_failed_state(monkeypatch, immediate_task_factory):
+    saved_states, _, notify = _configure_flow(monkeypatch, immediate_task_factory)
+    monkeypatch.setattr(
+        flow_module, "save_analysis_state_task",
+        immediate_task_factory(lambda _u, _p, state: saved_states.append(state) or state.get("stage") != "Filtering"),
+    )
+
+    with pytest.raises(flow_module.RunSupersededError):
+        _run_flow()
+
+    assert saved_states[-1]["stage"] == "Filtering"
+    notify.assert_not_called()

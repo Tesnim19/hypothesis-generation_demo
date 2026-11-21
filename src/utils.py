@@ -8,7 +8,7 @@ import numpy as np
 import hashlib
 import uuid
 from dask.distributed import get_worker
-from prefect.runtime import task_run
+from prefect.runtime import flow_run, task_run
 
 
 POPULATION_LABELS: dict[str, str] = {
@@ -57,11 +57,14 @@ def normalize_status_responses(raw: str | None) -> str:
     return "Running"
 
 
+INTERNAL_STATE_FIELDS = frozenset({"artifacts", "superseded_flow_run_ids"})
+
+
 def analysis_state_for_public_api(state: dict | None) -> dict:
     if not state:
         return {"status": "Running", "message": "Waiting to start analysis."}
 
-    out = {**state}
+    out = {key: value for key, value in state.items() if key not in INTERNAL_STATE_FIELDS}
     raw = state.get("status")
     raw_key = str(raw or "").strip().lower().replace(" ", "_")
     out["status"] = normalize_status_responses(raw)
@@ -255,7 +258,8 @@ def record_analysis_event(user_id, project_id, stage, message, details=None, **f
             message = f"{message} (retry {attempt - 1})"
             details = {**(details or {}), "attempt": attempt}
         get_deps()["projects"].add_analysis_event(
-            user_id, project_id, stage, message, details=details, **fields
+            user_id, project_id, stage, message, details=details,
+            flow_run_id=flow_run.id, **fields
         )
     except Exception as exc:
         logger.warning(f"Could not record analysis event for project {project_id}: {exc}")

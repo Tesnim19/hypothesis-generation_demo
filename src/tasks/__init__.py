@@ -50,6 +50,8 @@ from src.tasks.project import (
     record_analysis_event_task,
     create_analysis_result_task,
     get_project_analysis_path_task,
+    ensure_harmonized_file_task,
+    reset_analysis_outputs_task,
     count_gwas_records,
     get_project_with_full_data,
 )
